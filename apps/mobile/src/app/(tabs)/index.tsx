@@ -31,7 +31,7 @@ import * as Clipboard from 'expo-clipboard';
 import { COLORS } from '../../theme';
 import { useApp } from '../../store/AppContext';
 import { fmtNum, fmtPrice, fmtUsd, shortAddress } from '../../lib/format';
-import { addImportedToken, resolveTokenMetadata } from '../../lib/balances';
+import { addImportedToken, resolveTokenMetadata, visibleTokens } from '../../lib/balances';
 import { createImportInputController } from '../../lib/importToken';
 import { fetchDexScreenerToken } from '../../lib/prices';
 import { resolveTokenLogo } from '../../lib/tokenLogos';
@@ -68,6 +68,7 @@ export default function Home() {
   const [importOpen, setImportOpen] = useState(false);
   const [importAddr, setImportAddr] = useState('');
   const [importMsg, setImportMsg] = useState('');
+  const [importOk, setImportOk] = useState('');
   const [importing, setImporting] = useState(false);
   const [importPreview, setImportPreview] = useState<ImportPreview | null>(null);
   const [previewLoading, setPreviewLoading] = useState(false);
@@ -87,11 +88,13 @@ export default function Home() {
       onInvalidAddress: (msg) => {
         previewSeq.current++; // invalidate any in-flight preview fetch
         setImportMsg(msg);
+        setImportOk('');
         setImportPreview(null);
       },
       onCleared: () => {
         previewSeq.current++;
         setImportMsg('');
+        setImportOk('');
         setImportPreview(null);
       },
     }),
@@ -107,6 +110,7 @@ export default function Home() {
     const seq = ++previewSeq.current;
     setPreviewLoading(true);
     setImportMsg('');
+    setImportOk('');
     setImportPreview(null);
     try {
       const [meta, logo, market] = await Promise.all([
@@ -142,19 +146,22 @@ export default function Home() {
     previewSeq.current++;
     setImportAddr('');
     setImportMsg('');
+    setImportOk('');
     setImportPreview(null);
     setPreviewLoading(false);
     setImporting(false);
   }
 
-  const visible = tokens.filter((t) => !t.isSpam || showSpam);
+  const visible = visibleTokens(tokens, showSpam);
   const priceOf = (t: { price: number | null }) => t.price ?? 0;
   const spendable = tokens.reduce((s, t) => s + t.balance * priceOf(t), 0);
   const locked = tokens.reduce((s, t) => s + t.locked * priceOf(t), 0);
   const total = spendable + locked;
   const lockedRatio = total > 0 ? locked / total : 0;
   const native = tokens.find((t) => t.symbol === chain.nativeSymbol);
-  const assetCount = tokens.filter((t) => !t.isSpam && (t.balance > 0 || t.locked > 0)).length;
+  // Count the rows actually listed — 0-balance default/imported rows are
+  // listed too, so a balance>0 filter would show "Assets 0" under them.
+  const assetCount = visible.length;
   const activeLocks = locks.filter((l) => l.status === 'active' || l.status === 'partially-sold').length;
 
   async function onRefresh() {
@@ -180,6 +187,7 @@ export default function Home() {
     }
     setImporting(true);
     setImportMsg('');
+    setImportOk('');
     try {
       await addImportedToken({
         chainId: chain.id,
@@ -190,10 +198,11 @@ export default function Home() {
         logoUrl: importPreview.logoUrl,
       });
       await refreshBalances();
-      setImportMsg(`Imported ${importPreview.symbol} (${importPreview.name}).`);
+      setImportOk(`Imported ${importPreview.symbol} (${importPreview.name}).`);
       setImportAddr('');
       setImportPreview(null);
     } catch (e) {
+      setImportOk('');
       setImportMsg(`Could not import that token: ${e instanceof Error ? e.message : String(e)}`);
     } finally {
       setImporting(false);
@@ -406,6 +415,7 @@ export default function Home() {
           <Text style={styles.logoWarn}>Logo not found — please check the contract address. Name and symbol were read from the contract.</Text>
         ) : null}
         {importMsg ? <Text style={styles.importErr}>{importMsg}</Text> : null}
+        {importOk ? <Text style={styles.importOk}>{importOk}</Text> : null}
         <Btn
           label={importing ? 'Importing…' : 'Import Token'}
           onPress={submitImport}
@@ -463,6 +473,7 @@ const styles = StyleSheet.create({
   divider: { backgroundColor: COLORS.navySoft, height: 1, marginVertical: 10 },
   importBtn: { minHeight: 32, paddingHorizontal: 12 },
   importErr: { color: COLORS.red, fontSize: 12, marginTop: 8 },
+  importOk: { color: COLORS.mintDark, fontSize: 12, fontWeight: '700', marginTop: 8 },
   importInput: {
     borderColor: COLORS.border,
     borderRadius: 12,
