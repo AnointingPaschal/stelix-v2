@@ -194,7 +194,14 @@ export function Skeleton({ height = 14, width = '100%' }: { height?: number; wid
   return <View style={[styles.skeleton, { height, width }]} />;
 }
 
-/** Bottom sheet (v1 Import Token / Select Network / Wallets pattern). */
+/** Bottom sheet (v1 Import Token / Select Network / Wallets pattern).
+ *
+ *  The backdrop pressable is a SIBLING behind the sheet, never a parent
+ *  wrapping it. Previously the sheet (including its TextInput) sat inside
+ *  the backdrop Pressable, so on web a click inside the contract-address
+ *  textbox bubbled up to the backdrop's onPress and closed the modal the
+ *  instant the user tried to type — the reported Import Token "crash"
+ *  (2026-11-26). Taps inside the sheet now never reach the backdrop. */
 export function BottomSheet({
   visible,
   onClose,
@@ -208,7 +215,8 @@ export function BottomSheet({
 }) {
   return (
     <Modal visible={visible} transparent animationType="slide" onRequestClose={onClose}>
-      <Pressable style={styles.sheetBackdrop} onPress={onClose}>
+      <View style={styles.sheetBackdrop}>
+        <Pressable style={StyleSheet.absoluteFill} onPress={onClose} accessibilityLabel="Close sheet" />
         <View style={styles.sheet}>
           <View style={styles.sheetHead}>
             <Text style={styles.sheetTitle}>{title}</Text>
@@ -218,7 +226,7 @@ export function BottomSheet({
           </View>
           {children}
         </View>
-      </Pressable>
+      </View>
     </Modal>
   );
 }
