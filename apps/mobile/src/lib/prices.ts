@@ -22,6 +22,7 @@
  */
 import { useEffect, useState } from 'react';
 import { getChain } from './chains';
+import { TIMEFRAME_CONFIG, type ChartTimeframe } from './chart';
 
 export type PriceSource = 'dexscreener' | 'coingecko' | 'geckoterminal' | 'unavailable';
 
@@ -289,17 +290,19 @@ export async function fetchTokenMarketData(
 }
 
 /** OHLCV candles from GeckoTerminal for a pool. timeframe: 'day' | 'hour' | 'minute'.
+ *  `aggregate` groups that many buckets (e.g. minute+5 = 5m candles).
  *  Returns [] when the pool/timeframe is unavailable — never invented candles. */
 export async function fetchCandles(
   chainId: string,
   poolAddress: string,
   timeframe: 'day' | 'hour' | 'minute' = 'day',
   limit = 100,
+  aggregate = 1,
 ): Promise<Candle[]> {
   const chain = getChain(chainId);
   try {
     const res = await fetchWithTimeout(
-      `https://api.geckoterminal.com/api/v2/networks/${encodeURIComponent(chain.geckoTerminalNetwork)}/pools/${encodeURIComponent(poolAddress)}/ohlcv/${timeframe}?limit=${limit}`,
+      `https://api.geckoterminal.com/api/v2/networks/${encodeURIComponent(chain.geckoTerminalNetwork)}/pools/${encodeURIComponent(poolAddress)}/ohlcv/${timeframe}?aggregate=${aggregate}&limit=${limit}`,
     );
     if (!res.ok) return [];
     const json = await res.json();
@@ -322,6 +325,113 @@ export async function fetchCandles(
       .filter((c): c is Candle => c !== null && [c.open, c.high, c.low, c.close].every(Number.isFinite));
   } catch {
     return [];
+  }
+}
+
+/** Candles for a chart timeframe ('5m' | '15m' | '1h' | '4h' | '1d'). */
+export async function fetchCandlesForTf(
+  chainId: string,
+  poolAddress: string,
+  tf: ChartTimeframe,
+  limit = 120,
+): Promise<Candle[]> {
+  const cfg = TIMEFRAME_CONFIG[tf];
+  return fetchCandles(chainId, poolAddress, cfg.granularity, limit, cfg.aggregate);
+}
+
+/** Wrapped-native contract per chain — used so a native asset (BNB, ETH…)
+ *  can still get DexScreener market data + GeckoTerminal candles through
+ *  its wrapped twin. null = no wrapped twin known for this chain. */
+export const WRAPPED_NATIVE_ADDRESS: Record<string, string> = {
+  bnb: '0xbb4CdB9CBd36B01bD1cBaEBF2De08d9173bc095c', // WBNB
+  ethereum: '0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2', // WETH
+  base: '0x4200000000000000000000000000000000000006', // WETH on Base
+  polygon: '0x0d500B1d8E8eF31E21C99d1Db9A6444d3ADf1270', // WMATIC
+};
+
+export function wrappedNativeAddress(chainId: string): string | null {
+  return WRAPPED_NATIVE_ADDRESS[chainId] ?? null;
+}
+
+/** CoinGecko ids for majors / wrapped natives, for native-asset prices. */
+export const COINGECKO_IDS_BY_SYMBOL: Record<string, string> = {
+  BNB: 'binancecoin',
+  WBNB: 'binancecoin',
+  ETH: 'ethereum',
+  WETH: 'ethereum',
+  SOL: 'solana',
+  POL: 'matic-network',
+  USDC: 'usd-coin',
+  USDT: 'tether',
+};
+
+// ---------------------------------------------------------------------------
+// GoPlus token security (no key) — honeypot / mint authority / holders.
+// Verified live from this VM on 2026-11-26:
+//   GET https://api.gopluslabs.io/api/v1/token_security/56?contract_addresses=<addr>
+//   -> 200, {"code":1,"result":{...}} with is_honeypot, is_mintable,
+//   owner_address, holder_count and holders[] (each with percent).
+// GoPlus covers EVM chains by numeric chain id; unsupported chains return
+// null (=> "No data" in the UI), never a guessed pass/fail.
+// ---------------------------------------------------------------------------
+
+export interface GoPlusSecurity {
+  /** null = GoPlus returned no value for this field. */
+  honeypot: boolean | null;
+  /** True when the contract cannot mint new tokens (is_mintable = "0"). */
+  mintAuthorityRenounced: boolean | null;
+  holderCount: number | null;
+  /** Sum of the top-10 holders' percent shares, null when unavailable. */
+  top10SharePct: number | null;
+  buyTaxPct: number | null;
+  sellTaxPct: number | null;
+}
+
+function goPlusFlag(v: unknown): boolean | null {
+  if (v === '1') return true;
+  if (v === '0') return false;
+  return null;
+}
+
+function goPlusNum(v: unknown): number | null {
+  const n = typeof v === 'string' ? Number(v) : (v as number);
+  return typeof n === 'number' && Number.isFinite(n) ? n : null;
+}
+
+/** Pure parser for a GoPlus token_security response body. */
+export function parseGoPlusSecurity(json: unknown, address: string): GoPlusSecurity | null {
+  const result = (json as { result?: Record<string, unknown> } | null)?.result;
+  if (!result || typeof result !== 'object') return null;
+  const key = Object.keys(result).find((k) => k.toLowerCase() === address.toLowerCase());
+  if (!key) return null;
+  const r = result[key] as Record<string, unknown>;
+  const holders = Array.isArray(r.holders) ? (r.holders as { percent?: unknown }[]) : [];
+  const top10 = holders.slice(0, 10).map((h) => goPlusNum(h.percent)).filter((n): n is number => n !== null);
+  return {
+    honeypot: goPlusFlag(r.is_honeypot),
+    mintAuthorityRenounced:
+      r.is_mintable === '0' ? true : r.is_mintable === '1' ? false : null,
+    holderCount: goPlusNum(r.holder_count),
+    top10SharePct: top10.length > 0 ? Math.round(top10.reduce((s, n) => s + n, 0) * 100) / 100 : null,
+    buyTaxPct: goPlusNum(r.buy_tax) !== null ? goPlusNum(r.buy_tax)! * 100 : null,
+    sellTaxPct: goPlusNum(r.sell_tax) !== null ? goPlusNum(r.sell_tax)! * 100 : null,
+  };
+}
+
+export async function fetchGoPlusSecurity(
+  chainId: string,
+  address: string,
+): Promise<GoPlusSecurity | null> {
+  const chain = getChain(chainId);
+  if (chain.kind !== 'evm' || chain.chainId === null || !address) return null;
+  try {
+    const res = await fetchWithTimeout(
+      `https://api.gopluslabs.io/api/v1/token_security/${chain.chainId}?contract_addresses=${encodeURIComponent(address)}`,
+    );
+    if (!res.ok) return null;
+    return parseGoPlusSecurity(await res.json(), address);
+  } catch {
+    return null;
   }
 }
 
