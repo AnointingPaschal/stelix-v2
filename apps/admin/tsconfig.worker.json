@@ -1,0 +1,1 @@
+{"compilerOptions":{"jsx":"react-jsx","noEmit":true,"resolveJsonModule":true,"types":["@cloudflare/workers-types"]},"exclude":["src/lib/__tests__","src/worker/__tests__"],"extends":"./tsconfig.json","include":["src/worker","src/lib"]}
