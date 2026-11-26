@@ -1,5 +1,5 @@
 /**
- * LIVE swap quotes only — no fake swaps, no fake success.
+ * LIVE swap quotes + LIVE swap execution — no fake swaps, no fake success.
  *
  * Quote sources (in order):
  *   1. 1inch Swap API v6 — GET https://api.1inch.dev/swap/v6.0/<chain>/quote
@@ -10,20 +10,51 @@
  *      0x10ED43C718714eb63d5aA57B78B54704E256024E (PancakeSwap V2, well-known).
  *      Other chains have no on-chain fallback wired yet.
  *
- * Execution: NOT wired. executeSwap() throws a clear "quote only,
- * execution not wired" error. A real execution must be a signed
- * transaction from the user's wallet (approve + router swap with the
- * quoted min-receive) — that wiring is a separate, audited step and must
- * never be simulated with a success toast.
+ * Execution (executeSwap, signed by the user's wallet):
+ *   - BNB: PancakeSwap V2 router directly — approve (only when the
+ *     allowance is short) + swapExactETHForTokens / swapExactTokensForETH
+ *     / swapExactTokensForTokens, with the quoted min-receive as
+ *     amountOutMin and a 20-minute deadline. Native BNB routes via WBNB.
+ *   - Other EVM chains: 1inch Swap API v6 /swap when the API key is set
+ *     (the API returns the unsigned tx; the user signs it).
+ *   - Arc: NO router is registered. Uniswap V2/V3 router addresses are
+ *     published for Arc MAINNET (5042) only; they were NOT verified on
+ *     Arc testnet (5042002, testnet.arcscan.app returned rate-limited on
+ *     2026-11-26) and mainnet addresses must never be used on testnet.
+ *     Arc swaps therefore refuse with an honest "router not confirmed
+ *     yet" error — never a fake swap — until a testnet router is
+ *     verified and registered in ROUTER_ADDRESSES below.
  */
 import { ethers } from 'ethers';
 import { getChain, VAULT_DEFAULTS } from './chains';
 import { getProvider } from './balances';
 
 export const PANCAKESWAP_V2_ROUTER = '0x10ED43C718714eb63d5aA57B78B54704E256024E';
+/** WBNB — the wrapped-native hop for PancakeSwap V2 paths on BNB. */
+export const WBNB_ADDRESS = '0xbb4CdB9CBd36B01bD1cBaEBF2De08d9173bc095c';
+/** 1inch native-asset sentinel (also accepted as '' from callers). */
+export const NATIVE_SENTINEL = '0xEeeeeEeeeEeEeeEeEeEeeEEEeeeeEeeeeeeeEEeE';
 
-const ROUTER_MIN_ABI = [
+/** DEX router per chain — ONLY addresses verified on that chain.
+ *  null = no router confirmed for this chain; swaps refuse honestly. */
+export const ROUTER_ADDRESSES: Record<string, string | null> = {
+  bnb: PANCAKESWAP_V2_ROUTER,
+  arc: null, // Arc testnet router NOT confirmed yet — see header comment
+  base: null,
+  ethereum: null,
+  polygon: null,
+};
+
+const ROUTER_SWAP_ABI = [
   'function getAmountsOut(uint256 amountIn, address[] path) view returns (uint256[] amounts)',
+  'function swapExactETHForTokens(uint256 amountOutMin, address[] path, address to, uint256 deadline) payable returns (uint256[] amounts)',
+  'function swapExactTokensForETH(uint256 amountIn, uint256 amountOutMin, address[] path, address to, uint256 deadline) returns (uint256[] amounts)',
+  'function swapExactTokensForTokens(uint256 amountIn, uint256 amountOutMin, address[] path, address to, uint256 deadline) returns (uint256[] amounts)',
+] as const;
+
+const ERC20_ALLOWANCE_ABI = [
+  'function approve(address spender, uint256 amount) returns (bool)',
+  'function allowance(address owner, address spender) view returns (uint256)',
 ] as const;
 
 export interface SwapQuoteRequest {
@@ -59,15 +90,15 @@ export class SwapQuoteUnavailableError extends Error {
   }
 }
 
-export class SwapExecutionNotWiredError extends Error {
-  constructor() {
-    super(
-      'Swap execution is not wired — this is a quote only. ' +
-        'A real swap must be a signed transaction from your wallet (approve + router swap at the quoted minimum-receive). No swap has been executed.',
-    );
-    this.name = 'SwapExecutionNotWiredError';
+export class SwapExecutionUnavailableError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'SwapExecutionUnavailableError';
   }
 }
+
+/** Backwards-compatible alias (old name). */
+export { SwapExecutionUnavailableError as SwapExecutionNotWiredError };
 
 function getOneInchApiKey(): string | null {
   const v =
@@ -87,9 +118,11 @@ async function quoteOneInch(req: SwapQuoteRequest, slippageBps: number): Promise
   const chain = getChain(req.chainId);
   if (chain.chainId === null) return null;
   const amountRaw = ethers.parseUnits(req.amountIn.toString(), req.fromDecimals).toString();
+  const src = req.fromTokenAddress || NATIVE_SENTINEL;
+  const dst = req.toTokenAddress || NATIVE_SENTINEL;
   const url =
     `https://api.1inch.dev/swap/v6.0/${chain.chainId}/quote` +
-    `?src=${encodeURIComponent(req.fromTokenAddress)}&dst=${encodeURIComponent(req.toTokenAddress)}&amount=${amountRaw}`;
+    `?src=${encodeURIComponent(src)}&dst=${encodeURIComponent(dst)}&amount=${amountRaw}`;
   const ctrl = new AbortController();
   const t = setTimeout(() => ctrl.abort(), 10_000);
   try {
@@ -123,17 +156,27 @@ async function quoteOneInch(req: SwapQuoteRequest, slippageBps: number): Promise
   }
 }
 
+/** PancakeSwap path for a quote: native ('', or the 1inch sentinel) routes
+ *  via WBNB; token-to-token routes via WBNB too. */
+export function pancakeSwapPath(fromTokenAddress: string, toTokenAddress: string): string[] {
+  const from = !fromTokenAddress || fromTokenAddress.toLowerCase() === NATIVE_SENTINEL.toLowerCase() ? WBNB_ADDRESS : fromTokenAddress;
+  const to = !toTokenAddress || toTokenAddress.toLowerCase() === NATIVE_SENTINEL.toLowerCase() ? WBNB_ADDRESS : toTokenAddress;
+  if (from.toLowerCase() === to.toLowerCase()) throw new SwapQuoteUnavailableError('Swap source and destination are the same token.');
+  if (from.toLowerCase() === WBNB_ADDRESS.toLowerCase() || to.toLowerCase() === WBNB_ADDRESS.toLowerCase()) {
+    return [from, to];
+  }
+  return [from, WBNB_ADDRESS, to];
+}
+
 async function quotePancakeSwap(req: SwapQuoteRequest, slippageBps: number): Promise<SwapQuote | null> {
   const chain = getChain(req.chainId);
   if (chain.id !== 'bnb' || chain.chainId === null) return null;
   try {
     const provider = getProvider(chain);
-    const router = new ethers.Contract(PANCAKESWAP_V2_ROUTER, ROUTER_MIN_ABI, provider);
+    const router = new ethers.Contract(PANCAKESWAP_V2_ROUTER, ROUTER_SWAP_ABI, provider);
     const amountRaw = ethers.parseUnits(req.amountIn.toString(), req.fromDecimals);
-    const amounts = (await router.getAmountsOut.staticCall(amountRaw, [
-      req.fromTokenAddress,
-      req.toTokenAddress,
-    ])) as bigint[];
+    const path = pancakeSwapPath(req.fromTokenAddress, req.toTokenAddress);
+    const amounts = (await router.getAmountsOut.staticCall(amountRaw, path)) as bigint[];
     if (!amounts || amounts.length < 2) return null;
     const toAmount = amounts[amounts.length - 1];
     const min = minReceiveRaw(toAmount, slippageBps);
@@ -172,10 +215,146 @@ export async function getSwapQuote(req: SwapQuoteRequest): Promise<SwapQuote> {
   throw new SwapQuoteUnavailableError(`No live swap quote available: ${reasons.join('; ')}. No swap was executed.`);
 }
 
+export interface SwapExecutionResult {
+  hash: string;
+  blockNumber: number | null;
+  /** Hash of the ERC-20 approve tx when one was needed, else null. */
+  approveHash: string | null;
+}
+
 /**
- * Swap execution is NOT wired. This always throws — callers must surface
- * the message, never a success state.
+ * Execute a REAL swap from a live quote, signed by the user's wallet.
+ *
+ * BNB: PancakeSwap V2 (approve only when the allowance is short, then
+ * the router swap with the quote's min-receive and a 20-minute
+ * deadline). Other EVM chains: 1inch Swap API v6 /swap when the API key
+ * is set. Arc (and any chain with no confirmed router and no 1inch
+ * key): throws SwapExecutionUnavailableError — never a fake swap.
+ *
+ * The quote must be fresh: execution re-checks the quote is younger
+ * than 5 minutes, so a stale min-receive cannot be signed.
  */
-export async function executeSwap(_quote: SwapQuote): Promise<never> {
-  throw new SwapExecutionNotWiredError();
+export async function executeSwap(
+  signer: ethers.Signer,
+  quote: SwapQuote,
+): Promise<SwapExecutionResult> {
+  const chain = getChain(quote.chainId);
+  if (chain.kind !== 'evm' || chain.chainId === null) {
+    throw new SwapExecutionUnavailableError(
+      `${chain.name} swaps are not wired — this chain has no EVM DEX execution path. No swap was executed.`,
+    );
+  }
+  if (Date.now() - quote.quotedAt > 5 * 60_000) {
+    throw new SwapExecutionUnavailableError(
+      'This quote is stale (older than 5 minutes). Get a fresh quote before swapping — no swap was executed.',
+    );
+  }
+  // Router availability is checked BEFORE the signer is touched, so a
+  // refused swap never asks for (or needs) a signature.
+  if (chain.id === 'arc') {
+    throw new SwapExecutionUnavailableError(
+      'Arc swap execution is unavailable — no DEX router address has been verified on Arc testnet yet ' +
+        '(testnet.arcscan.app). Uniswap router addresses published for Arc mainnet (5042) must not be used on testnet (5042002). ' +
+        'No swap was executed. BNB swaps are live via PancakeSwap.',
+    );
+  }
+  if (chain.id !== 'bnb' && !getOneInchApiKey()) {
+    throw new SwapExecutionUnavailableError(
+      `No DEX router is confirmed for ${chain.name} and no 1inch API key is set ` +
+        '(EXPO_PUBLIC_ONEINCH_API_KEY). Swap execution is unavailable on this chain. No swap was executed.',
+    );
+  }
+  const fromAddress = await signer.getAddress();
+  const amountIn = BigInt(quote.amountIn);
+  const amountOutMin = BigInt(quote.minReceive);
+  const deadline = BigInt(Math.floor(Date.now() / 1000) + 20 * 60);
+  const fromNative = !quote.fromTokenAddress || quote.fromTokenAddress.toLowerCase() === NATIVE_SENTINEL.toLowerCase();
+  const toNative = !quote.toTokenAddress || quote.toTokenAddress.toLowerCase() === NATIVE_SENTINEL.toLowerCase();
+
+  if (chain.id === 'bnb') {
+    return executePancakeSwap(signer, fromAddress, quote, amountIn, amountOutMin, deadline, fromNative, toNative);
+  }
+  return executeOneInchSwap(signer, fromAddress, quote, amountIn, chain.chainId);
+}
+
+async function executePancakeSwap(
+  signer: ethers.Signer,
+  fromAddress: string,
+  quote: SwapQuote,
+  amountIn: bigint,
+  amountOutMin: bigint,
+  deadline: bigint,
+  fromNative: boolean,
+  toNative: boolean,
+): Promise<SwapExecutionResult> {
+  const router = new ethers.Contract(PANCAKESWAP_V2_ROUTER, ROUTER_SWAP_ABI, signer);
+  const path = pancakeSwapPath(quote.fromTokenAddress, quote.toTokenAddress);
+  let approveHash: string | null = null;
+  let tx: ethers.TransactionResponse;
+  if (fromNative) {
+    // BNB -> token: value is the amount, no approval needed.
+    tx = (await router.swapExactETHForTokens(amountOutMin, path, fromAddress, deadline, {
+      value: amountIn,
+    })) as ethers.TransactionResponse;
+  } else {
+    // Token -> ... : approve the router first, only when short.
+    const token = new ethers.Contract(quote.fromTokenAddress, ERC20_ALLOWANCE_ABI, signer);
+    const allowance = (await token.allowance(fromAddress, PANCAKESWAP_V2_ROUTER)) as bigint;
+    if (allowance < amountIn) {
+      const approveTx = (await token.approve(PANCAKESWAP_V2_ROUTER, amountIn)) as ethers.TransactionResponse;
+      const approveReceipt = await approveTx.wait();
+      approveHash = approveReceipt?.hash ?? approveTx.hash;
+    }
+    if (toNative) {
+      tx = (await router.swapExactTokensForETH(amountIn, amountOutMin, path, fromAddress, deadline)) as ethers.TransactionResponse;
+    } else {
+      tx = (await router.swapExactTokensForTokens(amountIn, amountOutMin, path, fromAddress, deadline)) as ethers.TransactionResponse;
+    }
+  }
+  const receipt = await tx.wait();
+  return { hash: receipt?.hash ?? tx.hash, blockNumber: receipt?.blockNumber ?? null, approveHash };
+}
+
+/** 1inch Swap API v6 /swap: the API builds the unsigned tx; the user signs it. */
+async function executeOneInchSwap(
+  signer: ethers.Signer,
+  fromAddress: string,
+  quote: SwapQuote,
+  amountIn: bigint,
+  chainIdNum: number,
+): Promise<SwapExecutionResult> {
+  const apiKey = getOneInchApiKey();
+  if (!apiKey) {
+    throw new SwapExecutionUnavailableError(
+      `No DEX router is confirmed for ${getChain(quote.chainId).name} and no 1inch API key is set ` +
+        '(EXPO_PUBLIC_ONEINCH_API_KEY). Swap execution is unavailable on this chain. No swap was executed.',
+    );
+  }
+  const url =
+    `https://api.1inch.dev/swap/v6.0/${chainIdNum}/swap` +
+    `?src=${encodeURIComponent(quote.fromTokenAddress || NATIVE_SENTINEL)}` +
+    `&dst=${encodeURIComponent(quote.toTokenAddress || NATIVE_SENTINEL)}` +
+    `&amount=${amountIn.toString()}&from=${fromAddress}&slippage=${quote.slippageBps / 100}&receiver=${fromAddress}`;
+  const ctrl = new AbortController();
+  const t = setTimeout(() => ctrl.abort(), 15_000);
+  try {
+    const res = await fetch(url, { signal: ctrl.signal, headers: { Authorization: `Bearer ${apiKey}` } });
+    if (!res.ok) {
+      throw new SwapExecutionUnavailableError(`1inch swap failed (HTTP ${res.status}). No swap was executed.`);
+    }
+    const json = await res.json();
+    const txData = json?.tx;
+    if (!txData?.to || typeof txData.data !== 'string') {
+      throw new SwapExecutionUnavailableError('1inch returned no swap transaction. No swap was executed.');
+    }
+    const sent = await signer.sendTransaction({
+      to: txData.to as string,
+      data: txData.data as string,
+      value: txData.value ? BigInt(txData.value as string) : 0n,
+    });
+    const receipt = await sent.wait();
+    return { hash: receipt?.hash ?? sent.hash, blockNumber: receipt?.blockNumber ?? null, approveHash: null };
+  } finally {
+    clearTimeout(t);
+  }
 }
