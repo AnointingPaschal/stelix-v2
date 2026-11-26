@@ -1,15 +1,27 @@
 // Stelix 2.0 Keeper — Cloudflare Worker on cron, every 5 minutes (spec Part G).
-// Steps: 1) fetch active locks with price targets (D1 / indexer — stubbed here
-// until the indexer + D1 are wired); 2) 30-min TWAP from DEX pair (Chainlink
-// where the registry provides a feed); 3) at/above target or trailing-stop
-// breached -> simulate stage swap, impact/min-receive guards (pause + notify
-// + retry, never force a bad sell); 4) call executeTrigger; 5) record result
-// in D1 keeper_runs and notify the user.
-// The keeper key can ONLY call executeTrigger(); it cannot move funds
-// anywhere except the swap-to-stablecoin / unlock-to-owner paths in the
-// contract. No private keys in code — KEEPER_PRIVATE_KEY is a Cloudflare secret.
+// Steps: 1) fetch active locks with price targets from D1 `locks` (written by
+// the indexer) and enrich each from the vault on-chain; 2) 30-min TWAP from
+// the vault's price feed (the feed itself is a 30-min TWAP — the keeper uses
+// that on-chain value as its price point, it never invents a price);
+// 3) at/above target or trailing-stop breached -> simulate the stage swap
+// via the router adapter's quoter, impact/min-receive guards (pause +
+// notify + retry, never force a bad sell); 4) call pokePrice +
+// executeTrigger with the keeper key; 5) record result in D1 keeper_runs
+// and notify the user.
+// The keeper key can ONLY call executeTrigger()/pokePrice(); it cannot move
+// funds anywhere except the swap-to-stablecoin / unlock-to-owner paths in
+// the contract. No private keys in code — KEEPER_PRIVATE_KEY is a Cloudflare
+// secret, never logged. Live runs need RPC_URL_ARC, VAULT_ADDRESS_ARC and
+// KEEPER_PRIVATE_KEY set; without them a run reports "not configured" and
+// does nothing (it never fakes a run).
 import { decideLock } from './keeper'
 import { notify } from './notify'
+import { parseLockId, lockInputFromGetLock } from './mapping'
+import {
+  publicClientFor, readRawLock, readTwapUsd, readTokenDecimals, readVaultAddresses,
+  simulateStageSwap, sendTrigger, walletClientFor,
+} from './chain'
+import type { Hex, PublicClient } from 'viem'
 import type { KeeperRunResult, LockInput, PricePoint, SwapSimulation } from './types'
 
 export interface Env {
@@ -18,40 +30,126 @@ export interface Env {
   MAX_PRICE_IMPACT_BPS?: string
   MAX_RETRIES?: string
   NOTIFY_WEBHOOK_URL?: string
-  KEEPER_PRIVATE_KEY: string // Cloudflare secret; never logged
+  RPC_URL_ARC?: string
+  VAULT_ADDRESS_ARC?: string
+  RPC_URL_BNB?: string
+  VAULT_ADDRESS_BNB?: string
+  KEEPER_PRIVATE_KEY?: string // Cloudflare secret; never logged
 }
 
-// --- Production integration points (stubs until D1/indexer/RPC are wired) ---
-async function fetchActiveLocks(_env: Env, _chain: string): Promise<LockInput[]> {
-  // Production: SELECT active locks with price targets from D1 / indexer.
-  return []
+interface ChainCtx {
+  chain: string
+  rpcUrl: string
+  vault: Hex
+  client: PublicClient
+  priceFeed: Hex
+  router: Hex
 }
-async function fetchPricePoints(_env: Env, _lock: LockInput): Promise<PricePoint[]> {
-  // Production: DEX pair TWAP observations; Chainlink feed where registry provides one.
-  return []
+
+interface ActiveLock {
+  input: LockInput
+  raw: { amountTotal: bigint; nextSellBps: number; stablecoin: Hex; stablecoinDecimals: number; tokenDecimals: number }
 }
-async function simulateSwap(_env: Env, _lock: LockInput): Promise<SwapSimulation | null> {
-  // Production: quote the stage swap via the chain DEX router/aggregator.
-  return null
+
+function chainEnv(env: Env, chain: string): { rpcUrl?: string; vault?: string } {
+  if (chain === 'arc') return { rpcUrl: env.RPC_URL_ARC, vault: env.VAULT_ADDRESS_ARC }
+  if (chain === 'bnb') return { rpcUrl: env.RPC_URL_BNB, vault: env.VAULT_ADDRESS_BNB }
+  return {}
 }
-async function executeTriggerOnChain(_env: Env, _lock: LockInput): Promise<{ txHash: string }> {
-  // Production: sign + send StelixVault.executeTrigger(lockId) with the keeper key.
-  throw new Error('executeTrigger not wired: keeper key + RPC + vault address required (see README)')
+
+async function getChainCtx(env: Env, chain: string): Promise<ChainCtx | null> {
+  const { rpcUrl, vault } = chainEnv(env, chain)
+  if (!rpcUrl || !vault) return null
+  const client = publicClientFor(rpcUrl)
+  const { priceFeed, router } = await readVaultAddresses(client, vault as Hex)
+  return { chain, rpcUrl, vault: vault as Hex, client, priceFeed, router }
+}
+
+async function fetchActiveLocks(ctx: ChainCtx, env: Env): Promise<ActiveLock[]> {
+  const { results } = await env.DB.prepare(
+    "SELECT id, owner, token_address FROM locks WHERE chain_id = ? AND status IN ('Active', 'PartiallySold') ORDER BY created_at ASC LIMIT 100",
+  ).bind(ctx.chain).all<{ id: string; owner: string; token_address: string }>()
+  const out: ActiveLock[] = []
+  for (const row of results ?? []) {
+    const lockId = parseLockId(row.id)
+    if (lockId === null) continue
+    try {
+      const rawLock = await readRawLock(ctx.client, ctx.vault, lockId)
+      const input = lockInputFromGetLock(rawLock, lockId.toString(), ctx.chain)
+      if (!input) continue
+      // Raw lock data for the swap simulation (next unsold stage).
+      const nextStage = rawLock.ladderStages.find((s) => !s.sold)
+      const tokenDecimals = await readTokenDecimals(ctx.client, rawLock.token as Hex)
+      out.push({
+        input,
+        raw: {
+          amountTotal: rawLock.amountTotal,
+          nextSellBps: nextStage ? nextStage.sellBps : 0,
+          stablecoin: rawLock.stablecoin as Hex,
+          stablecoinDecimals: rawLock.stablecoinDecimals,
+          tokenDecimals,
+        },
+      })
+    } catch (err) {
+      console.error('[keeper: lock read failed]', row.id, err)
+    }
+  }
+  return out
+}
+
+async function fetchPricePoints(ctx: ChainCtx, lock: LockInput): Promise<PricePoint[]> {
+  // The vault's feed already returns a 30-min TWAP on-chain; the keeper
+  // uses that value as its single price point (computeTWAP of one point
+  // returns that point). The keeper never supplies its own price.
+  const twap = await readTwapUsd(ctx.client, ctx.priceFeed, lock.token as Hex, 1800)
+  return [{ price: twap, timestampMs: Date.now() }]
+}
+
+async function simulateSwap(ctx: ChainCtx, active: ActiveLock, twapUsd: number): Promise<SwapSimulation | null> {
+  return simulateStageSwap(ctx.client, ctx.router, active.input, active.raw, twapUsd)
+}
+
+async function executeTriggerOnChain(env: Env, ctx: ChainCtx, lock: LockInput): Promise<{ txHash: string }> {
+  if (!env.KEEPER_PRIVATE_KEY) {
+    throw new Error('executeTrigger not wired: KEEPER_PRIVATE_KEY secret is not set (see README)')
+  }
+  const wallet = walletClientFor(ctx.rpcUrl, env.KEEPER_PRIVATE_KEY as Hex)
+  return sendTrigger(ctx.client, wallet, ctx.vault, BigInt(lock.lockId))
+}
+
+async function isKeeperPaused(env: Env): Promise<boolean> {
+  try {
+    const row = await env.DB.prepare('SELECT paused FROM keeper_state WHERE id = 1').first<{ paused: number }>()
+    return (row?.paused ?? 0) === 1
+  } catch {
+    return false
+  }
 }
 
 export async function runKeeper(env: Env, chain: string): Promise<KeeperRunResult> {
   const maxImpactBps = Number(env.MAX_PRICE_IMPACT_BPS ?? 500)
   const result: KeeperRunResult = { chain, locksChecked: 0, triggers: 0, executed: 0, retried: 0, failed: 0, status: 'ok' }
-  const locks = await fetchActiveLocks(env, chain)
+  const ctx = await getChainCtx(env, chain).catch((err) => {
+    console.error(`[keeper ${chain}: chain context failed]`, err)
+    return null
+  })
+  if (!ctx) {
+    // Not configured (no RPC/vault yet) — report, do not fake a run.
+    console.log(`[keeper ${chain}] not configured: RPC_URL_${chain.toUpperCase()} / VAULT_ADDRESS_${chain.toUpperCase()} missing; skipping`)
+    return result
+  }
+  const locks = await fetchActiveLocks(ctx, env)
   result.locksChecked = locks.length
-  for (const lock of locks) {
+  for (const active of locks) {
+    const lock = active.input
     try {
-      const points = await fetchPricePoints(env, lock)
-      const sim = await simulateSwap(env, lock)
+      const points = await fetchPricePoints(ctx, lock)
+      const twapUsd = points[0]?.price ?? NaN
+      const sim = await simulateSwap(ctx, active, twapUsd)
       const decision = decideLock(lock, points, sim, maxImpactBps)
       if (decision.action === 'trigger') {
         result.triggers++
-        const { txHash } = await executeTriggerOnChain(env, lock)
+        const { txHash } = await executeTriggerOnChain(env, ctx, lock)
         result.executed++
         await notify(env, 'auto-sell.executed', { lockId: lock.lockId, chain, txHash, owner: lock.owner })
       } else if (decision.action === 'retry') {
@@ -80,16 +178,38 @@ export async function runKeeper(env: Env, chain: string): Promise<KeeperRunResul
 
 export default {
   async scheduled(_event: ScheduledEvent, env: Env, ctx: ExecutionContext): Promise<void> {
+    // Pause hook: the admin sets keeper_state.paused = 1; cron runs then
+    // skip without touching any lock.
+    if (await isKeeperPaused(env)) {
+      console.log('[keeper] paused via keeper_state; skipping cron run')
+      return
+    }
     // Arc first (default chain), then BNB — other chains added via registry.
     ctx.waitUntil(runKeeper(env, 'arc').then((r) => console.log('[keeper arc]', JSON.stringify(r))))
     ctx.waitUntil(runKeeper(env, 'bnb').then((r) => console.log('[keeper bnb]', JSON.stringify(r))))
   },
   async fetch(req: Request, env: Env): Promise<Response> {
-    if (new URL(req.url).pathname === '/health') return Response.json({ ok: true, service: 'stelix-keeper' })
-    if (new URL(req.url).pathname === '/run' && req.method === 'POST') {
-      // Manual run-now from Keeper Monitor — production: require admin auth.
+    const url = new URL(req.url)
+    if (url.pathname === '/health') return Response.json({ ok: true, service: 'stelix-keeper' })
+    // Run Now (manual trigger from Keeper Monitor) — production: require admin auth.
+    if (url.pathname === '/run' && req.method === 'POST') {
+      if (await isKeeperPaused(env)) return Response.json({ ok: false, error: 'keeper is paused' }, { status: 409 })
       const result = await runKeeper(env, 'arc')
       return Response.json(result)
+    }
+    // Pause hook: POST /pause stops cron + Run Now until /resume.
+    if (url.pathname === '/pause' && req.method === 'POST') {
+      await env.DB.prepare("UPDATE keeper_state SET paused = 1, updated_by = 'keeper-api', updated_at = datetime('now') WHERE id = 1").run()
+      return Response.json({ ok: true, paused: true })
+    }
+    if (url.pathname === '/resume' && req.method === 'POST') {
+      await env.DB.prepare("UPDATE keeper_state SET paused = 0, updated_by = 'keeper-api', updated_at = datetime('now') WHERE id = 1").run()
+      return Response.json({ ok: true, paused: false })
+    }
+    if (url.pathname === '/status' && req.method === 'GET') {
+      const state = await env.DB.prepare('SELECT paused, keeper_address, updated_at FROM keeper_state WHERE id = 1').first()
+      const { results } = await env.DB.prepare('SELECT * FROM keeper_runs ORDER BY started_at DESC LIMIT 5').all()
+      return Response.json({ ok: true, state, recentRuns: results ?? [] })
     }
     return new Response('stelix-keeper: cron worker', { status: 200 })
   },
