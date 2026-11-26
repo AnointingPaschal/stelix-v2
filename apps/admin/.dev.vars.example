@@ -1,0 +1,4 @@
+# Copy to .dev.vars for local dev only. Placeholder values only — never real secrets.
+ADMIN_SESSION_SECRET=dev-only-placeholder-change-me
+EXPLORER_API_KEY=placeholder
+DEPLOYER_PRIVATE_KEY_TESTNET=placeholder-testnet-only-never-mainnet
