@@ -1,7 +1,10 @@
 /** Screen 8 — Transfer Assets (v1): back + centred title, chain pill,
  *  Asset selector card, Recipient Address input with paste, Amount with
- *  Bal + MAX, grey "Review Transaction" button until valid. Locked funds
- *  can never be sent. No invented network fee. */
+ *  Bal + MAX, live network-fee estimate, session-password signing.
+ *  Locked funds can never be sent. Sends are REAL signed transactions
+ *  (see lib/send.ts) — the hash is shown and recorded in History only
+ *  after the transaction is mined. EVM chains only; Solana sends are
+ *  refused honestly (no Solana send path is wired yet). */
 import { useState } from 'react';
 import { Alert, Pressable, ScrollView, StyleSheet, Text, TextInput, View } from 'react-native';
 import { router } from 'expo-router';
@@ -11,16 +14,24 @@ import { COLORS } from '../theme';
 import { useApp } from '../store/AppContext';
 import { fmtNum, fmtUsd } from '../lib/format';
 import { isValidEvmAddress } from '../lib/wallet';
+import { getSignerForChain } from '../lib/signer';
+import { estimateSendFee, sendToken, type SendEstimate, type SendResult } from '../lib/send';
 import { BottomSheet, Btn, RiskNote, ScreenHeader } from '../components/ui';
 import { TokenLogo } from '../components/TokenLogo';
 
 export default function Send() {
-  const { tokens, chain } = useApp();
+  const { tokens, chain, address, addTx, refreshBalances } = useApp();
   const spendable = tokens.filter((t) => !t.isSpam);
   const [symbol, setSymbol] = useState(chain.nativeSymbol);
   const [to, setTo] = useState('');
   const [amount, setAmount] = useState('');
   const [pickerOpen, setPickerOpen] = useState(false);
+  const [password, setPassword] = useState('');
+  const [fee, setFee] = useState<SendEstimate | null>(null);
+  const [feeError, setFeeError] = useState('');
+  const [estimating, setEstimating] = useState(false);
+  const [sending, setSending] = useState(false);
+  const [sent, setSent] = useState<SendResult | null>(null);
 
   const token = spendable.find((t) => t.symbol === symbol) ?? spendable[0];
   const amt = parseFloat(amount) || 0;
@@ -31,8 +42,15 @@ export default function Send() {
     if (text) setTo(text.trim());
   }
 
-  function review() {
+  async function review() {
     if (!token) return;
+    if (chain.kind !== 'evm') {
+      Alert.alert(
+        'Sending not available on Solana',
+        'Signed sends are wired for EVM chains only. Solana sends are not wired yet — no transaction was sent.',
+      );
+      return;
+    }
     if (!isValidEvmAddress(to)) {
       Alert.alert('Invalid address', 'That does not look like a valid address on this chain. Double-check it before sending.');
       return;
@@ -48,24 +66,80 @@ export default function Send() {
       );
       return;
     }
+    // Live fee estimate from the chain RPC — shown before signing, never invented.
+    setEstimating(true);
+    setFeeError('');
+    let est: SendEstimate | null = null;
+    try {
+      const native = tokens.find((t) => t.address === '');
+      est = await estimateSendFee(
+        { chainId: chain.id, tokenAddress: token.address, tokenSymbol: token.symbol, tokenDecimals: token.decimals, to, amount: amt },
+        address,
+        native?.price ?? null,
+      );
+      setFee(est);
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e);
+      setFeeError(msg);
+      Alert.alert('Could not estimate the network fee', msg);
+      return;
+    } finally {
+      setEstimating(false);
+    }
+    const feeLine = est
+      ? `\nNetwork fee (est.): ${est.feeNative} ${chain.nativeSymbol}${est.feeUsd !== null ? ` (≈ ${fmtUsd(est.feeUsd)})` : ''}`
+      : '';
     Alert.alert(
       'Review Transaction',
-      `Send ${fmtNum(amt)} ${token.symbol} (${token.price === null ? 'price unavailable' : fmtUsd(amt * token.price)}) to ${to.slice(0, 10)}…${to.slice(-6)} on ${chain.name}.`,
+      `Send ${fmtNum(amt)} ${token.symbol} (${token.price === null ? 'price unavailable' : fmtUsd(amt * token.price)}) to ${to.slice(0, 10)}…${to.slice(-6)} on ${chain.name}${chain.testnet ? ' (testnet)' : ''}.${feeLine}\n\nEnter your session password below, then confirm to sign.`,
       [
         { text: 'Cancel', style: 'cancel' },
-        {
-          text: 'Confirm & Sign',
-          onPress: () => {
-            // Sending is NOT wired yet (no signed-transfer flow in the
-            // wallet layer) — never record a transfer that was not sent.
-            Alert.alert(
-              'Sending is not wired yet',
-              'The signed-transfer flow is not built yet, so no transaction was sent and nothing was recorded in History.',
-            );
-          },
-        },
+        { text: 'Confirm & Sign', onPress: () => void doSend() },
       ],
     );
+  }
+
+  async function doSend() {
+    if (!token) return;
+    if (password.length < 8) {
+      Alert.alert('Session password required', 'Enter your session password to sign this transaction. A wrong password is rejected — nothing is sent.');
+      return;
+    }
+    setSending(true);
+    try {
+      const signer = await getSignerForChain(password, chain.id);
+      const res = await sendToken(signer, {
+        chainId: chain.id,
+        tokenAddress: token.address,
+        tokenSymbol: token.symbol,
+        tokenDecimals: token.decimals,
+        to,
+        amount: amt,
+      });
+      setSent(res);
+      setPassword('');
+      addTx({
+        id: res.hash,
+        hash: res.hash,
+        kind: 'sent',
+        token: token.symbol,
+        amount: amt,
+        amountRaw: res.amountRaw,
+        usd: token.price !== null ? amt * token.price : null,
+        counterparty: to,
+        at: Date.now(),
+        status: 'confirmed',
+        isSpam: false,
+        chainId: chain.id,
+        blockNumber: res.blockNumber,
+      });
+      await refreshBalances();
+      Alert.alert('Sent', `Transaction mined: ${res.hash.slice(0, 12)}…${res.hash.slice(-6)}. Recorded in History.`);
+    } catch (e) {
+      Alert.alert('Send failed', e instanceof Error ? e.message : String(e));
+    } finally {
+      setSending(false);
+    }
   }
 
   if (spendable.length === 0) {
@@ -147,14 +221,39 @@ export default function Send() {
         <Text style={styles.hint}>{fmtNum(token.locked)} {token.symbol} is locked in the vault and unavailable.</Text>
       ) : null}
 
+      <Text style={styles.label}>Session password (to sign)</Text>
+      <TextInput
+        style={styles.passwordInput}
+        secureTextEntry
+        placeholder="••••••••"
+        placeholderTextColor={COLORS.textMuted}
+        value={password}
+        onChangeText={setPassword}
+        autoCapitalize="none"
+        autoCorrect={false}
+      />
+      <Text style={styles.hint}>Your password decrypts the wallet on this device to sign once. A wrong password sends nothing.</Text>
+      {fee ? (
+        <Text style={styles.hint}>
+          Estimated network fee: {fee.feeNative} {chain.nativeSymbol}
+          {fee.feeUsd !== null ? ` (≈ ${fmtUsd(fee.feeUsd)})` : ''} · gas limit {fee.gasLimit.toString()}
+        </Text>
+      ) : null}
+      {feeError ? <Text style={styles.feeError}>{feeError}</Text> : null}
+      {sent ? (
+        <Text style={styles.sentLine}>
+          Sent — tx {sent.hash.slice(0, 12)}…{sent.hash.slice(-6)}
+          {sent.blockNumber !== null ? ` · block ${sent.blockNumber}` : ''}. Recorded in History.
+        </Text>
+      ) : null}
+
       <View style={styles.spacer} />
       <Btn
-        label="Review Transaction"
+        label={estimating ? 'Estimating fee…' : sending ? 'Sending…' : 'Review Transaction'}
         variant={valid ? 'primary' : 'secondary'}
-        onPress={review}
-        disabled={!valid}
+        onPress={() => void review()}
+        disabled={!valid || estimating || sending}
       />
-      <Text style={styles.notWired}>Sending is not wired yet — review works, but no transaction is sent from this build.</Text>
       <RiskNote />
 
       <BottomSheet visible={pickerOpen} onClose={() => setPickerOpen(false)} title="Select Asset">
@@ -247,7 +346,17 @@ const styles = StyleSheet.create({
   emptyBtn: { marginTop: 16 },
   emptyTitle: { color: COLORS.text, fontSize: 16, fontWeight: '800' },
   hint: { color: COLORS.textMuted, fontSize: 12, lineHeight: 17, marginTop: 6 },
-  notWired: { color: COLORS.textMuted, fontSize: 11, lineHeight: 16, marginTop: 8, textAlign: 'center' },
+  feeError: { color: COLORS.red, fontSize: 12, lineHeight: 17, marginTop: 6 },
+  sentLine: { color: COLORS.mintDark, fontSize: 12, fontWeight: '700', lineHeight: 17, marginTop: 8 },
+  passwordInput: {
+    borderColor: COLORS.border,
+    borderRadius: 12,
+    borderWidth: 1,
+    fontSize: 14,
+    marginTop: 6,
+    paddingHorizontal: 12,
+    paddingVertical: 10,
+  },
   inner: { padding: 12 },
   label: { color: COLORS.textMuted, fontSize: 11, fontWeight: '700', letterSpacing: 1, marginTop: 14 },
   maxBtn: { backgroundColor: COLORS.navy, borderRadius: 8, paddingHorizontal: 8, paddingVertical: 4 },
