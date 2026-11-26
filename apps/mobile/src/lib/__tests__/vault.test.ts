@@ -20,6 +20,10 @@ import {
   updatePeak,
   validateLadder,
   disciplineScore,
+  createLockOnChain,
+  getUserLocksOnChain,
+  toOnChainCreateLockParams,
+  VAULT_NOT_DEPLOYED_MESSAGE,
 } from '../vault';
 
 const DAY = 86_400_000;
@@ -251,5 +255,94 @@ describe('review copy and discipline score', () => {
     const bad = disciplineScore({ lockedRatio: 0.0, streakDays: 0, locksCompleted: 0, locksBroken: 2 });
     expect(good).toBeGreaterThan(bad);
     expect(good).toBeLessThanOrEqual(100);
+  });
+});
+
+describe('TWAP guard (30-min window)', () => {
+  it('returns null with no samples', () => {
+    expect(computeTwap([], 30)).toBeNull();
+  });
+
+  it('ignores samples older than the window', () => {
+    const samples = [
+      { price: 999, at: NOW - 60 * 60_000 }, // 1h ago — outside 30m
+      { price: 0.04, at: NOW - 10 * 60_000 },
+      { price: 0.04, at: NOW },
+    ];
+    expect(computeTwap(samples, 30)).toBeCloseTo(0.04, 4);
+  });
+
+  it('a sustained price above target passes, a brief wick does not', () => {
+    const lock = makeLock();
+    const wick = Array.from({ length: 30 }, (_, i) => ({
+      price: i === 29 ? 0.09 : 0.03,
+      at: NOW - (29 - i) * 60_000,
+    }));
+    expect(isPriceTargetHit(lock, computeTwap(wick, 30))).toBe(false);
+    const sustained = Array.from({ length: 30 }, (_, i) => ({
+      price: 0.065,
+      at: NOW - (29 - i) * 60_000,
+    }));
+    expect(isPriceTargetHit(lock, computeTwap(sustained, 30))).toBe(true);
+  });
+});
+
+describe('on-chain vault — not deployed yet', () => {
+  it('getUserLocksOnChain returns an empty list with the not-deployed note', async () => {
+    const res = await getUserLocksOnChain('bnb', '0x0000000000000000000000000000000000000001');
+    expect(res.deployed).toBe(false);
+    expect(res.locks).toEqual([]);
+    expect(res.lockIds).toEqual([]);
+    expect(res.note).toBe(VAULT_NOT_DEPLOYED_MESSAGE);
+  });
+
+  it('createLockOnChain refuses when the vault is not deployed (no tx sent)', async () => {
+    const fakeSigner = {} as never;
+    await expect(
+      createLockOnChain(fakeSigner, {
+        chainId: 'bnb',
+        tokenAddress: '0xabc',
+        tokenDecimals: 18,
+        stablecoinAddress: '0xdef',
+        amount: 100,
+        unlockTime: NOW + 30 * 86_400_000,
+        entryPriceUsd: 0.02,
+        ladder: [{ multiple: 2, percent: 100 }],
+        trailingStopBps: null,
+        breakMode: 'penalty',
+        penaltyBps: 500,
+        autoSell: true,
+        slippageBps: 150,
+        minReceiveUsd: 0,
+      }),
+    ).rejects.toThrow(/Not deployed on this chain yet/);
+  });
+
+  it('toOnChainCreateLockParams rejects a ladder over 100% and a bad penalty', () => {
+    const base = {
+      chainId: 'bnb',
+      tokenAddress: '0xabc',
+      tokenDecimals: 18,
+      stablecoinAddress: '0xdef',
+      amount: 100,
+      unlockTime: NOW + 30 * 86_400_000,
+      entryPriceUsd: 0.02,
+      trailingStopBps: null,
+      breakMode: 'penalty' as const,
+      penaltyBps: 500,
+      autoSell: true,
+      slippageBps: 150,
+      minReceiveUsd: 0,
+    };
+    expect(() =>
+      toOnChainCreateLockParams({ ...base, ladder: [{ multiple: 2, percent: 60 }, { multiple: 3, percent: 50 }] }),
+    ).toThrow(/100%/);
+    expect(() =>
+      toOnChainCreateLockParams({ ...base, ladder: [{ multiple: 2, percent: 100 }], penaltyBps: 100 }),
+    ).toThrow(/5–10%/);
+    const ok = toOnChainCreateLockParams({ ...base, ladder: [{ multiple: 2, percent: 25 }, { multiple: 3, percent: 75 }] });
+    expect(ok.ladderStages).toHaveLength(2);
+    expect(ok.ladderStages[0].sellBps).toBe(2500);
+    expect(ok.ladderStages[1].sellBps).toBe(7500);
   });
 });
