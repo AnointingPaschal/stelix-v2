@@ -16,4 +16,10 @@ CONFIG_VERSION = "1"
 ADMIN_EMAIL = "ozoemenapaschal09@gmail.com"
 
 # Secrets (set via `wrangler pages secret put <NAME> --project-name stelix-admin` — never commit values):
-# ADMIN_PASSWORD_HASH (pbkdf2-sha256$iterations$salt$key), ADMIN_SESSION_SECRET, DEPLOYER_PRIVATE_KEY_TESTNET (testnet only), EXPLORER_API_KEY
+# ADMIN_PASSWORD_HASH (pbkdf2-sha256$iterations$salt$key), ADMIN_SESSION_SECRET (login — already set),
+# CONFIG_SIGNING_SECRET (HMAC key for signed app config; publish refuses without it),
+# KEEPER_WORKER_URL + KEEPER_RUN_KEY (keeper Worker base URL + run key; Run Now reports "keeper not live yet" until set),
+# EXPLORER_API_KEY (optional, for explorer source verification).
+# No deployer private key is ever stored in the admin: testnet deploys are
+# broadcast by the Foundry flow with a testnet-only key; the admin only
+# registers a verified address after eth_getCode + explorer checks.
