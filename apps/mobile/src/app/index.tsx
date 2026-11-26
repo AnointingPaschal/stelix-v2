@@ -20,9 +20,13 @@ const DOTS = [
 export default function Splash() {
   const fade = useRef(new Animated.Value(0)).current;
   const line = useRef(new Animated.Value(0)).current;
-  const { onboarded, unlocked } = useApp();
+  const { onboarded, unlocked, hydrated } = useApp();
 
   useEffect(() => {
+    // Wait for the stored-wallet check before deciding where to go —
+    // redirecting on the initial false/false values would send a returning
+    // user to /onboarding for a flash before the real state arrives.
+    if (!hydrated) return;
     Animated.timing(fade, { toValue: 1, duration: 700, useNativeDriver: true }).start();
     Animated.timing(line, { toValue: 1, duration: 1400, useNativeDriver: false }).start();
     const t = setTimeout(() => {
@@ -31,7 +35,7 @@ export default function Splash() {
       else router.replace('/(tabs)');
     }, 1600);
     return () => clearTimeout(t);
-  }, [fade, line, onboarded, unlocked]);
+  }, [fade, line, onboarded, unlocked, hydrated]);
 
   return (
     <View style={styles.root}>
