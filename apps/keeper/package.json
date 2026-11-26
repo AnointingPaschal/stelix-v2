@@ -1,0 +1,20 @@
+{
+  "name": "stelix-keeper",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Stelix 2.0 keeper — Cloudflare Worker on cron. Watches Bull Lock price targets (30-min TWAP, trailing stop, impact/min-receive guards) and calls StelixVault.executeTrigger.",
+  "type": "module",
+  "scripts": {
+    "dev": "wrangler dev",
+    "build": "tsc --noEmit && wrangler deploy --dry-run --outdir dist-dry-run",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run"
+  },
+  "dependencies": {},
+  "devDependencies": {
+    "@cloudflare/workers-types": "^4.20241112.0",
+    "typescript": "^5.6.3",
+    "vitest": "^2.1.8",
+    "wrangler": "^3.80.0"
+  }
+}
