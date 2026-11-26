@@ -1,7 +1,10 @@
 import { Tabs } from 'expo-router';
-import { ArrowLeftRight, Compass, History, Home, Lock } from 'lucide-react-native';
+import { ArrowLeftRight, Compass, History, Home, Settings as SettingsIcon } from 'lucide-react-native';
 import { COLORS } from '../../theme';
 
+/** v1 bottom tabs: Home / Swap / Discover / History / Settings.
+ *  Vault Hub stays a route (reachable from Discipline / lock links) but is
+ *  not a tab, as in v1. */
 export default function TabsLayout() {
   return (
     <Tabs
@@ -9,7 +12,7 @@ export default function TabsLayout() {
         headerShown: false,
         tabBarActiveTintColor: COLORS.navy,
         tabBarInactiveTintColor: COLORS.textMuted,
-        tabBarStyle: { backgroundColor: '#fff', borderTopColor: COLORS.border, height: 64, paddingBottom: 8 },
+        tabBarStyle: { backgroundColor: '#fff', borderTopColor: COLORS.border, height: 60, paddingBottom: 6 },
         tabBarLabelStyle: { fontSize: 11, fontWeight: '700' },
       }}
     >
@@ -28,13 +31,6 @@ export default function TabsLayout() {
         }}
       />
       <Tabs.Screen
-        name="vault"
-        options={{
-          title: 'Vault',
-          tabBarIcon: ({ color, size }) => <Lock size={size} color={color} />,
-        }}
-      />
-      <Tabs.Screen
         name="discover"
         options={{
           title: 'Discover',
@@ -48,6 +44,14 @@ export default function TabsLayout() {
           tabBarIcon: ({ color, size }) => <History size={size} color={color} />,
         }}
       />
+      <Tabs.Screen
+        name="settings"
+        options={{
+          title: 'Settings',
+          tabBarIcon: ({ color, size }) => <SettingsIcon size={size} color={color} />,
+        }}
+      />
+      <Tabs.Screen name="vault" options={{ href: null }} />
     </Tabs>
   );
 }
