@@ -10,13 +10,14 @@ import { useApp } from '../../store/AppContext';
 import { fmtNum, fmtPrice, fmtUsd } from '../../lib/format';
 import { minimumReceive, priceImpactPieces } from '../../lib/vault';
 import { fetchTokenMarketData } from '../../lib/prices';
-import { executeSwap, getSwapQuote, SwapExecutionNotWiredError } from '../../lib/swap';
+import { executeSwap, getSwapQuote, SwapExecutionUnavailableError, type SwapExecutionResult } from '../../lib/swap';
+import { getSignerForChain } from '../../lib/signer';
 import { VAULT_DEFAULTS } from '../../lib/chains';
 import { BottomSheet, Btn, Card, NetworkSheet, RiskNote } from '../../components/ui';
 import { TokenLogo } from '../../components/TokenLogo';
 
 export default function Swap() {
-  const { tokens, chain } = useApp();
+  const { tokens, chain, addTx, refreshBalances } = useApp();
   const spendable = tokens.filter((t) => !t.isSpam && t.balance > 0);
   const all = tokens.filter((t) => !t.isSpam);
   const [from, setFrom] = useState(spendable[0]?.symbol ?? chain.nativeSymbol);
@@ -26,6 +27,9 @@ export default function Swap() {
   const [slipOpen, setSlipOpen] = useState(false);
   const [netOpen, setNetOpen] = useState(false);
   const [pickSide, setPickSide] = useState<'from' | 'to' | null>(null);
+  const [password, setPassword] = useState('');
+  const [executing, setExecuting] = useState(false);
+  const [executed, setExecuted] = useState<SwapExecutionResult | null>(null);
 
   const fromToken = tokens.find((t) => t.symbol === from) ?? spendable[0];
   const toToken = tokens.find((t) => t.symbol === to);
@@ -84,10 +88,16 @@ export default function Swap() {
       );
       return;
     }
-    // Swap execution is NOT wired (see lib/swap.ts): this screen shows a
-    // live quote only. Never record a swap that was not executed.
+    if (chain.kind !== 'evm') {
+      Alert.alert(
+        'Swaps not available on Solana',
+        'Swap execution is wired for EVM chains only (PancakeSwap on BNB, 1inch elsewhere when the API key is set). No swap was executed.',
+      );
+      return;
+    }
+    // Live quote, then a REAL signed swap (see lib/swap.ts). The swap is
+    // recorded in History only after it is mined — never before.
     try {
-      if (!fromToken.address || !toToken.address) throw new SwapExecutionNotWiredError();
       const liveQuote = await getSwapQuote({
         chainId: chain.id,
         fromTokenAddress: fromToken.address,
@@ -97,10 +107,42 @@ export default function Swap() {
         toDecimals: toToken.decimals,
         slippageBps: Math.round((parseFloat(slippage) || 1.5) * 100),
       });
-      await executeSwap(liveQuote);
+      if (password.length < 8) {
+        Alert.alert(
+          'Session password required',
+          `Live quote: ${liveQuote.amountOutHuman} ${toToken.symbol} (min. receive ${liveQuote.minReceiveHuman} ${toToken.symbol} at ${slippage}% slippage). Enter your session password below, then tap Review Swap again to sign.`,
+        );
+        return;
+      }
+      setExecuting(true);
+      try {
+        const signer = await getSignerForChain(password, chain.id);
+        const res = await executeSwap(signer, liveQuote);
+        setExecuted(res);
+        setPassword('');
+        addTx({
+          id: res.hash,
+          hash: res.hash,
+          kind: 'swap',
+          token: toToken.symbol,
+          amount: liveQuote.amountOutHuman,
+          amountRaw: liveQuote.amountOut,
+          usd: quote.usd,
+          note: `Swapped ${fmtNum(amt)} ${fromToken.symbol} → ${fmtNum(liveQuote.amountOutHuman)} ${toToken.symbol} on ${chain.name}`,
+          at: Date.now(),
+          status: 'confirmed',
+          isSpam: false,
+          chainId: chain.id,
+          blockNumber: res.blockNumber,
+        });
+        await refreshBalances();
+        Alert.alert('Swap complete', `Received ${fmtNum(liveQuote.amountOutHuman)} ${toToken.symbol}.\nTx ${res.hash.slice(0, 12)}…${res.hash.slice(-6)}. Recorded in History.`);
+      } finally {
+        setExecuting(false);
+      }
     } catch (e) {
       Alert.alert(
-        'Swap execution is not wired yet',
+        e instanceof SwapExecutionUnavailableError ? 'Swap unavailable' : 'Swap failed',
         e instanceof Error ? e.message : 'No swap was executed.',
       );
     }
@@ -217,14 +259,39 @@ export default function Swap() {
         </>
       )}
 
+      <Text style={styles.label}>Session password (to sign)</Text>
+      <TextInput
+        style={styles.passwordInput}
+        secureTextEntry
+        placeholder="••••••••"
+        placeholderTextColor={COLORS.textMuted}
+        value={password}
+        onChangeText={setPassword}
+        autoCapitalize="none"
+        autoCorrect={false}
+      />
+      <Text style={styles.hint}>Your password decrypts the wallet on this device to sign once. A wrong password swaps nothing.</Text>
+      {executed ? (
+        <Text style={styles.sentLine}>
+          Swap mined — tx {executed.hash.slice(0, 12)}…{executed.hash.slice(-6)}
+          {executed.blockNumber !== null ? ` · block ${executed.blockNumber}` : ''}. Recorded in History.
+        </Text>
+      ) : null}
+
       <View style={styles.spacer} />
       <Btn
-        label={quote ? 'Review Swap' : 'Enter Amount'}
+        label={executing ? 'Swapping…' : quote ? 'Review Swap' : 'Enter Amount'}
         variant={quote ? 'primary' : 'secondary'}
         onPress={() => void execute()}
-        disabled={!quote}
+        disabled={!quote || executing}
       />
-      <Text style={styles.quoteOnly}>Quote only — swap execution is not wired yet, so no swap is placed from this screen.</Text>
+      <Text style={styles.execNote}>
+        {chain.id === 'arc'
+          ? 'Arc swaps are unavailable — no DEX router has been verified on Arc testnet yet.'
+          : chain.id === 'bnb'
+            ? 'Executes on PancakeSwap V2 with the quoted minimum-receive and a 20-minute deadline.'
+            : 'Executes via 1inch when the API key is set; otherwise the swap is refused, never faked.'}
+      </Text>
       <RiskNote />
 
       <NetworkSheet visible={netOpen} onClose={() => setNetOpen(false)} />
@@ -289,7 +356,19 @@ const styles = StyleSheet.create({
     paddingVertical: 6,
   },
   chainText: { color: COLORS.text, fontSize: 12, fontWeight: '700' },
-  quoteOnly: { color: COLORS.textMuted, fontSize: 11, lineHeight: 16, marginTop: 8, textAlign: 'center' },
+  execNote: { color: COLORS.textMuted, fontSize: 11, lineHeight: 16, marginTop: 8, textAlign: 'center' },
+  hint: { color: COLORS.textMuted, fontSize: 12, lineHeight: 17, marginTop: 6 },
+  label: { color: COLORS.textMuted, fontSize: 11, fontWeight: '700', letterSpacing: 1, marginTop: 14 },
+  passwordInput: {
+    borderColor: COLORS.border,
+    borderRadius: 12,
+    borderWidth: 1,
+    fontSize: 14,
+    marginTop: 6,
+    paddingHorizontal: 12,
+    paddingVertical: 10,
+  },
+  sentLine: { color: COLORS.mintDark, fontSize: 12, fontWeight: '700', lineHeight: 17, marginTop: 8 },
   emptyBody: { color: COLORS.textMuted, fontSize: 12, lineHeight: 17, marginTop: 4 },
   emptyCard: { marginTop: 16 },
   emptyTitle: { color: COLORS.text, fontSize: 14, fontWeight: '700' },
