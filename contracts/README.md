@@ -25,25 +25,42 @@ penalty) / Guardian (48h, **Phase 2 — not enabled yet**).
 contracts/
 ├── foundry.toml                  # Foundry project, solc 0.8.24, via_ir (see note)
 ├── README.md                     # this file
+├── DEPLOY_ARC_TESTNET.md         # Arc testnet runbook: confirmed addresses, deploy steps, D1 SQL
 ├── src/
 │   ├── StelixVault.sol           # the vault (no external deps by design)
+│   ├── adapters/
+│   │   ├── UniswapV3TwapFeed.sol     # IPriceFeed from a V3 pool TWAP (Arc has no V2 router / Chainlink feed)
+│   │   └── StelixV3RouterAdapter.sol # IDexRouter (V2-style) over the V3 SwapRouter
+│   ├── launchpad/
+│   │   ├── LaunchToken.sol           # minimal fixed-supply ERC-20
+│   │   ├── StelixTokenFactory.sol    # free token creation (gas only)
+│   │   └── StelixLaunchpad.sol       # free fixed-price sale, no fee; liquidity release pending DEX manager
+│   ├── vendor/
+│   │   ├── TickMath.sol          # vendored Uniswap getSqrtRatioAtTick (GPL-2.0)
+│   │   └── FullMath.sol          # vendored Uniswap mulDiv (MIT)
 │   ├── interfaces/
 │   │   ├── IERC20.sol            # minimal ERC-20 interface
-│   │   ├── IDexRouter.sol        # swapExactTokensForTokens / getAmountsOut
+│   │   ├── IDexRouter.sol        # swapExactTokensForTokens / getAmountsOut (getAmountsOut is non-view: V3 quoter)
 │   │   └── IPriceFeed.sol        # latestPrice / twapPrice (18-dec USD)
 │   └── mocks/
 │       ├── MockERC20.sol         # mintable test token / stablecoin
 │       ├── MockRouter.sol        # fixed-rate test DEX router (+ failing mode)
-│       └── MockPriceFeed.sol     # test-settable spot + TWAP prices
+│       ├── MockPriceFeed.sol     # test-settable spot + TWAP prices
+│       ├── MockV3Pool.sol        # test V3 pool with settable TWAP observations
+│       └── MockV3Router.sol      # test V3 SwapRouter + QuoterV2 (fixed rate)
 ├── script/
 │   ├── DeployStelixVault.s.sol   # forge deploy script (env-var config only)
-│   ├── deploy-arc-testnet.sh     # Arc testnet FIRST, then the others
+│   ├── DeployAdapters.s.sol      # deploy TWAP feed + V3 router adapter
+│   ├── DeployLaunchpad.s.sol     # deploy token factory + launchpad
+│   ├── deploy-arc-testnet.sh     # Arc testnet FIRST, then the others (runs all three)
 │   ├── deploy-bnb-testnet.sh
 │   ├── deploy-base-testnet.sh
 │   ├── deploy-eth-testnet.sh
 │   └── deploy-polygon-testnet.sh
 ├── test/
-│   └── StelixVault.t.sol         # 21 unit tests (see below)
+│   ├── StelixVault.t.sol         # 21 unit tests (see below)
+│   ├── Adapters.t.sol            # 11 tests: TickMath vectors, TWAP feed, V3 adapter, vault-on-V3 e2e
+│   └── Launchpad.t.sol           # 10 tests: factory, sale, success + failure flows
 └── solana/
     ├── Anchor.toml
     └── programs/stelix_vault/
@@ -90,6 +107,62 @@ contracts/
   in this VM** (no `cargo`/`anchor`), so the Anchor program is a labelled
   skeleton and has not been compiled — see "Still pending".
 
+## Arc testnet reality (verified 2026-11-26 — see DEPLOY_ARC_TESTNET.md)
+
+- **USDC confirmed:** `0x3600000000000000000000000000000000000000` (6 dec,
+  native gas + ERC-20, verified `FiatTokenProxy` on testnet.arcscan.app).
+- **No V2-style DEX router exists on Arc testnet.** The canonical V2
+  router address has no code there. What exists is **Uniswap V3 (Bulba)**:
+  SwapRouter `0xfA845604F52843a7b5cfA4030120c6238741F420` (verified),
+  factory `0xcD072e113277d1f5460Bf69568f649b26BD01EF9` (verified),
+  NonfungiblePositionManager `0xBe9ec79854e459F38E0B868A0c3429AAbf6784b2`.
+- **No Chainlink feed address confirmed on Arc testnet** (the Eco-docs
+  ETH/USD feed has no code there). The TWAP source is the V3 pools.
+- Therefore the vault deploys behind two adapters in `src/adapters/`:
+  `UniswapV3TwapFeed` (IPriceFeed from pool `observe()`, TickMath +
+  FullMath vendored from Uniswap v3-core) and `StelixV3RouterAdapter`
+  (IDexRouter over V3 `exactInputSingle`). Both are covered by
+  `test/Adapters.t.sol`, including a vault end-to-end test on the V3
+  stack with 6-decimal USDC.
+- **The vault assumed 18-decimal stablecoins — fixed 2026-11-26.** On
+  Arc (USDC 6 dec) every auto-sell would have reverted on
+  `MinReceiveNotMet`. The vault now reads the stablecoin's decimals at
+  lock creation and scales `expectedOut`. The constructor also now
+  requires a non-zero keeper (a zero keeper would have made triggers
+  uncallable forever).
+- **No deployment has happened yet:** the VM cannot reach
+  `rpc.testnet.arc.network` (egress proxy blocks it) and there is no
+  funded testnet deployer key in the workspace. Deploy from a machine
+  with RPC access — see `DEPLOY_ARC_TESTNET.md` (one command) — then
+  register the addresses in D1. The D1 `chains` row for Arc already
+  carries the confirmed USDC + V3 router addresses.
+
+## Launchpad (Arc testnet, free — gas only, no Stelix fee)
+
+`src/launchpad/`: `StelixTokenFactory` creates fixed-supply ERC-20s
+(name, symbol, supply, decimals); `StelixLaunchpad` runs fixed-price
+sales in USDC (create → contribute → finalize → claim / refund, seller
+withdraws raised minus the liquidity reserve). **Liquidity lock:**
+`releaseLiquidity` reverts until the owner sets a liquidity manager —
+the V3 router is confirmed but no launch-liquidity manager contract
+exists yet, so reserves stay locked in the launchpad rather than being
+sent anywhere. Covered by `test/Launchpad.t.sol` (10 tests).
+
+## Audit tooling (2026-11-26)
+
+- `forge test`: **42 passed, 0 failed** (21 vault + 11 adapters + 10 launchpad).
+- **Slither 0.11.6** (installed in a venv for this run): 71 findings
+  across the six production contracts, **no HIGH / exploitable issue**.
+  The `reentrancy-no-eth` flag on `executeTrigger` is a false positive
+  (`nonReentrant` + state updates precede the swap call). Two real
+  issues found by the review were fixed (stablecoin decimals, keeper
+  zero-check). The rest are informational / by-design (block.timestamp
+  for unlocks + cooling-off, vendored Uniswap math, naming). Slither is
+  NOT a substitute for an independent human audit — still required
+  before mainnet value.
+- Keeper (`apps/keeper`): wired to D1 + viem (see its README); 24 tests
+  passing, typecheck clean.
+
 ## Compile & test
 
 ```bash
@@ -100,7 +173,7 @@ forge test -vv
 ```
 
 Result in this VM (2026-11-26): `forge build` succeeds (solc 0.8.24);
-`forge test` — **21 passed, 0 failed**. Coverage includes: createLock
+`forge test` — **42 passed, 0 failed**. Coverage includes: createLock
 terms + bad-ladder + paused reverts; claim after maturity (revert before,
 owner-only); keeper-only trigger; trigger below target reverts; target
 auto-sell to USDT (1000 tokens @ $2 → 2000 USDT); autoSell-off unlocks
