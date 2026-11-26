@@ -45,7 +45,7 @@ export default function Receive() {
       <View style={styles.addrBox}>
         <Text style={styles.addr} selectable>{address || '—'}</Text>
       </View>
-      <Btn label={copied ? 'Copied ✓' : 'Copy Address'} onPress={copy} disabled={!address} />
+      <Btn label={copied ? 'Copied' : 'Copy Address'} onPress={copy} disabled={!address} />
 
       <Card style={styles.warn}>
         <Text style={styles.warnTitle}>Send only {chain.name} assets to this address</Text>
