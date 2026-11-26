@@ -132,6 +132,9 @@ export default function Discover() {
   }, [query]);
 
   useEffect(() => {
+    // Data fetch on tab / chain / search change — the same load-on-mount
+    // pattern used throughout this codebase (see token detail, vault).
+    // eslint-disable-next-line react-hooks/set-state-in-effect
     void load(tab, chainFilter, debouncedQuery);
   }, [tab, chainFilter, debouncedQuery, load]);
 
