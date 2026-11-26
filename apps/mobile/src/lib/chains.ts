@@ -1,5 +1,5 @@
 /**
- * Multichain registry — live data, no demo values.
+ * Multichain registry — live data, no placeholder values.
  *
  * Arc is the DEFAULT chain and is TESTNET-FIRST (chain id 5042002).
  * Verified against Arc docs / Circle docs (2026-11-26):
