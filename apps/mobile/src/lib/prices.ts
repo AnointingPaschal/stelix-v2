@@ -1,6 +1,6 @@
 /**
  * LIVE price / market-data layer — DexScreener + CoinGecko + GeckoTerminal.
- * NO demo data, NO hardcoded prices, NO invented values.
+ * NO placeholder data, NO hardcoded prices, NO invented values.
  *
  * Verified live from this VM on 2026-11-26 (curl):
  *   - DexScreener  GET https://api.dexscreener.com/latest/dex/tokens/<address>
@@ -16,13 +16,13 @@
  * public latest API has no OHLCV endpoint.
  *
  * Every price carries its source + timestamp. When a source is down the
- * value is null with source 'unavailable' — never a stale/demo number
+ * value is null with source 'unavailable' — never a stale or placeholder number
  * presented as live. EMA/RSI are computed from REAL candles only; with
  * too few candles they return null and the UI must show "—".
  */
 import { useEffect, useState } from 'react';
 import { getChain } from './chains';
-import { TIMEFRAME_CONFIG, type ChartTimeframe } from './chart';
+import { bucketMsFor, TIMEFRAME_CONFIG, type ChartTimeframe } from './chart';
 
 export type PriceSource = 'dexscreener' | 'coingecko' | 'geckoterminal' | 'unavailable';
 
@@ -291,40 +291,186 @@ export async function fetchTokenMarketData(
 
 /** OHLCV candles from GeckoTerminal for a pool. timeframe: 'day' | 'hour' | 'minute'.
  *  `aggregate` groups that many buckets (e.g. minute+5 = 5m candles).
- *  Returns [] when the pool/timeframe is unavailable — never invented candles. */
+ *  Returns [] when the pool/timeframe is unavailable — never invented candles.
+ *
+ *  TOKEN-AWARE — BNB price-scale bug, verified live 2026-11-26:
+ *  GeckoTerminal OHLCV is the USD price of the pool's BASE token
+ *  (meta.base), NOT a base/quote ratio. Proof: WKC's OHLCV is ~3.9e-8,
+ *  which is WKC's USD price ($0.0000000397) — not its WBNB price
+ *  (7.2e-11 BNB). USDT's OHLCV is ~$1.00, its USD price. For the
+ *  PancakeSwap WBNB/USDT pools GeckoTerminal defines USDT as base and
+ *  WBNB as quote, so the raw candles are USDT's ~$1 price while the
+ *  DexScreener header price is BNB's ~$553. Inverting that series
+ *  (1/1.00 = 1.00) CANNOT produce $552 — inversion is the wrong fix and
+ *  is deliberately NOT done here. Instead a series is only trusted when
+ *  meta.base IS the requested token (WKC/WBNB, base = WKC, works as-is;
+ *  GTAN/WBNB, base = GTAN, works as-is; USDT/WBNB, base = USDT, ~$1 is
+ *  correct for USDT). When no pool has the token as base — true for BNB,
+ *  whose top ~45 Gecko pools all list WBNB as quote — the CoinGecko
+ *  market_chart fallback (real USD history for majors) is used, and if
+ *  that is unavailable the caller gets baseMatches=false and must show
+ *  the price-mismatch state instead of a wrong-scale chart. */
+export interface OhlcvMeta {
+  baseAddress: string | null;
+  quoteAddress: string | null;
+  /** True when the returned candles price the requested token. False
+   *  means every pool tried had a different base token — the series
+   *  would be another token's price, so no candles are returned. */
+  baseMatches: boolean;
+}
+
+/** Pure parser for a GeckoTerminal OHLCV response body. Never inverts:
+ *  the series is the USD price of meta.base (see above). */
+export function parseOhlcv(
+  json: unknown,
+): { candles: Candle[]; baseAddress: string | null; quoteAddress: string | null } {
+  const meta = (json as { meta?: { base?: { address?: string }; quote?: { address?: string } } } | null)?.meta;
+  const baseAddress = typeof meta?.base?.address === 'string' ? meta.base.address : null;
+  const quoteAddress = typeof meta?.quote?.address === 'string' ? meta.quote.address : null;
+  const list: unknown[] = Array.isArray(
+    (json as { data?: { attributes?: { ohlcv_list?: unknown } } } | null)?.data?.attributes?.ohlcv_list,
+  )
+    ? ((json as { data: { attributes: { ohlcv_list: unknown[] } } }).data.attributes.ohlcv_list as unknown[])
+    : [];
+  const candles = list
+    .map((row) => {
+      const r = row as number[];
+      if (!Array.isArray(r) || r.length < 6) return null;
+      return {
+        time: r[0] * 1000,
+        open: r[1],
+        high: r[2],
+        low: r[3],
+        close: r[4],
+        volume: r[5],
+      } as Candle;
+    })
+    .filter((c): c is Candle => c !== null && [c.open, c.high, c.low, c.close].every(Number.isFinite));
+  return { candles, baseAddress, quoteAddress };
+}
+
+/** True when the last candle close is within `tolerance` (default 20%)
+ *  of the header/live price — the chart is on the same price scale. */
+export function candlesMatchPrice(candles: Candle[], headerPrice: number | null, tolerance = 0.2): boolean {
+  if (headerPrice === null || !Number.isFinite(headerPrice) || headerPrice <= 0) return false;
+  if (candles.length === 0) return false;
+  const last = candles[candles.length - 1].close;
+  if (!Number.isFinite(last) || last <= 0) return false;
+  return Math.abs(last - headerPrice) / headerPrice <= tolerance;
+}
+
+/** Bucket a CoinGecko market_chart price series ([timestampMs, usdPrice])
+ *  into OHLC candles of `bucketMs`. Pure — unit-tested. Volume is 0:
+ *  market_chart carries no volume per point, and inventing one would be
+ *  fake data. */
+export function bucketPricesToCandles(prices: [number, number][], bucketMs: number): Candle[] {
+  const buckets = new Map<number, Candle>();
+  for (const [ts, price] of prices) {
+    if (!Number.isFinite(ts) || !Number.isFinite(price) || price <= 0 || bucketMs <= 0) continue;
+    const start = Math.floor(ts / bucketMs) * bucketMs;
+    const b = buckets.get(start);
+    if (!b) {
+      buckets.set(start, { time: start, open: price, high: price, low: price, close: price, volume: 0 });
+    } else {
+      b.high = Math.max(b.high, price);
+      b.low = Math.min(b.low, price);
+      b.close = price;
+    }
+  }
+  return [...buckets.values()].sort((a, b) => a.time - b.time);
+}
+
+/** Days of CoinGecko market_chart history per chart timeframe. Free-tier
+ *  market_chart granularity is automatic: days=1 gives ~5-min points,
+ *  days=7 hourly, days>=30 daily. */
+function marketChartDays(tf: ChartTimeframe): number {
+  return tf === '5m' || tf === '15m' ? 1 : tf === '1h' || tf === '4h' ? 7 : 30;
+}
+
+/** Real USD history for a major (CoinGecko id) as candles. [] when the
+ *  feed is unavailable — never invented candles. */
+export async function fetchCoinGeckoCandles(coingeckoId: string, tf: ChartTimeframe): Promise<Candle[]> {
+  try {
+    const res = await fetchWithTimeout(
+      `https://api.coingecko.com/api/v3/coins/${encodeURIComponent(coingeckoId)}/market_chart?vs_currency=usd&days=${marketChartDays(tf)}`,
+    );
+    if (!res.ok) return [];
+    const json = await res.json();
+    const prices: unknown = json?.prices;
+    if (!Array.isArray(prices)) return [];
+    const pts = prices
+      .map((r) => (Array.isArray(r) ? [Number(r[0]), Number(r[1])] as [number, number] : null))
+      .filter((r): r is [number, number] => r !== null);
+    return bucketPricesToCandles(pts, bucketMsFor(tf));
+  } catch {
+    return [];
+  }
+}
+
+/** Pair addresses for a token, highest liquidity first (same ordering
+ *  as fetchDexScreenerToken's top-pair pick). Used as fallback candidates
+ *  when the top pair's Gecko base is not the requested token. */
+export async function fetchDexScreenerPairs(chainId: string, address: string): Promise<string[]> {
+  const chain = getChain(chainId);
+  try {
+    const res = await fetchWithTimeout(
+      `https://api.dexscreener.com/latest/dex/tokens/${encodeURIComponent(address)}`,
+    );
+    if (!res.ok) return [];
+    const json = await res.json();
+    const pairs: unknown[] = Array.isArray(json?.pairs) ? json.pairs : [];
+    const onChain = pairs.filter(
+      (p) => (p as { chainId?: string }).chainId === chain.dexScreenerChainId,
+    );
+    return [...onChain, ...pairs]
+      .sort(
+        (a, b) =>
+          Number((b as { liquidity?: { usd?: number } }).liquidity?.usd ?? 0) -
+          Number((a as { liquidity?: { usd?: number } }).liquidity?.usd ?? 0),
+      )
+      .map((p) => (p as { pairAddress?: string }).pairAddress ?? '')
+      .filter(Boolean);
+  } catch {
+    return [];
+  }
+}
+
 export async function fetchCandles(
   chainId: string,
   poolAddress: string,
   timeframe: 'day' | 'hour' | 'minute' = 'day',
   limit = 100,
   aggregate = 1,
+  tokenAddress?: string | null,
 ): Promise<Candle[]> {
+  return (await fetchCandlesWithMeta(chainId, poolAddress, timeframe, limit, aggregate, tokenAddress)).candles;
+}
+
+/** fetchCandles plus the pool's base/quote addresses and whether the
+ *  series prices the requested token. When `tokenAddress` is given and
+ *  meta.base is a different token, candles is [] and baseMatches is
+ *  false — the wrong-scale series is never returned as if correct. */
+export async function fetchCandlesWithMeta(
+  chainId: string,
+  poolAddress: string,
+  timeframe: 'day' | 'hour' | 'minute' = 'day',
+  limit = 100,
+  aggregate = 1,
+  tokenAddress?: string | null,
+): Promise<{ candles: Candle[]; baseAddress: string | null; quoteAddress: string | null; baseMatches: boolean }> {
   const chain = getChain(chainId);
+  const empty = { candles: [], baseAddress: null, quoteAddress: null, baseMatches: false };
   try {
     const res = await fetchWithTimeout(
       `https://api.geckoterminal.com/api/v2/networks/${encodeURIComponent(chain.geckoTerminalNetwork)}/pools/${encodeURIComponent(poolAddress)}/ohlcv/${timeframe}?aggregate=${aggregate}&limit=${limit}`,
     );
-    if (!res.ok) return [];
-    const json = await res.json();
-    const list: unknown[] = Array.isArray(json?.data?.attributes?.ohlcv_list)
-      ? json.data.attributes.ohlcv_list
-      : [];
-    return list
-      .map((row) => {
-        const r = row as number[];
-        if (!Array.isArray(r) || r.length < 6) return null;
-        return {
-          time: r[0] * 1000,
-          open: r[1],
-          high: r[2],
-          low: r[3],
-          close: r[4],
-          volume: r[5],
-        } as Candle;
-      })
-      .filter((c): c is Candle => c !== null && [c.open, c.high, c.low, c.close].every(Number.isFinite));
+    if (!res.ok) return empty;
+    const { candles, baseAddress, quoteAddress } = parseOhlcv(await res.json());
+    const baseMatches =
+      !tokenAddress || !baseAddress || baseAddress.toLowerCase() === tokenAddress.toLowerCase();
+    return { candles: baseMatches ? candles : [], baseAddress, quoteAddress, baseMatches };
   } catch {
-    return [];
+    return empty;
   }
 }
 
@@ -334,9 +480,67 @@ export async function fetchCandlesForTf(
   poolAddress: string,
   tf: ChartTimeframe,
   limit = 120,
+  tokenAddress?: string | null,
+  opts?: { candidatePairs?: string[]; coingeckoId?: string | null },
 ): Promise<Candle[]> {
+  return (await fetchCandlesForTfWithMeta(chainId, poolAddress, tf, limit, tokenAddress, opts)).candles;
+}
+
+/** fetchCandlesForTf plus OHLCV meta (see fetchCandlesWithMeta).
+ *  Tries the top pair, then each candidate pair, until one has the
+ *  requested token as its Gecko base; then the CoinGecko market_chart
+ *  fallback for majors (fixes BNB, whose pools all quote WBNB); then
+ *  baseMatches=false with no candles, so the UI shows the mismatch
+ *  state instead of a wrong-scale chart.
+ *
+ *  Pool tries are capped (MAX_CANDLE_POOL_TRIES): trying every pair for
+ *  a major like WBNB means dozens of sequential GeckoTerminal calls,
+ *  which exhausts the free-tier rate limit (30/min) and takes so long
+ *  the chart stays empty. The top pair + 5 candidates cover the liquid
+ *  pools; beyond that the CoinGecko fallback is the better source. */
+export const MAX_CANDLE_POOL_TRIES = 6;
+
+export async function fetchCandlesForTfWithMeta(
+  chainId: string,
+  poolAddress: string,
+  tf: ChartTimeframe,
+  limit = 120,
+  tokenAddress?: string | null,
+  opts?: { candidatePairs?: string[]; coingeckoId?: string | null },
+): Promise<{ candles: Candle[]; baseAddress: string | null; quoteAddress: string | null; baseMatches: boolean }> {
   const cfg = TIMEFRAME_CONFIG[tf];
-  return fetchCandles(chainId, poolAddress, cfg.granularity, limit, cfg.aggregate);
+  const tried = new Set<string>();
+  const pools = [poolAddress, ...(opts?.candidatePairs ?? [])]
+    .filter((p) => {
+      if (!p || tried.has(p.toLowerCase())) return false;
+      tried.add(p.toLowerCase());
+      return true;
+    })
+    .slice(0, MAX_CANDLE_POOL_TRIES);
+  let last: { candles: Candle[]; baseAddress: string | null; quoteAddress: string | null; baseMatches: boolean } = {
+    candles: [],
+    baseAddress: null,
+    quoteAddress: null,
+    baseMatches: false,
+  };
+  for (const pool of pools) {
+    last = await fetchCandlesWithMeta(chainId, pool, cfg.granularity, limit, cfg.aggregate, tokenAddress);
+    if (last.baseMatches && last.candles.length > 0) return last;
+    if (last.baseMatches && last.candles.length === 0) {
+      // Base is right but this pool has no candles for the timeframe —
+      // keep looking at other pools before giving up.
+      continue;
+    }
+    // Base is a different token: this pool can never price our token.
+    continue;
+  }
+  if (opts?.coingeckoId) {
+    const cg = await fetchCoinGeckoCandles(opts.coingeckoId, tf);
+    if (cg.length > 0) {
+      return { candles: cg, baseAddress: tokenAddress ?? null, quoteAddress: null, baseMatches: true };
+    }
+  }
+  return last;
 }
 
 /** Wrapped-native contract per chain — used so a native asset (BNB, ETH…)
