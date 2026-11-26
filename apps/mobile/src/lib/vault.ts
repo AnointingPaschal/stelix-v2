@@ -29,6 +29,7 @@ export const STELIX_VAULT_ABI = [
   'function createLock((address token, uint256 amount, uint256 unlockTime, uint256 entryPrice, (uint256 targetPrice, uint16 sellBps, bool sold)[] ladderStages, uint16 trailingStopBps, uint8 breakMode, uint16 penaltyBps, bool autoSell, address stablecoin, uint16 slippageBps, uint256 minReceivePerStage) params) returns (uint256 lockId)',
   'function claimMatured(uint256 lockId)',
   'function claimTriggeredStage(uint256 lockId, uint256 stageIndex)',
+  'function executeTrigger(uint256 lockId)',
   'function requestBreak(uint256 lockId)',
   'function executeBreak(uint256 lockId)',
   'function getLock(uint256 lockId) view returns ((address owner, address token, uint256 amountRemaining, uint256 amountTotal, uint256 entryPrice, uint256 unlockTime, (uint256 targetPrice, uint16 sellBps, bool sold)[] ladderStages, uint16 trailingStopBps, uint256 peakPrice, uint8 breakMode, uint16 penaltyBps, bool autoSell, address stablecoin, address router, uint16 slippageBps, uint256 minReceivePerStage, uint8 status, uint256 feeBps, address penaltyRecipient, uint256 breakRequestedAt))',
@@ -67,6 +68,7 @@ export interface ChainLock {
   slippageBps: number;
   minReceivePerStage: bigint;
   status: number; // 0 Active, 1 PartiallySold, 2 Completed, 3 Matured, 4 Broken
+  breakRequestedAt: bigint; // epoch seconds, 0 = not requested
   chainId: string;
 }
 
@@ -108,6 +110,7 @@ export function mapChainLockToBullLock(lock: ChainLock, tokenDecimals: number, t
     slippageBps: lock.slippageBps,
     minReceiveUsd: Number(ethers.formatUnits(lock.minReceivePerStage, 18)),
     status: CHAIN_LOCK_STATUSES[lock.status] ?? 'active',
+    breakRequestedAt: lock.breakRequestedAt > 0n ? Number(lock.breakRequestedAt) * 1000 : undefined,
     createdAt: 0, // on-chain locks carry no createdAt; use unlockTime/creation tx in the UI
     txHash: undefined,
   };
@@ -164,6 +167,7 @@ export async function getUserLocksOnChain(
       slippageBps: Number(raw.slippageBps),
       minReceivePerStage: raw.minReceivePerStage as bigint,
       status: Number(raw.status),
+      breakRequestedAt: raw.breakRequestedAt as bigint,
       chainId,
     });
   }
@@ -311,6 +315,35 @@ export async function executeBreakOnChain(signer: ethers.Signer, chainId: string
   return sendVaultTx(signer, chainId, 'executeBreak', [lockId]);
 }
 
+/**
+ * Keeper trigger — StelixVault.executeTrigger is `onlyKeeper`, so the
+ * user's wallet CANNOT call it: the contract reverts for anyone except
+ * the registered keeper. This function exists so the keeper service
+ * reuses the same ABI/call; the mobile UI never exposes it. When the
+ * keeper calls it, the contract checks the 30-minute TWAP against the
+ * next target (or the trailing stop) and auto-sells the due stage.
+ * Throws the not-deployed message when no vault is registered.
+ */
+export async function executeTriggerOnChain(
+  keeperSigner: ethers.Signer,
+  chainId: string,
+  lockId: number,
+): Promise<string> {
+  const vaultAddress = requireVaultAddress(chainId); // throws not-deployed
+  const vault = new ethers.Contract(vaultAddress, STELIX_VAULT_ABI, keeperSigner);
+  const tx = await (vault.executeTrigger as (id: number) => Promise<ethers.TransactionResponse>)(lockId);
+  const receipt = await tx.wait();
+  return receipt?.hash ?? tx.hash;
+}
+
+/** Parse an on-chain lock id of the form `onchain-<chainId>-<lockId>`
+ *  (see mapChainLockToBullLock). Returns null for local-only ids. */
+export function parseOnChainLockId(id: string): { chainId: string; lockId: number } | null {
+  const m = /^onchain-([a-z0-9]+)-(\d+)$/.exec(id);
+  if (!m) return null;
+  return { chainId: m[1], lockId: Number(m[2]) };
+}
+
 export type BreakMode = 'immutable' | 'penalty' | 'guardian';
 export type LockStatus =
   | 'active'
@@ -350,6 +383,9 @@ export interface BullLock {
   slippageBps: number; // default 150 = 1.5%
   minReceiveUsd: number; // minimum acceptable stablecoin for a stage
   status: LockStatus;
+  /** Epoch ms when an early break was requested on-chain (cooling-off
+   *  runs from here); undefined = no break requested. */
+  breakRequestedAt?: number;
   createdAt: number;
   txHash?: string;
 }
