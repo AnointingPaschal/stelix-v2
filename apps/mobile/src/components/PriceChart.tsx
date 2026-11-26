@@ -1,12 +1,16 @@
 /**
  * Advanced price chart — candlestick / line, EMA7 / EMA25, Bollinger
  * Bands, volume bars, MACD panel, RSI is shown by the parent from the
- * same candles. Tap a candle (or step with ‹ ›) to inspect its OHLCV.
- * Zoom (+/−), pan (‹ › / drag) and pinch (two-finger, where the platform
- * reports touches) change the visible window; "Latest" jumps back to the
- * live edge. The last candle updates live from the parent's poll — the
- * chart itself never invents candles: fewer than 2 candles renders a
- * "No chart data yet" state.
+ * same candles. Tap a candle to inspect its OHLCV (crosshair). Zoom
+ * (+/−) and pinch/drag change the visible window; "Latest" jumps back
+ * to the live edge. The last candle updates live from the parent's poll
+ * — the chart itself never invents candles: fewer than 2 candles renders
+ * a "No chart data yet" state.
+ *
+ * Deliberately clean: no pan arrows, no candle steppers — the parent
+ * owns timeframe/indicator controls and the chart never blanks itself:
+ * a new series loads over the old one (see the parent's keep-stale
+ * logic) and `updating` only shows a small badge, never a reload.
  *
  * Pure SVG (react-native-svg) — no heavy native chart dependency, web
  * export safe. Prices use the shared fmtPrice() (subscript notation for
@@ -14,9 +18,9 @@
  * the app — no local competing formatter.
  */
 import React, { Fragment, useEffect, useMemo, useRef, useState } from 'react';
-import { Animated, Pressable, StyleSheet, Text, View, type GestureResponderEvent } from 'react-native';
+import { Pressable, StyleSheet, Text, View, type GestureResponderEvent } from 'react-native';
 import Svg, { Circle, Line, Path, Rect, Text as SvgText } from 'react-native-svg';
-import { ChevronLeft, ChevronRight, ZoomIn, ZoomOut } from 'lucide-react-native';
+import { ZoomIn, ZoomOut } from 'lucide-react-native';
 import { COLORS } from '../theme';
 import { bollingerSeries, macdSeries } from '../lib/chart';
 import { fmtPrice } from '../lib/format';
@@ -35,6 +39,12 @@ export interface AdvancedChartProps {
   /** Changes when the series changes (timeframe / pair) — resets the window. */
   seriesKey: string;
   height?: number;
+  /** True while the first candle fetch for this series is still in flight:
+   *  render a loading skeleton, never "No chart data yet" as if final. */
+  loading?: boolean;
+  /** True while a refetch for a new series is in flight over the old
+   *  candles: shows a small "Updating…" badge, never a blank chart. */
+  updating?: boolean;
 }
 
 const W = 360;
@@ -82,27 +92,25 @@ export function PriceChart({
   showMacd = false,
   seriesKey,
   height = 220,
+  loading = false,
+  updating = false,
 }: AdvancedChartProps) {
   const [measuredW, setMeasuredW] = useState(W);
   const [visibleCount, setVisibleCount] = useState(60);
   const [endOffset, setEndOffset] = useState(0); // 0 = live edge
   const [selected, setSelected] = useState<number | null>(null); // index into visible
-  const fade = useRef(new Animated.Value(1)).current;
   const pinchRef = useRef<{ dist: number; count: number } | null>(null);
   const dragRef = useRef<{ x: number } | null>(null);
 
   // New series (timeframe / pair change): back to the live edge, full window.
+  // No fade, no opacity dip — the old series stays visible until the new
+  // one arrives (the parent keeps stale candles), so a timeframe tap
+  // never makes the chart disappear.
   useEffect(() => {
     setEndOffset(0);
     setSelected(null);
     setVisibleCount(60);
   }, [seriesKey]);
-
-  // Gentle fade when the series identity changes (animated transition).
-  useEffect(() => {
-    fade.setValue(0.55);
-    Animated.timing(fade, { toValue: 1, duration: 250, useNativeDriver: true }).start();
-  }, [seriesKey, fade]);
 
   const end = Math.max(0, Math.min(candles.length, candles.length - endOffset));
   const start = Math.max(0, end - visibleCount);
@@ -226,12 +234,16 @@ export function PriceChart({
     setVisibleCount((c) => Math.max(10, Math.min(candles.length, Math.round(c / factor))));
   }
 
-  function pan(dir: -1 | 1) {
-    // dir -1 = back in time (window moves older), +1 = toward the live edge.
-    setEndOffset((o) => Math.max(0, Math.min(candles.length - 1, o - dir * Math.max(1, Math.round(visibleCount / 4)))));
-  }
-
   if (visible.length < 2) {
+    if (loading) {
+      return (
+        <View style={[styles.empty, { height }]}>
+          <View style={[styles.skelBar, { width: '70%' }]} />
+          <View style={[styles.skelBar, { width: '45%' }]} />
+          <Text style={styles.emptySub}>Loading chart…</Text>
+        </View>
+      );
+    }
     return (
       <View style={[styles.empty, { height }]}>
         <Text style={styles.emptyText}>No chart data yet</Text>
@@ -245,10 +257,13 @@ export function PriceChart({
   const macdZeroY = macdH > 0 ? PAD + (1 - (0 - macdScale.min) / (macdScale.max - macdScale.min || 1)) * (macdH - PAD * 2) : 0;
 
   return (
-    <Animated.View style={{ opacity: fade }}>
+    <View>
       {/* Inspect readout — selected candle, else the live last candle. */}
       <View style={styles.readout}>
-        <Text style={styles.readoutTime}>{inspect ? fmtTime(inspect.time) : '—'}</Text>
+        <View style={styles.readoutTop}>
+          <Text style={styles.readoutTime}>{inspect ? fmtTime(inspect.time) : '—'}</Text>
+          {updating ? <Text style={styles.updating}>Updating…</Text> : null}
+        </View>
         {inspect ? (
           <Text style={styles.readoutValues}>
             O {fmtPrice(inspect.open)} · H {fmtPrice(inspect.high)} · L {fmtPrice(inspect.low)} · C{' '}
@@ -383,35 +398,13 @@ export function PriceChart({
         ) : null}
       </View>
 
-      {/* Zoom / pan / step controls */}
+      {/* Zoom controls only — pan is drag, inspect is tap. No arrows. */}
       <View style={styles.controls}>
         <Pressable onPress={() => zoom(1 / 1.6)} style={styles.ctlBtn} hitSlop={6} accessibilityLabel="Zoom out">
           <ZoomOut size={15} color={COLORS.text} />
         </Pressable>
         <Pressable onPress={() => zoom(1.6)} style={styles.ctlBtn} hitSlop={6} accessibilityLabel="Zoom in">
           <ZoomIn size={15} color={COLORS.text} />
-        </Pressable>
-        <Pressable onPress={() => pan(-1)} style={styles.ctlBtn} hitSlop={6} accessibilityLabel="Pan back">
-          <ChevronLeft size={15} color={COLORS.text} />
-        </Pressable>
-        <Pressable onPress={() => pan(1)} style={styles.ctlBtn} hitSlop={6} accessibilityLabel="Pan forward">
-          <ChevronRight size={15} color={COLORS.text} />
-        </Pressable>
-        <Pressable
-          onPress={() => setSelected((s) => (s === null ? visible.length - 2 : Math.max(0, s - 1)))}
-          style={styles.ctlBtn}
-          hitSlop={6}
-          accessibilityLabel="Previous candle"
-        >
-          <Text style={styles.ctlText}>‹ Candle</Text>
-        </Pressable>
-        <Pressable
-          onPress={() => setSelected((s) => (s === null ? visible.length - 1 : Math.min(visible.length - 1, s + 1)))}
-          style={styles.ctlBtn}
-          hitSlop={6}
-          accessibilityLabel="Next candle"
-        >
-          <Text style={styles.ctlText}>Candle ›</Text>
         </Pressable>
         {!atLiveEdge ? (
           <Pressable
@@ -425,9 +418,9 @@ export function PriceChart({
             <Text style={[styles.ctlText, styles.liveText]}>Latest</Text>
           </Pressable>
         ) : null}
-        <Text style={styles.hint}>Tap a candle · pinch to zoom</Text>
+        <Text style={styles.hint}>Tap a candle · pinch to zoom · drag to pan</Text>
       </View>
-    </Animated.View>
+    </View>
   );
 }
 
@@ -449,7 +442,10 @@ const styles = StyleSheet.create({
   hint: { color: COLORS.textMuted, fontSize: 11, marginLeft: 'auto' },
   liveBtn: { backgroundColor: COLORS.mintSoft, borderColor: COLORS.mintSoft },
   liveText: { color: COLORS.mintDark },
+  skelBar: { backgroundColor: COLORS.bgMuted, borderRadius: 6, height: 12, marginBottom: 8 },
   readout: { marginBottom: 6 },
   readoutTime: { color: COLORS.textMuted, fontSize: 11, fontWeight: '700' },
+  readoutTop: { alignItems: 'center', flexDirection: 'row', justifyContent: 'space-between' },
   readoutValues: { color: COLORS.text, fontSize: 11, fontWeight: '700', marginTop: 2 },
+  updating: { color: COLORS.amber, fontSize: 11, fontWeight: '700' },
 });
