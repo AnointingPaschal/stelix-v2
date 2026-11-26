@@ -1,5 +1,26 @@
 /** Wallet password change — decrypt with old, re-encrypt under new. */
-import { changePassword, createWallet, exportSecret, unlockWallet, wipeWallet } from '../wallet';
+import { changePassword, createWallet, exportSecret, getWalletMeta, unlockWallet, wipeWallet } from '../wallet';
+
+describe('createWallet', () => {
+  beforeEach(async () => {
+    await wipeWallet();
+  });
+
+  it('creates a real 12-word wallet, stores the name, and unlocks with it', async () => {
+    const { mnemonic, address } = await createWallet('test-password-123', 'Savings');
+    expect(mnemonic.split(' ').length).toBe(12);
+    expect(address).toMatch(/^0x[0-9a-fA-F]{40}$/);
+    const meta = await getWalletMeta();
+    expect(meta?.address).toBe(address);
+    expect(meta?.name).toBe('Savings');
+    const unlocked = await unlockWallet('test-password-123');
+    expect(unlocked?.address).toBe(address);
+  });
+
+  it('rejects a password shorter than 8 characters', async () => {
+    await expect(createWallet('short')).rejects.toThrow(/at least 8/);
+  });
+});
 
 describe('changePassword', () => {
   beforeEach(async () => {
