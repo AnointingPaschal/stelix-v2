@@ -2,7 +2,7 @@ import { useEffect, useState } from 'react'
 import { NavLink, Outlet, useLocation, useNavigate } from 'react-router-dom'
 import {
   Activity, ChevronsLeft, ChevronsRight, Coins, LayoutDashboard, Link2, LogOut,
-  Megaphone, Menu, Percent, Code2, Search, Settings, ShieldCheck, X,
+  Megaphone, Menu, Percent, Code2, Rocket, ScrollText, Search, Settings, ShieldCheck, X,
 } from 'lucide-react'
 import type { LucideIcon } from 'lucide-react'
 import { api } from '../lib/api'
@@ -10,6 +10,7 @@ import { api } from '../lib/api'
 const links: { to: string; label: string; icon: LucideIcon }[] = [
   { to: '/dashboard', label: 'Dashboard', icon: LayoutDashboard },
   { to: '/studio', label: 'Contract Studio', icon: Code2 },
+  { to: '/launchpad', label: 'Launchpad Manager', icon: Rocket },
   { to: '/chains', label: 'Chain Manager', icon: Link2 },
   { to: '/tokens', label: 'Token / DEX Registry', icon: Coins },
   { to: '/keeper', label: 'Keeper Monitor', icon: Activity },
@@ -17,7 +18,8 @@ const links: { to: string; label: string; icon: LucideIcon }[] = [
   { to: '/announcements', label: 'Announcements', icon: Megaphone },
   { to: '/config', label: 'App Config and Releases', icon: Settings },
   { to: '/support', label: 'Support Lookup', icon: Search },
-  { to: '/audit', label: 'Audit Log and Settings', icon: ShieldCheck },
+  { to: '/contract-audit', label: 'Contract Audit', icon: ShieldCheck },
+  { to: '/audit', label: 'Audit Log and Settings', icon: ScrollText },
 ]
 
 // Bottom nav: the five most-used sections on a phone.
@@ -26,7 +28,7 @@ const bottomLinks = [
   { to: '/studio', label: 'Studio', icon: Code2 },
   { to: '/chains', label: 'Chains', icon: Link2 },
   { to: '/keeper', label: 'Keeper', icon: Activity },
-  { to: '/audit', label: 'Audit', icon: ShieldCheck },
+  { to: '/contract-audit', label: 'Audit', icon: ShieldCheck },
 ]
 
 function NavItems({ onNavigate }: { onNavigate?: () => void }) {
