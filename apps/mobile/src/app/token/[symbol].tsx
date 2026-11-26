@@ -1,37 +1,53 @@
-/** Screen 7 — Token Detail (v1): header with price + 24h pill,
- *  Balance / Value / Locked cards, chart card (5m/15m/1h/4h/1d, EMA7 blue /
- *  EMA25 orange / Vol / RSI pills, RSI(14) strip), Safety Score, navy
- *  Create Discipline card (Bull Lock: date OR price target, auto-sell to the
- *  chain's exit stablecoin, profit ladder, trailing stop, no-early-break),
- *  Contract Info / Orderbook tabs, Price Performance, Market Data, Trading
- *  Activity, Your Holdings, Contract. Everything is LIVE: the holding comes
- *  from the store, the price from useLivePrice, market data + candles from
- *  DexScreener/GeckoTerminal. Anything unavailable shows "—", never an
- *  invented value. */
-import { useEffect, useMemo, useState } from 'react';
-import { Alert, Pressable, ScrollView, StyleSheet, Switch, Text, TextInput, View } from 'react-native';
+/** Screen 7 — Token Detail (v2): real logo header with live subscript
+ *  price + 24h pill, Balance / Value / Locked cards, ADVANCED chart card
+ *  (candlestick / line switch, 5m/15m/1h/4h/1d, EMA7 / EMA25, Bollinger,
+ *  volume, MACD, RSI(14), tap-to-inspect OHLCV, pinch/zoom — live-polling
+ *  every 8s so the last candle and the price header move without a page
+ *  refresh, with a Live pulse + last-updated time), compact Safety Score
+ *  card (circular gauge + icon chips, GoPlus honeypot / mint / holders
+ *  where the API has data, honest "No data" otherwise), navy Create
+ *  Discipline card (Bull Lock), Contract Info / Orderbook tabs, Price
+ *  Performance, Market Data, Trading Activity, Your Holdings, Contract.
+ *
+ *  Every token in My Assets opens this page in full — default (BNB,
+ *  WBNB, USDT, WKC, GTAN) and imported — because the route resolves a
+ *  symbol OR a contract address (see lib/tokenResolve) and native assets
+ *  resolve market data + candles through their wrapped twin. Anything
+ *  unavailable shows "—" / "No data", never an invented value. */
+import { useEffect, useMemo, useRef, useState } from 'react';
+import { Alert, Animated, Pressable, ScrollView, StyleSheet, Switch, Text, TextInput, View } from 'react-native';
 import { router, useLocalSearchParams } from 'expo-router';
 import * as Clipboard from 'expo-clipboard';
-import { Bell, ChevronLeft, Lock, Moon, RefreshCw, Star } from 'lucide-react-native';
+import { Bell, ChevronLeft, Lock, RefreshCw, Star } from 'lucide-react-native';
 import { COLORS } from '../../theme';
 import { useApp } from '../../store/AppContext';
 import {
+  COINGECKO_IDS_BY_SYMBOL,
   computeSafetyScore,
-  fetchCandles,
+  fetchCandlesForTf,
+  fetchCoinGeckoPrice,
+  fetchDexScreenerToken,
+  fetchGoPlusSecurity,
   fetchTokenMarketData,
   indicatorsFromCandles,
-  useLivePrice,
+  wrappedNativeAddress,
   type Candle,
+  type GoPlusSecurity,
+  type PriceSource,
   type TokenMarketData,
 } from '../../lib/prices';
+import { bucketMsFor, lastMacd, mergeLivePrice, type ChartTimeframe } from '../../lib/chart';
+import { resolveTokenRef } from '../../lib/tokenResolve';
 import { getChain } from '../../lib/chains';
 import { fmtDate, fmtNum, fmtPct, fmtPrice, fmtUsd } from '../../lib/format';
-import { Btn, Card, Chip, EmptyState, ProgressBar, RiskNote, SectionTitle } from '../../components/ui';
-import { PriceChart } from '../../components/PriceChart';
+import { Btn, Card, Chip, EmptyState, RiskNote, SectionTitle } from '../../components/ui';
+import { PriceChart, type ChartType } from '../../components/PriceChart';
+import { SafetyScoreCard } from '../../components/SafetyScoreCard';
 import { TokenLogo } from '../../components/TokenLogo';
 
-type Tf = '5m' | '15m' | '1h' | '4h' | '1d';
-const TFS: Tf[] = ['5m', '15m', '1h', '4h', '1d'];
+const TFS: ChartTimeframe[] = ['5m', '15m', '1h', '4h', '1d'];
+const LIVE_POLL_MS = 8_000;
+const CANDLE_REFRESH_MS = 60_000;
 const DURATIONS = [
   { label: '1 Month', days: 30 },
   { label: '5 Months', days: 150 },
@@ -43,62 +59,171 @@ const TARGETS = [2, 3, 5, 10];
 const priceText = (p: number | null) => (p === null ? '—' : fmtPrice(p));
 const pctText = (v: number | null) => (v === null ? '—' : fmtPct(v));
 
+type LiveState = 'live' | 'stale' | 'unavailable';
+
 export default function TokenDetail() {
-  const { symbol, address: addressParam, chainId: chainIdParam } = useLocalSearchParams<{
+  const { symbol: rawSymbol, address: addressParam, chainId: chainIdParam } = useLocalSearchParams<{
     symbol: string;
     address?: string;
     chainId?: string;
   }>();
   const { tokens, locks, chain: activeChain } = useApp();
-  const sym = symbol ?? '';
-  const storeToken = tokens.find((t) => t.symbol.toLowerCase() === sym.toLowerCase());
-  const chainId = storeToken?.chainId ?? chainIdParam ?? activeChain.id;
-  const address = storeToken?.address || addressParam || '';
-  const live = useLivePrice(sym, {
-    chainId,
-    address: address || undefined,
-    coingeckoId: storeToken?.coingeckoId,
-  });
+  const ref = useMemo(
+    () =>
+      resolveTokenRef(
+        { symbol: rawSymbol, address: addressParam, chainId: chainIdParam },
+        tokens,
+        activeChain.id,
+      ),
+    [rawSymbol, addressParam, chainIdParam, tokens, activeChain.id],
+  );
+  const sym = ref.symbol;
+  const storeToken = ref.storeToken;
+  const chainId = ref.chainId;
+  const address = ref.address;
+  // Native assets have no contract address: market data + candles come
+  // from the wrapped twin (WBNB for BNB, …) — same price, real pair.
+  const marketAddress = address || wrappedNativeAddress(chainId) || '';
+  const coingeckoId = storeToken?.coingeckoId ?? COINGECKO_IDS_BY_SYMBOL[sym];
 
-  // Live market data (DexScreener, GeckoTerminal fallback) for the token's
-  // contract address. Native assets have no contract address — market
-  // data stays null and the page shows "—" for those rows.
+  // --- Live price tick (8s poll) -------------------------------------------
+  const [tick, setTick] = useState<{ price: number | null; change24h: number | null; source: PriceSource; updatedAt: number } | null>(null);
+  const [liveState, setLiveState] = useState<LiveState>('stale');
+  const pulse = useRef(new Animated.Value(1)).current;
+
+  useEffect(() => {
+    if (liveState !== 'live') return;
+    const loop = Animated.loop(
+      Animated.sequence([
+        Animated.timing(pulse, { toValue: 0.35, duration: 700, useNativeDriver: true }),
+        Animated.timing(pulse, { toValue: 1, duration: 700, useNativeDriver: true }),
+      ]),
+    );
+    loop.start();
+    return () => loop.stop();
+  }, [liveState, pulse]);
+
+  // --- Live market data (DexScreener, GeckoTerminal fallback) ---------------
   const [market, setMarket] = useState<TokenMarketData | null>(null);
   useEffect(() => {
     let cancelled = false;
     setMarket(null);
-    if (!address) return;
-    void fetchTokenMarketData(chainId, address).then((d) => {
+    if (!marketAddress) return;
+    void fetchTokenMarketData(chainId, marketAddress).then((d) => {
       if (!cancelled) setMarket(d);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [marketAddress, chainId]);
+
+  // --- GoPlus security (honeypot / mint / holders) — EVM contracts only ---
+  const [security, setSecurity] = useState<GoPlusSecurity | null>(null);
+  useEffect(() => {
+    let cancelled = false;
+    setSecurity(null);
+    if (!address) return;
+    void fetchGoPlusSecurity(chainId, address).then((s) => {
+      if (!cancelled) setSecurity(s);
     });
     return () => {
       cancelled = true;
     };
   }, [address, chainId]);
 
-  // Real candles for the chart + indicators, from the token's pair.
+  // --- Real candles for the chart + indicators ------------------------------
+  const [tf, setTf] = useState<ChartTimeframe>('15m');
   const [candles, setCandles] = useState<Candle[]>([]);
+  const [candlesStale, setCandlesStale] = useState(false);
+  const pairAddress = market?.pairAddress ?? null;
+
   useEffect(() => {
     let cancelled = false;
     setCandles([]);
-    if (!market?.pairAddress) return;
-    void fetchCandles(chainId, market.pairAddress, 'day', 100).then((c) => {
-      if (!cancelled) setCandles(c);
+    setCandlesStale(false);
+    if (!pairAddress) return;
+    void fetchCandlesForTf(chainId, pairAddress, tf, 120).then((c) => {
+      if (!cancelled) {
+        setCandles(c);
+        setCandlesStale(c.length === 0);
+      }
     });
     return () => {
       cancelled = true;
     };
-  }, [market?.pairAddress, chainId]);
+  }, [pairAddress, chainId, tf]);
+
+  // --- Live poll: latest price every 8s merges into the last candle --------
+  useEffect(() => {
+    let cancelled = false;
+    const bucketMs = bucketMsFor(tf);
+    const poll = async () => {
+      let price: number | null = null;
+      let change24h: number | null = null;
+      let source: PriceSource = 'unavailable';
+      if (marketAddress) {
+        const ds = await fetchDexScreenerToken(chainId, marketAddress);
+        if (ds?.priceUsd) {
+          price = ds.priceUsd;
+          change24h = ds.change24h;
+          source = 'dexscreener';
+        }
+      }
+      if (price === null && coingeckoId) {
+        const cg = await fetchCoinGeckoPrice(coingeckoId);
+        if (cg.price !== null) {
+          price = cg.price;
+          change24h = cg.change24h;
+          source = 'coingecko';
+        }
+      }
+      if (cancelled) return;
+      if (price !== null) {
+        setTick({ price, change24h, source, updatedAt: Date.now() });
+        setLiveState('live');
+        // Update the live candle in place — no refresh, no invented history.
+        setCandles((prev) => mergeLivePrice(prev, price as number, bucketMs));
+      } else {
+        setLiveState((prev) => (prev === 'live' ? 'stale' : 'unavailable'));
+      }
+    };
+    void poll();
+    const t = setInterval(() => void poll(), LIVE_POLL_MS);
+    // Full candle refetch every minute, so missed buckets still arrive.
+    const refresh = setInterval(() => {
+      if (!pairAddress || cancelled) return;
+      void fetchCandlesForTf(chainId, pairAddress, tf, 120).then((c) => {
+        if (!cancelled && c.length > 0) setCandles(c);
+      });
+    }, CANDLE_REFRESH_MS);
+    return () => {
+      cancelled = true;
+      clearInterval(t);
+      clearInterval(refresh);
+    };
+  }, [marketAddress, chainId, coingeckoId, pairAddress, tf]);
 
   const closes = useMemo(() => candles.map((c) => c.close), [candles]);
   const indicators = useMemo(() => indicatorsFromCandles(candles), [candles]);
   const rsi = indicators.rsi14;
+  const macd = useMemo(() => lastMacd(closes), [closes]);
 
-  const price = live.price ?? market?.priceUsd ?? storeToken?.priceUsd ?? null;
-  const change24h = live.change24h ?? market?.change24h ?? null;
+  const price = tick?.price ?? market?.priceUsd ?? storeToken?.priceUsd ?? null;
+  const change24h = tick?.change24h ?? market?.change24h ?? null;
   const change1h = market?.change1h ?? null;
   const change7d = market?.change7d ?? null; // DexScreener latest API does not return 7d change
-  const safety = useMemo(() => (market ? computeSafetyScore(market) : null), [market]);
+  const safety = useMemo(
+    () =>
+      market
+        ? computeSafetyScore({
+            ...market,
+            honeypot: security?.honeypot ?? undefined,
+            mintAuthorityRenounced: security?.mintAuthorityRenounced ?? undefined,
+            top10SharePct: security?.top10SharePct ?? undefined,
+          })
+        : null,
+    [market, security],
+  );
   const balance = storeToken?.balance ?? 0;
   const locked = storeToken?.locked ?? 0;
   const name = storeToken?.name ?? market?.name ?? sym;
@@ -110,8 +235,12 @@ export default function TokenDetail() {
   );
   const tokenChain = getChain(chainId);
 
-  const [tf, setTf] = useState<Tf>('15m');
-  const [showIndicators, setShowIndicators] = useState(true);
+  const [chartType, setChartType] = useState<ChartType>('candles');
+  const [showEma, setShowEma] = useState(true);
+  const [showBb, setShowBb] = useState(false);
+  const [showMacd, setShowMacd] = useState(false);
+  const [showVol, setShowVol] = useState(true);
+  const [showRsi, setShowRsi] = useState(true);
   const [tab, setTab] = useState<'contract' | 'orderbook'>('contract');
   const [watched, setWatched] = useState(false);
   const [alertOn, setAlertOn] = useState(false);
@@ -161,7 +290,7 @@ export default function TokenDetail() {
     });
   }
 
-  if (!storeToken && !addressParam) {
+  if (!ref.found) {
     return (
       <View style={styles.missing}>
         <Text style={styles.title}>Token not found</Text>
@@ -170,6 +299,14 @@ export default function TokenDetail() {
       </View>
     );
   }
+
+  const liveDotColor = liveState === 'live' ? COLORS.mint : liveState === 'stale' ? COLORS.amber : COLORS.red;
+  const liveLabel =
+    liveState === 'live'
+      ? `Live · updated ${tick ? new Date(tick.updatedAt).toLocaleTimeString('en-GB') : '—'}`
+      : liveState === 'stale'
+        ? 'Live data delayed — showing last known price'
+        : 'Live data unavailable — showing last known price';
 
   return (
     <ScrollView style={styles.root} contentContainerStyle={styles.inner}>
@@ -180,15 +317,27 @@ export default function TokenDetail() {
         <View style={styles.headToken}>
           <TokenLogo chainId={chainId} address={address} symbol={sym} size={36} logoUrl={storeToken?.logoUrl} />
           <View>
-            <Text style={styles.title}>{sym}</Text>
+            <Text style={styles.title}>{sym || 'Token'}</Text>
             <Text style={styles.sub}>{name}</Text>
           </View>
         </View>
         <View style={styles.headRight}>
-          <Text style={styles.price}>{priceText(price)}</Text>
+          <View style={styles.priceRow}>
+            {liveState === 'live' ? (
+              <Animated.View style={[styles.liveDot, { backgroundColor: liveDotColor, opacity: pulse }]} />
+            ) : (
+              <View style={[styles.liveDot, { backgroundColor: liveDotColor }]} />
+            )}
+            <Text style={styles.price}>{priceText(price)}</Text>
+          </View>
           <Chip label={pctText(change24h)} tone={change24h === null ? 'muted' : up ? 'mint' : 'red'} />
         </View>
-        <Pressable onPress={() => Alert.alert('Live prices', 'Prices refresh automatically every minute.')} hitSlop={8}>
+        <Pressable
+          onPress={() =>
+            Alert.alert('Live prices', `Prices update automatically every ${LIVE_POLL_MS / 1000} seconds — no refresh needed.`)
+          }
+          hitSlop={8}
+        >
           <RefreshCw size={18} color={COLORS.text} />
         </Pressable>
       </View>
@@ -213,8 +362,13 @@ export default function TokenDetail() {
 
       <Card style={styles.chartCard}>
         <View style={styles.chartHead}>
-          <View style={styles.moonBtn}>
-            <Moon size={16} color={COLORS.text} />
+          <View style={styles.typeSeg}>
+            <Pressable onPress={() => setChartType('candles')} style={[styles.segBtn, chartType === 'candles' && styles.segBtnOn]}>
+              <Text style={[styles.segText, chartType === 'candles' && styles.segTextOn]}>Candles</Text>
+            </Pressable>
+            <Pressable onPress={() => setChartType('line')} style={[styles.segBtn, chartType === 'line' && styles.segBtnOn]}>
+              <Text style={[styles.segText, chartType === 'line' && styles.segTextOn]}>Line</Text>
+            </Pressable>
           </View>
           <View style={styles.tfs}>
             {TFS.map((t) => (
@@ -223,62 +377,58 @@ export default function TokenDetail() {
               </Pressable>
             ))}
           </View>
-          <Pressable style={styles.indBtn} onPress={() => setShowIndicators((v) => !v)}>
-            <Text style={styles.indText}>Indicators</Text>
-          </Pressable>
         </View>
-        {showIndicators && (
-          <View style={styles.pills}>
-            <Pill color={COLORS.blue} label={`EMA7 ${indicators.ema7 === null ? '—' : fmtPrice(indicators.ema7)}`} />
-            <Pill color={COLORS.amber} label={`EMA25 ${indicators.ema25 === null ? '—' : fmtPrice(indicators.ema25)}`} />
-            <Pill color={COLORS.textMuted} label="Vol" />
-            <Pill color={COLORS.mint} label="RSI" />
+
+        <View style={styles.pills}>
+          <TogglePill label="EMA" on={showEma} onPress={() => setShowEma((v) => !v)} color={COLORS.blue} />
+          <TogglePill label="BB" on={showBb} onPress={() => setShowBb((v) => !v)} color={COLORS.blue} />
+          <TogglePill label="MACD" on={showMacd} onPress={() => setShowMacd((v) => !v)} color={COLORS.amber} />
+          <TogglePill label="Vol" on={showVol} onPress={() => setShowVol((v) => !v)} color={COLORS.textMuted} />
+          <TogglePill label="RSI" on={showRsi} onPress={() => setShowRsi((v) => !v)} color={COLORS.mint} />
+        </View>
+        <View style={styles.indValues}>
+          <Text style={styles.indValue}>EMA7 {indicators.ema7 === null ? '—' : fmtPrice(indicators.ema7)}</Text>
+          <Text style={styles.indValue}>EMA25 {indicators.ema25 === null ? '—' : fmtPrice(indicators.ema25)}</Text>
+          {showMacd ? (
+            <Text style={styles.indValue}>
+              MACD {macd.macd === null ? '—' : fmtPrice(macd.macd)} · Sig {macd.signal === null ? '—' : fmtPrice(macd.signal)}
+            </Text>
+          ) : null}
+        </View>
+
+        <PriceChart
+          candles={candles}
+          chartType={chartType}
+          showEma7={showEma}
+          showEma25={showEma}
+          showBollinger={showBb}
+          showVolume={showVol}
+          showMacd={showMacd}
+          seriesKey={`${chainId}:${pairAddress ?? 'none'}:${tf}`}
+          height={showMacd ? 250 : 210}
+        />
+
+        {showRsi ? (
+          <View style={styles.rsiRow}>
+            <Text style={styles.rsiLabel}>RSI(14)</Text>
+            <Text style={styles.rsiValue}>
+              {rsi === null ? '—' : `${rsi.toFixed(0)} — ${rsi > 70 ? 'Overbought' : rsi < 30 ? 'Oversold' : 'Neutral'}`}
+            </Text>
           </View>
-        )}
-        <PriceChart series={closes} showEma={showIndicators} />
-        <View style={styles.rsiRow}>
-          <Text style={styles.rsiLabel}>RSI(14)</Text>
-          <Text style={styles.rsiValue}>
-            {rsi === null ? '—' : `${rsi.toFixed(0)} — ${rsi > 70 ? 'Overbought' : rsi < 30 ? 'Oversold' : 'Neutral'}`}
-          </Text>
-        </View>
+        ) : null}
         <View style={styles.chartFoot}>
           <Text style={styles.footPrice}>{priceText(price)}</Text>
           <Chip label={pctText(change24h)} tone={change24h === null ? 'muted' : up ? 'mint' : 'red'} />
-          <Text style={styles.zoom}>Pinch to zoom</Text>
         </View>
-        <Text style={styles.liveNote}>
-          {live.source === 'unavailable' ? 'Price may be delayed — live feed unavailable right now' : `Live price · ${live.source}`}
-        </Text>
+        <Text style={[styles.liveNote, liveState !== 'live' && styles.liveNoteWarn]}>{liveLabel}</Text>
+        {candlesStale ? (
+          <Text style={styles.liveNote}>No candles from the pair feed yet — the chart will appear once candles arrive.</Text>
+        ) : null}
       </Card>
 
       <SectionTitle title="Safety Score" />
       <Card>
-        {safety === null || safety.score === null ? (
-          <>
-            <Text style={styles.safetyNum}>—</Text>
-            <Text style={styles.safetyNote}>{safety?.label ?? 'Insufficient data'} — safety inputs are unavailable for this token right now.</Text>
-          </>
-        ) : (
-          <>
-            <View style={styles.safetyTop}>
-              <Text style={styles.safetyNum}>{safety.score}</Text>
-              <View style={styles.safetyRight}>
-                <Chip
-                  label={safety.label}
-                  tone={safety.score >= 80 ? 'mint' : safety.score >= 50 ? 'amber' : 'red'}
-                />
-                <ProgressBar value={safety.score / 100} />
-              </View>
-            </View>
-            {safety.inputs.map((input) => (
-              <Text key={input.name} style={styles.reason}>
-                • {input.name}: {input.value}
-              </Text>
-            ))}
-          </>
-        )}
-        <Text style={styles.safetyNote}>Scores are estimates from on-chain signals — not a guarantee.</Text>
+        <SafetyScoreCard safety={safety} holderCount={security?.holderCount ?? null} />
       </Card>
 
       <Card dark style={styles.disciplineCard}>
@@ -476,12 +626,12 @@ export default function TokenDetail() {
   );
 }
 
-function Pill({ color, label }: { color: string; label: string }) {
+function TogglePill({ label, on, onPress, color }: { label: string; on: boolean; onPress: () => void; color: string }) {
   return (
-    <View style={styles.pill}>
-      <View style={[styles.pillDot, { backgroundColor: color }]} />
-      <Text style={styles.pillText}>{label}</Text>
-    </View>
+    <Pressable onPress={onPress} style={[styles.pill, on && styles.pillOn]}>
+      <View style={[styles.pillDot, { backgroundColor: on ? color : COLORS.border }]} />
+      <Text style={[styles.pillText, !on && styles.pillTextOff]}>{label}</Text>
+    </Pressable>
   );
 }
 
@@ -557,21 +707,14 @@ const styles = StyleSheet.create({
   iconBtn: { alignItems: 'center', flexDirection: 'row', gap: 6 },
   iconLabel: { color: COLORS.textMuted, fontSize: 12, fontWeight: '700' },
   iconRow: { flexDirection: 'row', gap: 20, justifyContent: 'center', marginTop: 14 },
-  indBtn: { borderColor: COLORS.border, borderRadius: 999, borderWidth: 1, paddingHorizontal: 10, paddingVertical: 6 },
-  indText: { color: COLORS.text, fontSize: 12, fontWeight: '700' },
+  indValue: { color: COLORS.textMuted, fontSize: 11, fontWeight: '700' },
+  indValues: { flexDirection: 'row', flexWrap: 'wrap', gap: 10, marginTop: 8 },
   inner: { padding: 12 },
+  liveDot: { borderRadius: 999, height: 8, width: 8 },
   liveNote: { color: COLORS.textMuted, fontSize: 11, marginTop: 8 },
+  liveNoteWarn: { color: COLORS.amber },
   missing: { backgroundColor: COLORS.bg, flex: 1, gap: 12, justifyContent: 'center', padding: 16 },
   missingBody: { color: COLORS.textMuted, fontSize: 12, lineHeight: 17 },
-  moonBtn: {
-    alignItems: 'center',
-    borderColor: COLORS.border,
-    borderRadius: 999,
-    borderWidth: 1,
-    height: 32,
-    justifyContent: 'center',
-    width: 32,
-  },
   pill: {
     alignItems: 'center',
     borderColor: COLORS.border,
@@ -583,19 +726,21 @@ const styles = StyleSheet.create({
     paddingVertical: 4,
   },
   pillDot: { borderRadius: 999, height: 8, width: 8 },
+  pillOn: { backgroundColor: COLORS.bgMuted },
   pillText: { color: COLORS.text, fontSize: 11, fontWeight: '700' },
-  pills: { flexDirection: 'row', gap: 6, justifyContent: 'center', marginTop: 10 },
+  pillTextOff: { color: COLORS.textMuted },
+  pills: { flexDirection: 'row', flexWrap: 'wrap', gap: 6, justifyContent: 'center', marginTop: 10 },
   price: { color: COLORS.mintDark, fontSize: 16, fontWeight: '800' },
-  reason: { color: COLORS.textMuted, fontSize: 12, lineHeight: 17, marginTop: 4 },
+  priceRow: { alignItems: 'center', flexDirection: 'row', gap: 6 },
   reviewBtn: { backgroundColor: '#fff', marginTop: 14 },
   root: { backgroundColor: COLORS.bg, flex: 1 },
   rsiLabel: { color: COLORS.textMuted, fontSize: 12, fontWeight: '700' },
   rsiRow: { alignItems: 'center', borderTopColor: COLORS.border, borderTopWidth: 1, flexDirection: 'row', justifyContent: 'space-between', marginTop: 8, paddingTop: 8 },
   rsiValue: { color: COLORS.text, fontSize: 12, fontWeight: '700' },
-  safetyNote: { color: COLORS.textMuted, fontSize: 11, lineHeight: 16, marginTop: 8 },
-  safetyNum: { color: COLORS.text, fontSize: 28, fontWeight: '800' },
-  safetyRight: { flex: 1, gap: 8 },
-  safetyTop: { alignItems: 'center', flexDirection: 'row', gap: 14 },
+  segBtn: { borderRadius: 999, paddingHorizontal: 10, paddingVertical: 5 },
+  segBtnOn: { backgroundColor: COLORS.navy },
+  segText: { color: COLORS.textMuted, fontSize: 12, fontWeight: '700' },
+  segTextOn: { color: '#fff' },
   statCard: {
     borderColor: COLORS.border,
     borderRadius: 12,
@@ -636,6 +781,6 @@ const styles = StyleSheet.create({
     marginTop: 10,
     padding: 10,
   },
+  typeSeg: { backgroundColor: COLORS.bgMuted, borderRadius: 999, flexDirection: 'row', padding: 2 },
   unlockLine: { color: COLORS.textOnNavyMuted, fontSize: 12, marginTop: 8 },
-  zoom: { color: COLORS.textMuted, fontSize: 11, marginLeft: 'auto' },
 });
