@@ -1,0 +1,5 @@
+# Copy to .dev.vars for local dev only. Placeholder values only — never real secrets.
+KEEPER_PRIVATE_KEY=placeholder-keeper-only-executeTrigger
+RPC_URL_ARC=https://rpc.arc.network
+RPC_URL_BNB=https://bsc-dataseed.binance.org
+NOTIFY_WEBHOOK_URL=https://example.invalid/notify
