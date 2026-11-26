@@ -10,7 +10,305 @@
  * No early-break penalty is ever charged when a price target or the
  * maturity date triggers the exit — a penalty only applies to breaking
  * discipline early with no trigger met.
+ *
+ * The on-chain section at the bottom (STELIX_VAULT_ABI, createLockOnChain,
+ * getUserLocksOnChain, claimMaturedOnChain, claimTriggeredStageOnChain,
+ * requestBreakOnChain, executeBreakOnChain) is the live contract layer:
+ * it refuses with the not-deployed message until StelixVault is deployed
+ * and registered per chain (see lib/chains.ts).
  */
+import { ethers } from 'ethers';
+import { getChain, requireVaultAddress, VAULT_NOT_DEPLOYED_MESSAGE } from './chains';
+
+/** Minimal StelixVault ABI — only the functions the app calls.
+ *  Matches contracts/src/StelixVault.sol exactly (createLock with a
+ *  CreateLockParams tuple, claimMatured, claimTriggeredStage,
+ *  requestBreak / executeBreak, getLock, getUserLocks). */
+export const STELIX_VAULT_ABI = [
+  'function createLock((address token, uint256 amount, uint256 unlockTime, uint256 entryPrice, (uint256 targetPrice, uint16 sellBps, bool sold)[] ladderStages, uint16 trailingStopBps, uint8 breakMode, uint16 penaltyBps, bool autoSell, address stablecoin, uint16 slippageBps, uint256 minReceivePerStage) params) returns (uint256 lockId)',
+  'function claimMatured(uint256 lockId)',
+  'function claimTriggeredStage(uint256 lockId, uint256 stageIndex)',
+  'function requestBreak(uint256 lockId)',
+  'function executeBreak(uint256 lockId)',
+  'function getLock(uint256 lockId) view returns ((address owner, address token, uint256 amountRemaining, uint256 amountTotal, uint256 entryPrice, uint256 unlockTime, (uint256 targetPrice, uint16 sellBps, bool sold)[] ladderStages, uint16 trailingStopBps, uint256 peakPrice, uint8 breakMode, uint16 penaltyBps, bool autoSell, address stablecoin, address router, uint16 slippageBps, uint256 minReceivePerStage, uint8 status, uint256 feeBps, address penaltyRecipient, uint256 breakRequestedAt))',
+  'function getUserLocks(address user) view returns (uint256[])',
+  'event Locked(uint256 indexed lockId, address indexed owner, address indexed token, uint256 amount, uint256 unlockTime, uint256 entryPrice)',
+] as const;
+
+export const ERC20_APPROVE_ABI = [
+  'function approve(address spender, uint256 amount) returns (bool)',
+  'function allowance(address owner, address spender) view returns (uint256)',
+] as const;
+
+export { VAULT_NOT_DEPLOYED_MESSAGE };
+
+export function getVaultContract(chainId: string, runner: ethers.ContractRunner): ethers.Contract {
+  const address = requireVaultAddress(chainId); // throws not-deployed
+  return new ethers.Contract(address, STELIX_VAULT_ABI, runner);
+}
+
+/** Raw on-chain lock as returned by getLock (ethers v6 named tuple). */
+export interface ChainLock {
+  lockId: number;
+  owner: string;
+  token: string;
+  amountRemaining: bigint;
+  amountTotal: bigint;
+  entryPrice: bigint; // USD, 18 decimals
+  unlockTime: bigint;
+  ladderStages: { targetPrice: bigint; sellBps: number; sold: boolean }[];
+  trailingStopBps: number;
+  peakPrice: bigint;
+  breakMode: number; // 0 Immutable, 1 Penalty, 2 Guardian
+  penaltyBps: number;
+  autoSell: boolean;
+  stablecoin: string;
+  slippageBps: number;
+  minReceivePerStage: bigint;
+  status: number; // 0 Active, 1 PartiallySold, 2 Completed, 3 Matured, 4 Broken
+  chainId: string;
+}
+
+const CHAIN_LOCK_STATUSES: LockStatus[] = ['active', 'partially-sold', 'completed', 'matured', 'broken'];
+const CHAIN_BREAK_MODES: BreakMode[] = ['immutable', 'penalty', 'guardian'];
+
+function usd18ToNumber(v: bigint): number {
+  return Number(ethers.formatUnits(v, 18));
+}
+
+/** Map an on-chain lock to the app's BullLock (amounts in token units). */
+export function mapChainLockToBullLock(lock: ChainLock, tokenDecimals: number, tokenSymbol: string): BullLock {
+  const entryPrice = usd18ToNumber(lock.entryPrice);
+  const total = Number(ethers.formatUnits(lock.amountTotal, tokenDecimals));
+  const remaining = Number(ethers.formatUnits(lock.amountRemaining, tokenDecimals));
+  const ladder: LadderStage[] = lock.ladderStages.map((s) => ({
+    multiple: entryPrice > 0 ? usd18ToNumber(s.targetPrice) / entryPrice : 1,
+    percent: s.sellBps / 100,
+    status: s.sold ? 'sold' : 'pending',
+  }));
+  const targetStage = lock.ladderStages.find((s) => !s.sold);
+  return {
+    id: `onchain-${lock.chainId}-${lock.lockId}`,
+    chainId: lock.chainId,
+    tokenSymbol,
+    tokenAddress: lock.token,
+    amount: total,
+    amountRemaining: remaining,
+    entryPrice,
+    unlockTime: Number(lock.unlockTime) * 1000,
+    targetPrice: targetStage ? usd18ToNumber(targetStage.targetPrice) : null,
+    targetMultiple: targetStage && entryPrice > 0 ? usd18ToNumber(targetStage.targetPrice) / entryPrice : null,
+    ladder,
+    trailingStopBps: lock.trailingStopBps > 0 ? lock.trailingStopBps : null,
+    peakPrice: usd18ToNumber(lock.peakPrice),
+    breakMode: CHAIN_BREAK_MODES[lock.breakMode] ?? 'penalty',
+    penaltyBps: lock.penaltyBps,
+    autoSell: lock.autoSell,
+    slippageBps: lock.slippageBps,
+    minReceiveUsd: Number(ethers.formatUnits(lock.minReceivePerStage, 18)),
+    status: CHAIN_LOCK_STATUSES[lock.status] ?? 'active',
+    createdAt: 0, // on-chain locks carry no createdAt; use unlockTime/creation tx in the UI
+    txHash: undefined,
+  };
+}
+
+export interface OnChainLocksResult {
+  chainId: string;
+  deployed: boolean;
+  note: string | null;
+  lockIds: number[];
+  locks: ChainLock[];
+}
+
+/** Read a user's locks from chain. When the vault is not deployed on the
+ *  chain this returns an EMPTY list with the not-deployed note — never
+ *  sample locks. */
+export async function getUserLocksOnChain(
+  chainId: string,
+  userAddress: string,
+): Promise<OnChainLocksResult> {
+  const chain = getChain(chainId);
+  if (chain.kind !== 'evm' || chain.chainId === null) {
+    return { chainId, deployed: false, note: 'Solana vault is an Anchor program — not wired yet.', lockIds: [], locks: [] };
+  }
+  let vaultAddress: string;
+  try {
+    vaultAddress = requireVaultAddress(chainId);
+  } catch {
+    return { chainId, deployed: false, note: VAULT_NOT_DEPLOYED_MESSAGE, lockIds: [], locks: [] };
+  }
+  const provider = new ethers.JsonRpcProvider(chain.rpcUrl, chain.chainId);
+  const vault = new ethers.Contract(vaultAddress, STELIX_VAULT_ABI, provider);
+  const ids = (await vault.getUserLocks(userAddress)) as bigint[];
+  const locks: ChainLock[] = [];
+  for (const id of ids) {
+    const raw = (await vault.getLock(id)) as unknown as Record<string, unknown> & {
+      ladderStages: { targetPrice: bigint; sellBps: number; sold: boolean }[];
+    };
+    locks.push({
+      lockId: Number(id),
+      owner: raw.owner as string,
+      token: raw.token as string,
+      amountRemaining: raw.amountRemaining as bigint,
+      amountTotal: raw.amountTotal as bigint,
+      entryPrice: raw.entryPrice as bigint,
+      unlockTime: raw.unlockTime as bigint,
+      ladderStages: raw.ladderStages,
+      trailingStopBps: Number(raw.trailingStopBps),
+      peakPrice: raw.peakPrice as bigint,
+      breakMode: Number(raw.breakMode),
+      penaltyBps: Number(raw.penaltyBps),
+      autoSell: raw.autoSell as boolean,
+      stablecoin: raw.stablecoin as string,
+      slippageBps: Number(raw.slippageBps),
+      minReceivePerStage: raw.minReceivePerStage as bigint,
+      status: Number(raw.status),
+      chainId,
+    });
+  }
+  return { chainId, deployed: true, note: null, lockIds: ids.map(Number), locks };
+}
+
+export interface CreateLockOnChainParams {
+  chainId: string;
+  tokenAddress: string;
+  tokenDecimals: number;
+  stablecoinAddress: string;
+  amount: number; // token units
+  unlockTime: number; // epoch ms
+  entryPriceUsd: number;
+  ladder: { multiple: number; percent: number }[]; // percent of original, total <= 100
+  trailingStopBps: number | null;
+  breakMode: BreakMode;
+  penaltyBps: number;
+  autoSell: boolean;
+  slippageBps: number;
+  minReceiveUsd: number;
+}
+
+/** Build the on-chain CreateLockParams tuple from real lock parameters.
+ *  Throws when the ladder totals over 100% (contract rule) or when a
+ *  Penalty lock is outside 5–10% (contract rule). */
+export function toOnChainCreateLockParams(
+  p: CreateLockOnChainParams,
+): {
+  token: string;
+  amount: bigint;
+  unlockTime: bigint;
+  entryPrice: bigint;
+  ladderStages: { targetPrice: bigint; sellBps: number; sold: boolean }[];
+  trailingStopBps: number;
+  breakMode: number;
+  penaltyBps: number;
+  autoSell: boolean;
+  stablecoin: string;
+  slippageBps: number;
+  minReceivePerStage: bigint;
+} {
+  const totalPct = p.ladder.reduce((s, x) => s + x.percent, 0);
+  if (totalPct > 100) throw new Error(`Ladder stages must total at most 100% (currently ${totalPct}%).`);
+  if (p.breakMode === 'penalty' && (p.penaltyBps < 500 || p.penaltyBps > 1000)) {
+    throw new Error('Penalty locks must use a penalty of 5–10% (500–1000 bps).');
+  }
+  if (p.breakMode !== 'penalty' && p.penaltyBps !== 0) {
+    throw new Error('Only Penalty locks carry a penaltyBps value.');
+  }
+  const entryPrice = ethers.parseUnits(p.entryPriceUsd.toFixed(6), 18);
+  return {
+    token: p.tokenAddress,
+    amount: ethers.parseUnits(p.amount.toString(), p.tokenDecimals),
+    unlockTime: BigInt(Math.floor(p.unlockTime / 1000)),
+    entryPrice,
+    ladderStages: p.ladder.map((s) => ({
+      targetPrice: ethers.parseUnits((p.entryPriceUsd * s.multiple).toFixed(6), 18),
+      sellBps: Math.round(s.percent * 100),
+      sold: false,
+    })),
+    trailingStopBps: p.trailingStopBps ?? 0,
+    breakMode: p.breakMode === 'immutable' ? 0 : p.breakMode === 'penalty' ? 1 : 2,
+    penaltyBps: p.penaltyBps,
+    autoSell: p.autoSell,
+    stablecoin: p.stablecoinAddress,
+    slippageBps: p.slippageBps,
+    minReceivePerStage: ethers.parseUnits(p.minReceiveUsd.toFixed(6), 18),
+  };
+}
+
+/**
+ * Create a REAL on-chain lock: ERC-20 approve, then StelixVault.createLock.
+ * The signer must be the user's unlocked wallet. REFUSES (throws the
+ * not-deployed message) when no StelixVault address is registered for
+ * the active chain. Returns the mined tx hash and the on-chain lock id
+ * parsed from the Locked event.
+ */
+export async function createLockOnChain(
+  signer: ethers.Signer,
+  params: CreateLockOnChainParams,
+): Promise<{ txHash: string; lockId: number | null }> {
+  const vaultAddress = requireVaultAddress(params.chainId); // throws not-deployed
+  const chain = getChain(params.chainId);
+  const tuple = toOnChainCreateLockParams(params);
+  const token = new ethers.Contract(params.tokenAddress, ERC20_APPROVE_ABI, signer);
+  const approveTx = await token.approve(vaultAddress, tuple.amount);
+  await approveTx.wait();
+  const vault = new ethers.Contract(vaultAddress, STELIX_VAULT_ABI, signer);
+  const tx = await vault.createLock(tuple);
+  const receipt = await tx.wait();
+  let lockId: number | null = null;
+  try {
+    const iface = new ethers.Interface(STELIX_VAULT_ABI);
+    for (const log of receipt?.logs ?? []) {
+      try {
+        const parsed = iface.parseLog(log as { topics: string[]; data: string });
+        if (parsed?.name === 'Locked') lockId = Number(parsed.args.lockId);
+      } catch {
+        // not our event — ignore
+      }
+    }
+  } catch {
+    // lock id unknown from receipt; the tx hash still identifies the lock
+  }
+  void chain;
+  return { txHash: tx.hash as string, lockId };
+}
+
+async function sendVaultTx(
+  signer: ethers.Signer,
+  chainId: string,
+  method: 'claimMatured' | 'claimTriggeredStage' | 'requestBreak' | 'executeBreak',
+  args: unknown[],
+): Promise<string> {
+  const vaultAddress = requireVaultAddress(chainId); // throws not-deployed
+  const vault = new ethers.Contract(vaultAddress, STELIX_VAULT_ABI, signer);
+  const tx = await (vault[method] as (...a: unknown[]) => Promise<ethers.TransactionResponse>)(...args);
+  const receipt = await tx.wait();
+  return receipt?.hash ?? tx.hash;
+}
+
+/** Owner claims a matured lock on-chain (penalty-free by construction). */
+export async function claimMaturedOnChain(signer: ethers.Signer, chainId: string, lockId: number): Promise<string> {
+  return sendVaultTx(signer, chainId, 'claimMatured', [lockId]);
+}
+
+/** Owner manually claims a triggered ladder stage (no swap, no fee). */
+export async function claimTriggeredStageOnChain(
+  signer: ethers.Signer,
+  chainId: string,
+  lockId: number,
+  stageIndex: number,
+): Promise<string> {
+  return sendVaultTx(signer, chainId, 'claimTriggeredStage', [lockId, stageIndex]);
+}
+
+/** Owner requests an early break (starts the 24h / 48h cooling-off). */
+export async function requestBreakOnChain(signer: ethers.Signer, chainId: string, lockId: number): Promise<string> {
+  return sendVaultTx(signer, chainId, 'requestBreak', [lockId]);
+}
+
+/** Owner executes a break after cooling-off (penalty per the lock terms). */
+export async function executeBreakOnChain(signer: ethers.Signer, chainId: string, lockId: number): Promise<string> {
+  return sendVaultTx(signer, chainId, 'executeBreak', [lockId]);
+}
 
 export type BreakMode = 'immutable' | 'penalty' | 'guardian';
 export type LockStatus =
