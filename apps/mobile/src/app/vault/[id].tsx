@@ -30,15 +30,15 @@ export default function LockDetail() {
   // Live price + real candles for the locked token (store price first,
   // DexScreener market data as fallback; "—" when neither is available).
   const storeToken = lock ? tokens.find((t) => t.symbol === lock.tokenSymbol) : undefined;
-  const [closes, setCloses] = useState<number[]>([]);
+  const [lockCandles, setLockCandles] = useState<Candle[]>([]);
   useEffect(() => {
     let cancelled = false;
-    setCloses([]);
+    setLockCandles([]);
     if (!lock?.tokenAddress) return;
     void fetchTokenMarketData(lock.chainId, lock.tokenAddress).then((d) => {
       if (cancelled || !d?.pairAddress) return;
       void fetchCandles(lock.chainId, d.pairAddress, 'day', 100).then((c: Candle[]) => {
-        if (!cancelled) setCloses(c.map((x) => x.close));
+        if (!cancelled) setLockCandles(c);
       });
     });
     return () => {
@@ -153,7 +153,16 @@ export default function LockDetail() {
       )}
 
       <SectionTitle title="Locked position" />
-      <PriceChart series={closes} height={140} />
+      <PriceChart
+        candles={lockCandles}
+        chartType="line"
+        showEma7={false}
+        showEma25={false}
+        showVolume={false}
+        showMacd={false}
+        seriesKey={`${lock.chainId}:${lock.tokenAddress}:lock`}
+        height={140}
+      />
 
       {lock.ladder.length > 0 && (
         <>
