@@ -76,6 +76,7 @@ contract StelixVault {
         uint16 penaltyBps; // 500-1000 (5-10%) when breakMode == Penalty, else 0
         bool autoSell; // false = on target, unlock stage to wallet unsold
         address stablecoin; // per-lock exit stablecoin (USDT / USDC per chain registry)
+        uint8 stablecoinDecimals; // decimals of the stablecoin (USDC on Arc = 6)
         address router; // DEX router snapshot at lock time
         uint16 slippageBps; // e.g. 150 = 1.5% default
         uint256 minReceivePerStage; // minimum stablecoin for a stage swap; 0 = no floor
@@ -175,6 +176,7 @@ contract StelixVault {
     event PriceFeedSet(address indexed priceFeed);
     event NewLocksPaused(bool paused);
     event AutoSellFeeSet(uint16 feeBps, address feeRecipient);
+    event OwnershipTransferred(address indexed newOwner);
 
     // ------------------------------------------------------------------
     // Errors
@@ -201,6 +203,7 @@ contract StelixVault {
         uint16 _autoSellFeeBps
     ) {
         require(_owner != address(0), "owner required");
+        require(_keeper != address(0), "keeper required");
         require(_router != address(0), "router required");
         require(_priceFeed != address(0), "price feed required");
         require(_autoSellFeeBps <= 1000, "fee too high"); // <= 10%
@@ -261,6 +264,14 @@ contract StelixVault {
         l.penaltyBps = p.penaltyBps;
         l.autoSell = p.autoSell;
         l.stablecoin = p.stablecoin;
+        // The exit stablecoin's decimals matter: Arc USDC is 6 decimals,
+        // not 18. expectedOut in _exitStage is computed in 18-dec USD
+        // units and must be scaled down to the stablecoin's own decimals,
+        // otherwise every auto-sell on a 6-decimal stablecoin reverts on
+        // MinReceiveNotMet (the swap can never return 1e12x too much).
+        uint8 stableDecimals = _tokenDecimals(p.stablecoin);
+        if (stableDecimals > 18) revert InvalidParams();
+        l.stablecoinDecimals = stableDecimals;
         l.router = router;
         l.slippageBps = p.slippageBps;
         l.minReceivePerStage = p.minReceivePerStage;
@@ -383,7 +394,13 @@ contract StelixVault {
             return;
         }
         // Expected stablecoin at the TWAP price, then slippage tolerance.
+        // `price` is 18-dec USD; scale down to the stablecoin's decimals
+        // (USDC on Arc: 6, so divide by 1e12) before comparing with the
+        // swap output, which is in the stablecoin's smallest units.
         uint256 expectedOut = (amount * price) / 1e18;
+        if (l.stablecoinDecimals < 18) {
+            expectedOut /= 10 ** (18 - l.stablecoinDecimals);
+        }
         uint256 amountOutMin = (expectedOut * (BPS_DENOMINATOR - l.slippageBps)) / BPS_DENOMINATOR;
         if (amountOutMin < l.minReceivePerStage) amountOutMin = l.minReceivePerStage;
         address[] memory path = new address[](2);
@@ -509,6 +526,13 @@ contract StelixVault {
         return false;
     }
 
+    /// @dev Reads decimals() from a token; reverts for non-ERC20 addresses.
+    function _tokenDecimals(address token) internal view returns (uint8) {
+        (bool ok, bytes memory data) = token.staticcall(abi.encodeWithSignature("decimals()"));
+        require(ok && data.length == 32, "StelixVault: bad token");
+        return abi.decode(data, (uint8));
+    }
+
     // ------------------------------------------------------------------
     // Admin config ONLY — none of these can move locked funds.
     // There is deliberately NO withdraw / drain / rescue function.
@@ -551,5 +575,6 @@ contract StelixVault {
     function transferOwnership(address _owner) external onlyOwner {
         require(_owner != address(0), "owner required");
         owner = _owner;
+        emit OwnershipTransferred(_owner);
     }
 }
