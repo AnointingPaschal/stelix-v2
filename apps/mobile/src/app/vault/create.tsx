@@ -9,9 +9,11 @@ import { Alert, ScrollView, StyleSheet, Text, TextInput, View } from 'react-nati
 import { router, useLocalSearchParams } from 'expo-router';
 import { COLORS } from '../../theme';
 import { useApp } from '../../store/AppContext';
-import { getChain, VAULT_DEFAULTS } from '../../lib/chains';
+import { getChain, getVaultDeploymentStatus, VAULT_DEFAULTS } from '../../lib/chains';
 import { fmtNum, fmtPrice, fmtUsd } from '../../lib/format';
+import { getSignerForChain } from '../../lib/signer';
 import {
+  createLockOnChain,
   lockSummarySentence,
   minimumReceive,
   validateLadder,
@@ -47,7 +49,7 @@ export default function CreateLock() {
     trailing?: string;
     breakMode?: string;
   }>();
-  const { tokens, chain, addLock, addTx, vaultNote } = useApp();
+  const { tokens, chain, addLock, addTx, refreshLocks } = useApp();
   const [step, setStep] = useState(1);
   const [symbol, setSymbol] = useState(params.symbol ?? tokens[0]?.symbol ?? '');
   const [amount, setAmount] = useState(params.amount ?? '');
@@ -69,7 +71,10 @@ export default function CreateLock() {
       : 'penalty',
   );
   const [pin, setPin] = useState('');
+  const [password, setPassword] = useState('');
+  const [creating, setCreating] = useState(false);
   const [created, setCreated] = useState<BullLock | null>(null);
+  const vaultStatus = getVaultDeploymentStatus(chain.id);
 
   const token = tokens.find((t) => t.symbol === symbol) ?? tokens[0];
   const amt = parseFloat(amount) || 0;
@@ -119,44 +124,102 @@ export default function CreateLock() {
     setStep((s) => Math.min(4, s + 1));
   }
 
-  function confirm() {
+  async function confirm() {
     if (pin.length !== 6) {
       Alert.alert('Discipline PIN required', 'Enter your 6-digit Discipline PIN to confirm this lock.');
       return;
     }
-    const lock: BullLock = { ...preview };
-    addLock(lock);
-    // Local record only: the vault is not deployed on this chain yet, so
-    // no on-chain lock was created and there is no tx hash. Status is
-    // pending, never confirmed for a transaction never submitted.
-    addTx({
-      id: `local-${Date.now()}`,
-      hash: '',
-      kind: 'lock',
-      token: token?.symbol ?? symbol,
-      amount: amt,
-      amountRaw: String(amt),
-      usd: amt * entryPrice,
-      note: `Lock planned locally until ${new Date(unlockTime).toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' })}${target ? ` or ${target}x` : ''} — no on-chain lock yet (vault not deployed)`,
-      at: Date.now(),
-      status: 'pending',
-      isSpam: false,
-      chainId: chain.id,
-      blockNumber: null,
-    });
-    setCreated(lock);
+    if (password.length < 8) {
+      Alert.alert('Session password required', 'Enter your session password to sign the lock transaction. A wrong password locks nothing.');
+      return;
+    }
+    if (chain.kind !== 'evm') {
+      Alert.alert(
+        'Vault not available on Solana',
+        'The Solana vault is an Anchor program and is not wired yet. Locks are EVM-only for now — no lock was created.',
+      );
+      return;
+    }
+    if (!vaultStatus.deployed) {
+      Alert.alert(
+        'Vault not deployed on this chain',
+        `${vaultStatus.message} (${chain.name}). No on-chain lock can be created yet, and no local-only lock is recorded — a lock that was never submitted is not a lock.`,
+      );
+      return;
+    }
+    if (!token || !token.address) {
+      Alert.alert('Native asset cannot be locked', 'The vault locks ERC-20 tokens. Lock an imported token instead of the native asset.');
+      return;
+    }
+    if (token.price === null || entryPrice <= 0) {
+      Alert.alert('No live entry price', 'This token has no live price, so no entry price can be recorded on-chain. Try again when a price is available.');
+      return;
+    }
+    const stablecoin = getChain(chain.id).exitStablecoinAddress;
+    if (!stablecoin) {
+      Alert.alert('Exit stablecoin not confirmed', `No exit stablecoin address is registered for ${chain.name}. The lock cannot be created yet.`);
+      return;
+    }
+    setCreating(true);
+    try {
+      const signer = await getSignerForChain(password, chain.id);
+      const { txHash, lockId } = await createLockOnChain(signer, {
+        chainId: chain.id,
+        tokenAddress: token.address,
+        tokenDecimals: token.decimals,
+        stablecoinAddress: stablecoin,
+        amount: amt,
+        unlockTime,
+        entryPriceUsd: entryPrice,
+        ladder: ladderOn ? ladder : target !== null ? [{ multiple: target, percent: 100 }] : [],
+        trailingStopBps: trailing,
+        breakMode,
+        penaltyBps: breakMode === 'penalty' ? 500 : 0,
+        autoSell: preview.autoSell,
+        slippageBps: VAULT_DEFAULTS.slippageBps,
+        minReceiveUsd: preview.minReceiveUsd,
+      });
+      const lock: BullLock = {
+        ...preview,
+        id: lockId !== null ? `onchain-${chain.id}-${lockId}` : `onchain-${chain.id}-tx-${txHash.slice(2, 10)}`,
+        txHash,
+      };
+      addLock(lock);
+      addTx({
+        id: txHash,
+        hash: txHash,
+        kind: 'lock',
+        token: token.symbol,
+        amount: amt,
+        amountRaw: String(amt),
+        usd: amt * entryPrice,
+        note: `Locked on-chain until ${new Date(unlockTime).toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' })}${target ? ` or ${target}x` : ''} · vault ${vaultStatus.address}`,
+        at: Date.now(),
+        status: 'confirmed',
+        isSpam: false,
+        chainId: chain.id,
+        blockNumber: null,
+      });
+      setPassword('');
+      setCreated(lock);
+      await refreshLocks();
+    } catch (e) {
+      Alert.alert('Lock failed', e instanceof Error ? e.message : String(e));
+    } finally {
+      setCreating(false);
+    }
   }
 
   if (created) {
     return (
       <ScrollView style={styles.root} contentContainerStyle={styles.inner}>
         <Card style={styles.done}>
-          <Text style={styles.doneTitle}>{vaultNote ? 'Lock planned (local only)' : 'Lock created'}</Text>
+          <Text style={styles.doneTitle}>Lock created on-chain</Text>
           <Text style={styles.doneBody}>Lock ID {created.id}</Text>
           <Text style={styles.doneBody}>Receipt: {fmtNum(created.amount)} {created.tokenSymbol} · {fmtUsd(created.amount * created.entryPrice)}</Text>
           <Text style={styles.doneBody}>Unlock: {new Date(created.unlockTime).toLocaleDateString('en-GB', { day: 'numeric', month: 'long', year: 'numeric' })}</Text>
+          <Text style={styles.doneBody}>Tx: {created.txHash ? `${created.txHash.slice(0, 12)}…${created.txHash.slice(-6)}` : '—'}</Text>
           <Text style={styles.doneBody}>Reminders on: 7 days, 1 day and 1 hour before maturity; at 50% / 80% / 100% of target.</Text>
-          {vaultNote ? <Text style={styles.doneBody}>{vaultNote} — this lock is saved locally only; no on-chain lock was created.</Text> : null}
         </Card>
         <Btn label="View Lock" onPress={() => router.replace(`/vault/${created.id}`)} />
         <Btn label="Back to Vault" variant="ghost" onPress={() => router.replace('/(tabs)/vault')} />
@@ -297,7 +360,7 @@ export default function CreateLock() {
             <Text style={styles.reviewTitle}>Review your lock</Text>
             <ReviewRow label="Token" value={`${fmtNum(amt)} ${token?.symbol ?? symbol} (${fmtUsd(amt * entryPrice)})`} />
             <ReviewRow label="Chain" value={`${chain.name}${chain.testnet ? ' (testnet)' : ''}`} />
-            <ReviewRow label="Vault contract" value={getChain(chain.id).vaultContract ?? 'Not deployed yet — admin Contract Studio (testnet first)'} />
+            <ReviewRow label="Vault contract" value={vaultStatus.deployed ? vaultStatus.address : 'Not deployed yet — testnet deploy required'} />
             <ReviewRow label="Unlock date" value={new Date(unlockTime).toLocaleDateString('en-GB', { day: 'numeric', month: 'long', year: 'numeric' })} />
             <ReviewRow label="Target" value={targetPrice ? `${target}x · ${fmtPrice(targetPrice)}` : 'None — date lock'} />
             <ReviewRow label="Exit" value={targetPrice ? (autoSell ? exitLabel : 'Unlock to wallet') : 'Unlock to wallet'} />
@@ -312,7 +375,9 @@ export default function CreateLock() {
           <Text style={styles.sentence}>{lockSummarySentence(preview, exitLabel)}</Text>
           <Text style={styles.label}>Discipline PIN (6 digits)</Text>
           <TextInput style={styles.input} keyboardType="number-pad" maxLength={6} secureTextEntry placeholder="••••••" value={pin} onChangeText={setPin} />
-          <Text style={styles.hint}>Confirm with your Discipline PIN + biometrics. Then approve the token spend and sign the lock transaction.</Text>
+          <Text style={styles.label}>Session password (to sign)</Text>
+          <TextInput style={styles.input} secureTextEntry placeholder="••••••••" value={password} onChangeText={setPassword} autoCapitalize="none" autoCorrect={false} />
+          <Text style={styles.hint}>Confirm with your Discipline PIN + session password. Then approve the token spend and sign the lock transaction. The vault must be deployed on this chain — otherwise no lock is created.</Text>
         </>
       )}
 
@@ -321,7 +386,7 @@ export default function CreateLock() {
         {step < 4 ? (
           <Btn label="Continue" onPress={next} style={styles.navBtn} />
         ) : (
-          <Btn label="Confirm Lock" variant="mint" onPress={confirm} style={styles.navBtn} />
+          <Btn label={creating ? 'Creating lock…' : 'Confirm Lock'} variant="mint" onPress={() => void confirm()} disabled={creating} style={styles.navBtn} />
         )}
       </View>
       <RiskNote />
