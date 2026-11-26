@@ -16,7 +16,7 @@ export default function VaultHub() {
   const { locks, tokens, refreshLocks, vaultNote } = useApp();
   const [refreshing, setRefreshing] = useState(false);
   // Live price from the store (null = no live price — contributes $0, never
-  // a demo price).
+  // a placeholder price).
   const priceOf = (symbol: string) => tokens.find((t) => t.symbol === symbol)?.price ?? null;
   const active = locks.filter((l) => l.status === 'active' || l.status === 'partially-sold');
   const matured = locks.filter((l) => l.status === 'matured' || (l.status !== 'completed' && l.status !== 'broken' && Date.now() >= l.unlockTime));
