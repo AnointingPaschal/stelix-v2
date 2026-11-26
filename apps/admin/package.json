@@ -6,7 +6,8 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
-    "build": "tsc --noEmit && vite build",
+    "build": "tsc --noEmit && vite build && npm run build:worker",
+    "build:worker": "esbuild src/worker/index.ts --bundle --format=esm --outfile=dist/_worker.js",
     "preview": "vite preview",
     "typecheck": "tsc --noEmit"
   },
