@@ -252,6 +252,75 @@ export async function changePassword(oldPassword: string, newPassword: string): 
   if (!encrypted) throw new Error('No wallet stored on this device.');
   const secret = await decryptSecret(encrypted, oldPassword); // throws on wrong password
   await storeSet(WALLET_KEY, await encryptSecret(secret, newPassword));
+  // The biometric-gated copy holds the OLD password — it can no longer
+  // decrypt anything, so wipe it; the next password sign re-saves it.
+  await clearBiometricSessionPassword();
+}
+
+// ---------------------------------------------------------------------------
+// Biometric signing — the signing modal's alternative to typing the
+// session password (see components/SignTransactionModal.tsx).
+//
+// How it works, honestly: the wallet secret is encrypted under the
+// session password, so biometrics alone cannot decrypt it. After a
+// successful password sign, the modal may store the SESSION PASSWORD
+// itself in the OS keychain (expo-secure-store) with
+// requireAuthentication — the OS only releases it after a biometric
+// check, and only on native (SecureStore is an empty object on web, so
+// this always returns false there and the modal hides the biometric
+// option). The stored value is the password, never the seed or private
+// key, and it is wiped by clearBiometricSessionPassword() (called when
+// biometrics are switched off in Settings or the wallet is wiped).
+// Nothing here logs the password.
+// ---------------------------------------------------------------------------
+const BIOMETRIC_PASSWORD_KEY = 'stelix_biometric_session_password_v1';
+
+/** Best-effort: store the session password behind a biometric gate.
+ *  Returns false on web / when SecureStore is unavailable — the caller
+ *  then just keeps asking for the typed password. */
+export async function saveBiometricSessionPassword(password: string): Promise<boolean> {
+  if (isWeb()) return false;
+  try {
+    const mod = await import('expo-secure-store');
+    if (typeof mod.setItemAsync !== 'function') return false;
+    await mod.setItemAsync(BIOMETRIC_PASSWORD_KEY, password, {
+      requireAuthentication: true,
+      authenticationPrompt: 'Authenticate to enable biometric signing',
+    });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/** Release the stored session password after the OS biometric prompt.
+ *  Returns null when nothing is stored, biometrics fail/cancel, or on
+ *  web. The caller uses the returned password exactly like a typed one
+ *  (decrypt → sign once) and never stores it elsewhere. */
+export async function readBiometricSessionPassword(): Promise<string | null> {
+  if (isWeb()) return null;
+  try {
+    const mod = await import('expo-secure-store');
+    if (typeof mod.getItemAsync !== 'function') return null;
+    return await mod.getItemAsync(BIOMETRIC_PASSWORD_KEY, {
+      requireAuthentication: true,
+      authenticationPrompt: 'Authenticate to sign this transaction',
+    });
+  } catch {
+    return null;
+  }
+}
+
+export async function clearBiometricSessionPassword(): Promise<void> {
+  if (isWeb()) return;
+  try {
+    const mod = await import('expo-secure-store');
+    if (typeof mod.deleteItemAsync === 'function') {
+      await mod.deleteItemAsync(BIOMETRIC_PASSWORD_KEY);
+    }
+  } catch {
+    // Best-effort cleanup — a missing key is already clean.
+  }
 }
 
 export async function getWalletMeta(): Promise<WalletMeta | null> {
@@ -271,6 +340,7 @@ export async function hasWallet(): Promise<boolean> {
 export async function wipeWallet(): Promise<void> {
   await storeDelete(WALLET_KEY);
   await storeDelete(WALLET_META_KEY);
+  await clearBiometricSessionPassword();
 }
 
 /** Validate a recipient address (EVM). Solana addresses are base58 — the

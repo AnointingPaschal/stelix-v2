@@ -20,7 +20,7 @@ import {
 } from 'lucide-react-native';
 import { COLORS } from '../theme';
 import { useApp } from '../store/AppContext';
-import { changePassword, exportSecret, wipeWallet } from '../lib/wallet';
+import { changePassword, clearBiometricSessionPassword, exportSecret, wipeWallet } from '../lib/wallet';
 import * as Clipboard from 'expo-clipboard';
 import { Btn, Card, NetworkSheet, RiskNote } from '../components/ui';
 
@@ -109,7 +109,16 @@ export default function Settings() {
       <Text style={styles.section}>SECURITY & BACKUP</Text>
       <Card style={styles.group}>
         <Row icon={<Fingerprint size={18} color={COLORS.text} />} title="Biometric Auth" sub="Require cryptographic signature via biometrics">
-          <Switch value={settings.biometrics} onValueChange={(v) => updateSettings({ biometrics: v })} trackColor={{ true: COLORS.mint }} />
+          <Switch
+            value={settings.biometrics}
+            onValueChange={(v) => {
+              updateSettings({ biometrics: v });
+              // Switching biometrics off wipes the biometric-gated copy
+              // of the session password, so it can never sign again.
+              if (!v) void clearBiometricSessionPassword();
+            }}
+            trackColor={{ true: COLORS.mint }}
+          />
         </Row>
         <Divider />
         <Row

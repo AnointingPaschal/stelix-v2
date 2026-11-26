@@ -1,10 +1,11 @@
 import { Tabs } from 'expo-router';
-import { ArrowLeftRight, Compass, History, Home, Rocket, Settings as SettingsIcon } from 'lucide-react-native';
+import { ArrowLeftRight, Compass, History, Home, Settings as SettingsIcon } from 'lucide-react-native';
 import { COLORS } from '../../theme';
 
 /** v1 bottom tabs: Home / Swap / Discover / History / Settings.
  *  Vault Hub stays a route (reachable from Discipline / lock links) but is
- *  not a tab, as in v1. */
+ *  not a tab, as in v1. Launchpad is admin-only (apps/admin Launchpad
+ *  Manager) and has no tab, screen or link in the wallet. */
 export default function TabsLayout() {
   return (
     <Tabs
@@ -35,13 +36,6 @@ export default function TabsLayout() {
         options={{
           title: 'Discover',
           tabBarIcon: ({ color, size }) => <Compass size={size} color={color} />,
-        }}
-      />
-      <Tabs.Screen
-        name="launchpad"
-        options={{
-          title: 'Launchpad',
-          tabBarIcon: ({ color, size }) => <Rocket size={size} color={color} />,
         }}
       />
       <Tabs.Screen

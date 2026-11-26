@@ -3,9 +3,12 @@
  *  detail's Create Discipline card (symbol, amount, days, target,
  *  customPrice, ladder, trailing, breakMode). No invented fees — the Stelix
  *  fee comes from VAULT_DEFAULTS and the network fee is shown by the wallet
- *  before signing. */
+ *  before signing. Signing happens ONLY in the shared
+ *  SignTransactionModal — there is no session-password field on this page.
+ *  The Discipline PIN stays on the page: it is a 6-digit discipline check,
+ *  not the session password. */
 import { useMemo, useState } from 'react';
-import { Alert, ScrollView, StyleSheet, Text, TextInput, View } from 'react-native';
+import { ScrollView, StyleSheet, Text, TextInput, View } from 'react-native';
 import { router, useLocalSearchParams } from 'expo-router';
 import { COLORS } from '../../theme';
 import { useApp } from '../../store/AppContext';
@@ -22,6 +25,11 @@ import {
   type LadderStage,
 } from '../../lib/vault';
 import { Btn, Card, RiskNote, SectionTitle } from '../../components/ui';
+import {
+  SignTransactionModal,
+  type SignTxRequest,
+  type SignTxResult,
+} from '../../components/SignTransactionModal';
 
 const DURATIONS = [
   { label: '1 week', days: 7 },
@@ -49,7 +57,7 @@ export default function CreateLock() {
     trailing?: string;
     breakMode?: string;
   }>();
-  const { tokens, chain, addLock, addTx, refreshLocks } = useApp();
+  const { tokens, chain, address, settings, addLock, addTx, refreshLocks } = useApp();
   const [step, setStep] = useState(1);
   const [symbol, setSymbol] = useState(params.symbol ?? tokens[0]?.symbol ?? '');
   const [amount, setAmount] = useState(params.amount ?? '');
@@ -71,9 +79,9 @@ export default function CreateLock() {
       : 'penalty',
   );
   const [pin, setPin] = useState('');
-  const [password, setPassword] = useState('');
-  const [creating, setCreating] = useState(false);
   const [created, setCreated] = useState<BullLock | null>(null);
+  const [formError, setFormError] = useState('');
+  const [signModal, setSignModal] = useState<SignTxRequest | null>(null);
   const vaultStatus = getVaultDeploymentStatus(chain.id);
 
   const token = tokens.find((t) => t.symbol === symbol) ?? tokens[0];
@@ -111,103 +119,123 @@ export default function CreateLock() {
   );
 
   function next() {
+    setFormError('');
     if (step === 1) {
       if (!token || amt <= 0 || amt > token.balance) {
-        Alert.alert('Check the amount', `Enter an amount up to your spendable ${fmtNum(token?.balance ?? 0)} ${token?.symbol ?? ''}. Locked funds cannot be locked twice.`);
+        setFormError(`Check the amount — enter an amount up to your spendable ${fmtNum(token?.balance ?? 0)} ${token?.symbol ?? ''}. Locked funds cannot be locked twice.`);
         return;
       }
     }
     if (step === 3 && ladderError) {
-      Alert.alert('Ladder does not add up', ladderError);
+      setFormError(ladderError);
       return;
     }
     setStep((s) => Math.min(4, s + 1));
   }
 
+  /** Step 4 Confirm: validates everything, then opens the signing modal.
+   *  Nothing is signed here — the modal collects the session password
+   *  (or biometrics) and calls signLock below. */
   async function confirm() {
+    setFormError('');
     if (pin.length !== 6) {
-      Alert.alert('Discipline PIN required', 'Enter your 6-digit Discipline PIN to confirm this lock.');
-      return;
-    }
-    if (password.length < 8) {
-      Alert.alert('Session password required', 'Enter your session password to sign the lock transaction. A wrong password locks nothing.');
+      setFormError('Discipline PIN required — enter your 6-digit Discipline PIN to confirm this lock.');
       return;
     }
     if (chain.kind !== 'evm') {
-      Alert.alert(
-        'Vault not available on Solana',
-        'The Solana vault is an Anchor program and is not wired yet. Locks are EVM-only for now — no lock was created.',
-      );
+      setFormError('The vault is not available on Solana — the Solana vault is an Anchor program and is not wired yet. Locks are EVM-only for now; no lock was created.');
       return;
     }
     if (!vaultStatus.deployed) {
-      Alert.alert(
-        'Vault not deployed on this chain',
-        `${vaultStatus.message} (${chain.name}). No on-chain lock can be created yet, and no local-only lock is recorded — a lock that was never submitted is not a lock.`,
-      );
+      setFormError(`${vaultStatus.message} (${chain.name}). No on-chain lock can be created yet, and no local-only lock is recorded — a lock that was never submitted is not a lock.`);
       return;
     }
     if (!token || !token.address) {
-      Alert.alert('Native asset cannot be locked', 'The vault locks ERC-20 tokens. Lock an imported token instead of the native asset.');
+      setFormError('The native asset cannot be locked — the vault locks ERC-20 tokens. Lock an imported token instead of the native asset.');
       return;
     }
     if (token.price === null || entryPrice <= 0) {
-      Alert.alert('No live entry price', 'This token has no live price, so no entry price can be recorded on-chain. Try again when a price is available.');
+      setFormError('This token has no live price, so no entry price can be recorded on-chain. Try again when a price is available.');
       return;
     }
     const stablecoin = getChain(chain.id).exitStablecoinAddress;
     if (!stablecoin) {
-      Alert.alert('Exit stablecoin not confirmed', `No exit stablecoin address is registered for ${chain.name}. The lock cannot be created yet.`);
+      setFormError(`No exit stablecoin address is registered for ${chain.name}. The lock cannot be created yet.`);
       return;
     }
-    setCreating(true);
-    try {
-      const signer = await getSignerForChain(password, chain.id);
-      const { txHash, lockId } = await createLockOnChain(signer, {
-        chainId: chain.id,
-        tokenAddress: token.address,
-        tokenDecimals: token.decimals,
-        stablecoinAddress: stablecoin,
-        amount: amt,
-        unlockTime,
-        entryPriceUsd: entryPrice,
-        ladder: ladderOn ? ladder : target !== null ? [{ multiple: target, percent: 100 }] : [],
-        trailingStopBps: trailing,
-        breakMode,
-        penaltyBps: breakMode === 'penalty' ? 500 : 0,
-        autoSell: preview.autoSell,
-        slippageBps: VAULT_DEFAULTS.slippageBps,
-        minReceiveUsd: preview.minReceiveUsd,
-      });
-      const lock: BullLock = {
-        ...preview,
-        id: lockId !== null ? `onchain-${chain.id}-${lockId}` : `onchain-${chain.id}-tx-${txHash.slice(2, 10)}`,
-        txHash,
-      };
-      addLock(lock);
-      addTx({
-        id: txHash,
-        hash: txHash,
-        kind: 'lock',
-        token: token.symbol,
-        amount: amt,
-        amountRaw: String(amt),
-        usd: amt * entryPrice,
-        note: `Locked on-chain until ${new Date(unlockTime).toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' })}${target ? ` or ${target}x` : ''} · vault ${vaultStatus.address}`,
-        at: Date.now(),
-        status: 'confirmed',
-        isSpam: false,
-        chainId: chain.id,
-        blockNumber: null,
-      });
-      setPassword('');
-      setCreated(lock);
-      await refreshLocks();
-    } catch (e) {
-      Alert.alert('Lock failed', e instanceof Error ? e.message : String(e));
-    } finally {
-      setCreating(false);
-    }
+    setSignModal({
+      title: 'Confirm Lock',
+      actionLabel: 'Sign & Create Lock',
+      fromAddress: address,
+      toAddress: vaultStatus.address,
+      toLabel: 'StelixVault contract',
+      network: `${chain.name}${chain.testnet ? ' (testnet)' : ''}`,
+      rows: [
+        { label: 'You lock', value: `${fmtNum(amt)} ${token.symbol} (${fmtUsd(amt * entryPrice)})` },
+        { label: 'Unlock date', value: new Date(unlockTime).toLocaleDateString('en-GB', { day: 'numeric', month: 'long', year: 'numeric' }) },
+        { label: 'Target', value: targetPrice ? `${target}x · ${fmtPrice(targetPrice)}` : 'None — date lock' },
+        { label: 'Exit', value: targetPrice ? (autoSell ? exitLabel : 'Unlock to wallet') : 'Unlock to wallet' },
+        { label: 'Ladder', value: ladderOn ? ladder.map((s) => `${s.percent}% @ ${s.multiple}x`).join(' · ') : 'Off' },
+        { label: 'Trailing stop', value: trailing ? `${trailing / 100}%` : 'Off' },
+        { label: 'Break mode', value: breakMode === 'immutable' ? 'Immutable — no early break' : breakMode === 'penalty' ? 'Penalty break — 5% after 24h cooling-off' : 'Guardian break — approval + 48h delay' },
+        { label: 'Slippage', value: '1.5% (default)' },
+        { label: 'Stelix fee', value: `${VAULT_DEFAULTS.autoSellFeeBps / 100}% (set in admin before mainnet)` },
+        { label: 'Network fee', value: 'Estimated at signing' },
+      ],
+      warning: 'You approve the token spend, then the lock is created on-chain. The vault must be deployed on this chain — otherwise no lock is created.',
+      explorerBase: chain.explorerUrl,
+    });
+  }
+
+  async function signLock(password: string): Promise<SignTxResult> {
+    if (!token || !token.address) throw new Error('No token to lock.');
+    const stablecoin = getChain(chain.id).exitStablecoinAddress;
+    if (!stablecoin) throw new Error(`No exit stablecoin address is registered for ${chain.name}.`);
+    const signer = await getSignerForChain(password, chain.id);
+    const { txHash, lockId } = await createLockOnChain(signer, {
+      chainId: chain.id,
+      tokenAddress: token.address,
+      tokenDecimals: token.decimals,
+      stablecoinAddress: stablecoin,
+      amount: amt,
+      unlockTime,
+      entryPriceUsd: entryPrice,
+      ladder: ladderOn ? ladder : target !== null ? [{ multiple: target, percent: 100 }] : [],
+      trailingStopBps: trailing,
+      breakMode,
+      penaltyBps: breakMode === 'penalty' ? 500 : 0,
+      autoSell: preview.autoSell,
+      slippageBps: VAULT_DEFAULTS.slippageBps,
+      minReceiveUsd: preview.minReceiveUsd,
+    });
+    return { hash: txHash, blockNumber: null, lockId };
+  }
+
+  async function onLockSigned(res: SignTxResult) {
+    if (!token) return;
+    const lock: BullLock = {
+      ...preview,
+      id: res.lockId !== null && res.lockId !== undefined ? `onchain-${chain.id}-${res.lockId}` : `onchain-${chain.id}-tx-${res.hash.slice(2, 10)}`,
+      txHash: res.hash,
+    };
+    addLock(lock);
+    addTx({
+      id: res.hash,
+      hash: res.hash,
+      kind: 'lock',
+      token: token.symbol,
+      amount: amt,
+      amountRaw: String(amt),
+      usd: amt * entryPrice,
+      note: `Locked on-chain until ${new Date(unlockTime).toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' })}${target ? ` or ${target}x` : ''} · vault ${vaultStatus.deployed ? vaultStatus.address : ''}`,
+      at: Date.now(),
+      status: 'confirmed',
+      isSpam: false,
+      chainId: chain.id,
+      blockNumber: null,
+    });
+    setCreated(lock);
+    await refreshLocks();
   }
 
   if (created) {
@@ -375,21 +403,30 @@ export default function CreateLock() {
           <Text style={styles.sentence}>{lockSummarySentence(preview, exitLabel)}</Text>
           <Text style={styles.label}>Discipline PIN (6 digits)</Text>
           <TextInput style={styles.input} keyboardType="number-pad" maxLength={6} secureTextEntry placeholder="••••••" value={pin} onChangeText={setPin} />
-          <Text style={styles.label}>Session password (to sign)</Text>
-          <TextInput style={styles.input} secureTextEntry placeholder="••••••••" value={password} onChangeText={setPassword} autoCapitalize="none" autoCorrect={false} />
-          <Text style={styles.hint}>Confirm with your Discipline PIN + session password. Then approve the token spend and sign the lock transaction. The vault must be deployed on this chain — otherwise no lock is created.</Text>
+          <Text style={styles.hint}>Confirm with your Discipline PIN, then review and sign in the signing sheet. The vault must be deployed on this chain — otherwise no lock is created.</Text>
         </>
       )}
+
+      {formError ? <Text style={styles.error}>{formError}</Text> : null}
 
       <View style={styles.nav}>
         {step > 1 && <Btn label="Back" variant="ghost" onPress={() => setStep((s) => s - 1)} style={styles.navBtn} />}
         {step < 4 ? (
           <Btn label="Continue" onPress={next} style={styles.navBtn} />
         ) : (
-          <Btn label={creating ? 'Creating lock…' : 'Confirm Lock'} variant="mint" onPress={() => void confirm()} disabled={creating} style={styles.navBtn} />
+          <Btn label="Confirm Lock" variant="mint" onPress={() => void confirm()} style={styles.navBtn} />
         )}
       </View>
       <RiskNote />
+
+      <SignTransactionModal
+        visible={signModal !== null}
+        request={signModal}
+        biometricsEnabled={settings.biometrics}
+        onClose={() => setSignModal(null)}
+        onSign={signLock}
+        onSigned={(res) => void onLockSigned(res)}
+      />
     </ScrollView>
   );
 }

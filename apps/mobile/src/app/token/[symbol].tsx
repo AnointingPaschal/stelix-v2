@@ -771,7 +771,7 @@ export default function TokenDetail() {
           style={styles.actionBtn}
         />
         <Btn label="Send" onPress={() => router.push('/send')} style={styles.actionBtn} />
-        <Btn label="Swap" variant="ghost" onPress={() => router.push('/(tabs)/swap')} style={styles.actionBtn} />
+        <Btn label="Swap" variant="ghost" onPress={() => router.push({ pathname: '/(tabs)/swap', params: { from: sym } })} style={styles.actionBtn} />
       </View>
       <View style={styles.iconRow}>
         <Pressable style={styles.iconBtn} onPress={() => setAlertOn((v) => !v)}>

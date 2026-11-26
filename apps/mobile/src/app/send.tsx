@@ -1,12 +1,13 @@
 /** Screen 8 — Transfer Assets (v1): back + centred title, chain pill,
  *  Asset selector card, Recipient Address input with paste, Amount with
- *  Bal + MAX, live network-fee estimate, session-password signing.
- *  Locked funds can never be sent. Sends are REAL signed transactions
- *  (see lib/send.ts) — the hash is shown and recorded in History only
- *  after the transaction is mined. EVM chains only; Solana sends are
- *  refused honestly (no Solana send path is wired yet). */
+ *  Bal + MAX, live network-fee estimate. Signing happens ONLY in the
+ *  shared SignTransactionModal — there is no password field on this page.
+ *  Sends are REAL signed transactions (see lib/send.ts) — the hash is
+ *  shown and recorded in History only after the transaction is mined.
+ *  EVM chains only; Solana sends are refused honestly (no Solana send
+ *  path is wired yet). */
 import { useState } from 'react';
-import { Alert, Pressable, ScrollView, StyleSheet, Text, TextInput, View } from 'react-native';
+import { Pressable, ScrollView, StyleSheet, Text, TextInput, View } from 'react-native';
 import { router } from 'expo-router';
 import { ChevronDown, Clipboard as ClipboardIcon } from 'lucide-react-native';
 import * as Clipboard from 'expo-clipboard';
@@ -18,20 +19,25 @@ import { getSignerForChain } from '../lib/signer';
 import { estimateSendFee, sendToken, type SendEstimate, type SendResult } from '../lib/send';
 import { BottomSheet, Btn, RiskNote, ScreenHeader } from '../components/ui';
 import { TokenLogo } from '../components/TokenLogo';
+import {
+  SignTransactionModal,
+  type SignTxRequest,
+  type SignTxResult,
+} from '../components/SignTransactionModal';
 
 export default function Send() {
-  const { tokens, chain, address, addTx, refreshBalances } = useApp();
+  const { tokens, chain, address, settings, addTx, refreshBalances } = useApp();
   const spendable = tokens.filter((t) => !t.isSpam);
   const [symbol, setSymbol] = useState(chain.nativeSymbol);
   const [to, setTo] = useState('');
   const [amount, setAmount] = useState('');
   const [pickerOpen, setPickerOpen] = useState(false);
-  const [password, setPassword] = useState('');
   const [fee, setFee] = useState<SendEstimate | null>(null);
   const [feeError, setFeeError] = useState('');
   const [estimating, setEstimating] = useState(false);
-  const [sending, setSending] = useState(false);
+  const [formError, setFormError] = useState('');
   const [sent, setSent] = useState<SendResult | null>(null);
+  const [signModal, setSignModal] = useState<SignTxRequest | null>(null);
 
   const token = spendable.find((t) => t.symbol === symbol) ?? spendable[0];
   const amt = parseFloat(amount) || 0;
@@ -44,102 +50,97 @@ export default function Send() {
 
   async function review() {
     if (!token) return;
+    setFormError('');
     if (chain.kind !== 'evm') {
-      Alert.alert(
-        'Sending not available on Solana',
-        'Signed sends are wired for EVM chains only. Solana sends are not wired yet — no transaction was sent.',
-      );
+      setFormError('Sending is not available on Solana — signed sends are wired for EVM chains only. No transaction was sent.');
       return;
     }
     if (!isValidEvmAddress(to)) {
-      Alert.alert('Invalid address', 'That does not look like a valid address on this chain. Double-check it before sending.');
+      setFormError('That does not look like a valid address on this chain. Double-check it before sending.');
       return;
     }
     if (amt <= 0) {
-      Alert.alert('Enter an amount', 'How much do you want to send?');
+      setFormError('Enter an amount to send.');
       return;
     }
     if (amt > token.balance) {
-      Alert.alert(
-        'Locked funds cannot be sent',
-        `You only have ${fmtNum(token.balance)} ${token.symbol} spendable. ${fmtNum(token.locked)} ${token.symbol} is locked in the vault and cannot be selected.`,
+      setFormError(
+        `Locked funds cannot be sent — you only have ${fmtNum(token.balance)} ${token.symbol} spendable. ${fmtNum(token.locked)} ${token.symbol} is locked in the vault and cannot be selected.`,
       );
       return;
     }
-    // Live fee estimate from the chain RPC — shown before signing, never invented.
+    // Live fee estimate from the chain RPC — shown in the signing modal, never invented.
     setEstimating(true);
     setFeeError('');
-    let est: SendEstimate | null = null;
     try {
       const native = tokens.find((t) => t.address === '');
-      est = await estimateSendFee(
+      const est = await estimateSendFee(
         { chainId: chain.id, tokenAddress: token.address, tokenSymbol: token.symbol, tokenDecimals: token.decimals, to, amount: amt },
         address,
         native?.price ?? null,
       );
       setFee(est);
+      setSignModal({
+        title: 'Confirm Send',
+        actionLabel: 'Sign & Send',
+        fromAddress: address,
+        toAddress: to,
+        toLabel: 'Recipient',
+        network: `${chain.name}${chain.testnet ? ' (testnet)' : ''}`,
+        rows: [
+          { label: 'You send', value: `${fmtNum(amt)} ${token.symbol}` },
+          { label: 'Value', value: token.price === null ? 'Price unavailable' : fmtUsd(amt * token.price) },
+          {
+            label: 'Network fee (est.)',
+            value: `${est.feeNative} ${chain.nativeSymbol}${est.feeUsd !== null ? ` (≈ ${fmtUsd(est.feeUsd)})` : ''}`,
+          },
+          { label: 'Gas limit', value: est.gasLimit.toString() },
+        ],
+        warning: 'New-address warning: always double-check the first and last characters. Wrong-chain sends may be lost permanently.',
+        explorerBase: chain.explorerUrl,
+      });
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
       setFeeError(msg);
-      Alert.alert('Could not estimate the network fee', msg);
-      return;
+      setFormError(`Could not estimate the network fee: ${msg}`);
     } finally {
       setEstimating(false);
     }
-    const feeLine = est
-      ? `\nNetwork fee (est.): ${est.feeNative} ${chain.nativeSymbol}${est.feeUsd !== null ? ` (≈ ${fmtUsd(est.feeUsd)})` : ''}`
-      : '';
-    Alert.alert(
-      'Review Transaction',
-      `Send ${fmtNum(amt)} ${token.symbol} (${token.price === null ? 'price unavailable' : fmtUsd(amt * token.price)}) to ${to.slice(0, 10)}…${to.slice(-6)} on ${chain.name}${chain.testnet ? ' (testnet)' : ''}.${feeLine}\n\nEnter your session password below, then confirm to sign.`,
-      [
-        { text: 'Cancel', style: 'cancel' },
-        { text: 'Confirm & Sign', onPress: () => void doSend() },
-      ],
-    );
   }
 
-  async function doSend() {
+  async function signSend(password: string): Promise<SignTxResult> {
+    if (!token) throw new Error('No token selected.');
+    const signer = await getSignerForChain(password, chain.id);
+    const res = await sendToken(signer, {
+      chainId: chain.id,
+      tokenAddress: token.address,
+      tokenSymbol: token.symbol,
+      tokenDecimals: token.decimals,
+      to,
+      amount: amt,
+    });
+    return { hash: res.hash, blockNumber: res.blockNumber };
+  }
+
+  async function onSendSigned(res: SignTxResult) {
     if (!token) return;
-    if (password.length < 8) {
-      Alert.alert('Session password required', 'Enter your session password to sign this transaction. A wrong password is rejected — nothing is sent.');
-      return;
-    }
-    setSending(true);
-    try {
-      const signer = await getSignerForChain(password, chain.id);
-      const res = await sendToken(signer, {
-        chainId: chain.id,
-        tokenAddress: token.address,
-        tokenSymbol: token.symbol,
-        tokenDecimals: token.decimals,
-        to,
-        amount: amt,
-      });
-      setSent(res);
-      setPassword('');
-      addTx({
-        id: res.hash,
-        hash: res.hash,
-        kind: 'sent',
-        token: token.symbol,
-        amount: amt,
-        amountRaw: res.amountRaw,
-        usd: token.price !== null ? amt * token.price : null,
-        counterparty: to,
-        at: Date.now(),
-        status: 'confirmed',
-        isSpam: false,
-        chainId: chain.id,
-        blockNumber: res.blockNumber,
-      });
-      await refreshBalances();
-      Alert.alert('Sent', `Transaction mined: ${res.hash.slice(0, 12)}…${res.hash.slice(-6)}. Recorded in History.`);
-    } catch (e) {
-      Alert.alert('Send failed', e instanceof Error ? e.message : String(e));
-    } finally {
-      setSending(false);
-    }
+    setSent({ hash: res.hash, blockNumber: res.blockNumber ?? null, from: address, to, amountRaw: String(amt) });
+    addTx({
+      id: res.hash,
+      hash: res.hash,
+      kind: 'sent',
+      token: token.symbol,
+      amount: amt,
+      amountRaw: String(amt),
+      usd: token.price !== null ? amt * token.price : null,
+      counterparty: to,
+      at: Date.now(),
+      status: 'confirmed',
+      isSpam: false,
+      chainId: chain.id,
+      blockNumber: res.blockNumber ?? null,
+    });
+    await refreshBalances();
   }
 
   if (spendable.length === 0) {
@@ -221,18 +222,6 @@ export default function Send() {
         <Text style={styles.hint}>{fmtNum(token.locked)} {token.symbol} is locked in the vault and unavailable.</Text>
       ) : null}
 
-      <Text style={styles.label}>Session password (to sign)</Text>
-      <TextInput
-        style={styles.passwordInput}
-        secureTextEntry
-        placeholder="••••••••"
-        placeholderTextColor={COLORS.textMuted}
-        value={password}
-        onChangeText={setPassword}
-        autoCapitalize="none"
-        autoCorrect={false}
-      />
-      <Text style={styles.hint}>Your password decrypts the wallet on this device to sign once. A wrong password sends nothing.</Text>
       {fee ? (
         <Text style={styles.hint}>
           Estimated network fee: {fee.feeNative} {chain.nativeSymbol}
@@ -240,6 +229,7 @@ export default function Send() {
         </Text>
       ) : null}
       {feeError ? <Text style={styles.feeError}>{feeError}</Text> : null}
+      {formError ? <Text style={styles.feeError}>{formError}</Text> : null}
       {sent ? (
         <Text style={styles.sentLine}>
           Sent — tx {sent.hash.slice(0, 12)}…{sent.hash.slice(-6)}
@@ -249,12 +239,21 @@ export default function Send() {
 
       <View style={styles.spacer} />
       <Btn
-        label={estimating ? 'Estimating fee…' : sending ? 'Sending…' : 'Review Transaction'}
+        label={estimating ? 'Estimating fee…' : 'Review Transaction'}
         variant={valid ? 'primary' : 'secondary'}
         onPress={() => void review()}
-        disabled={!valid || estimating || sending}
+        disabled={!valid || estimating}
       />
       <RiskNote />
+
+      <SignTransactionModal
+        visible={signModal !== null}
+        request={signModal}
+        biometricsEnabled={settings.biometrics}
+        onClose={() => setSignModal(null)}
+        onSign={signSend}
+        onSigned={(res) => void onSendSigned(res)}
+      />
 
       <BottomSheet visible={pickerOpen} onClose={() => setPickerOpen(false)} title="Select Asset">
         {spendable.map((t) => (
@@ -348,15 +347,6 @@ const styles = StyleSheet.create({
   hint: { color: COLORS.textMuted, fontSize: 12, lineHeight: 17, marginTop: 6 },
   feeError: { color: COLORS.red, fontSize: 12, lineHeight: 17, marginTop: 6 },
   sentLine: { color: COLORS.mintDark, fontSize: 12, fontWeight: '700', lineHeight: 17, marginTop: 8 },
-  passwordInput: {
-    borderColor: COLORS.border,
-    borderRadius: 12,
-    borderWidth: 1,
-    fontSize: 14,
-    marginTop: 6,
-    paddingHorizontal: 12,
-    paddingVertical: 10,
-  },
   inner: { padding: 12 },
   label: { color: COLORS.textMuted, fontSize: 11, fontWeight: '700', letterSpacing: 1, marginTop: 14 },
   maxBtn: { backgroundColor: COLORS.navy, borderRadius: 8, paddingHorizontal: 8, paddingVertical: 4 },

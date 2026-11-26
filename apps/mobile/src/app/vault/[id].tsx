@@ -2,9 +2,11 @@
  *  claim / break. Compact v1 sizes. Claim and break are REAL on-chain
  *  calls (see lib/vault.ts) for on-chain locks — the hash is shown and
  *  recorded only after mining. executeTrigger is keeper-only and is not
- *  exposed here (see lib/vault.ts executeTriggerOnChain). */
+ *  exposed here (see lib/vault.ts executeTriggerOnChain). Signing happens
+ *  ONLY in the shared SignTransactionModal — there is no password field
+ *  on this page. */
 import { useEffect, useState } from 'react';
-import { Alert, ScrollView, StyleSheet, Text, TextInput, View } from 'react-native';
+import { Alert, ScrollView, StyleSheet, Text, View } from 'react-native';
 import { router, useLocalSearchParams } from 'expo-router';
 import { COLORS } from '../../theme';
 import { useApp } from '../../store/AppContext';
@@ -25,14 +27,25 @@ import {
 } from '../../lib/vault';
 import { Btn, Card, Chip, ProgressBar, RiskNote, SectionTitle } from '../../components/ui';
 import { PriceChart } from '../../components/PriceChart';
+import {
+  SignTransactionModal,
+  type SignTxRequest,
+  type SignTxResult,
+} from '../../components/SignTransactionModal';
+
+interface PendingVaultSign {
+  request: SignTxRequest;
+  run: (signer: Awaited<ReturnType<typeof getSignerForChain>>) => Promise<string>;
+  onDone: (hash: string) => void;
+}
 
 export default function LockDetail() {
   const { id } = useLocalSearchParams<{ id: string }>();
-  const { locks, tokens, updateLock, addTx, refreshLocks } = useApp();
+  const { locks, tokens, address, settings, updateLock, addTx, refreshLocks } = useApp();
   const lock = locks.find((l) => l.id === id);
-  const [password, setPassword] = useState('');
-  const [busy, setBusy] = useState(false);
+  const [notice, setNotice] = useState('');
   const [lastTx, setLastTx] = useState<string | null>(null);
+  const [signModal, setSignModal] = useState<PendingVaultSign | null>(null);
   const onChain = lock ? parseOnChainLockId(lock.id) : null;
   const [, setTick] = useState(0);
   useEffect(() => {
@@ -85,46 +98,76 @@ export default function LockDetail() {
     penaltyError = String(e);
   }
 
-  async function signAndRun(
+  /** Open the shared signing modal for one vault action. Nothing is
+   *  signed here — the modal collects the session password (or
+   *  biometrics) and calls signVaultTx below. */
+  function openSign(
     label: string,
-    run: (signer: Awaited<ReturnType<typeof getSignerForChain>>) => Promise<string>,
-  ): Promise<string | null> {
-    if (!lock || !onChain) return null;
-    if (password.length < 8) {
-      Alert.alert('Session password required', `Enter your session password to sign the ${label} transaction. A wrong password sends nothing.`);
-      return null;
-    }
-    setBusy(true);
-    try {
-      const signer = await getSignerForChain(password, lock.chainId);
-      const hash = await run(signer);
-      setLastTx(hash);
-      setPassword('');
-      await refreshLocks();
-      return hash;
-    } catch (e) {
-      Alert.alert(`${label} failed`, e instanceof Error ? e.message : String(e));
-      return null;
-    } finally {
-      setBusy(false);
-    }
+    actionLabel: string,
+    rows: { label: string; value: string; danger?: boolean }[],
+    warning: string | null,
+    run: PendingVaultSign['run'],
+    onDone: (hash: string) => void,
+  ) {
+    if (!lock) return;
+    const vault = getVaultDeploymentStatus(lock.chainId);
+    setNotice('');
+    setSignModal({
+      request: {
+        title: `Confirm ${label}`,
+        actionLabel,
+        fromAddress: address,
+        toAddress: vault.deployed ? vault.address : 'Vault not deployed on this chain',
+        toLabel: 'StelixVault contract',
+        network: `${chain.name}${chain.testnet ? ' (testnet)' : ''}`,
+        rows,
+        warning,
+        explorerBase: chain.explorerUrl,
+      },
+      run,
+      onDone,
+    });
   }
 
-  async function claim() {
+  async function signVaultTx(password: string): Promise<SignTxResult> {
+    if (!lock || !signModal) throw new Error('No vault action to sign.');
+    const signer = await getSignerForChain(password, lock.chainId);
+    const hash = await signModal.run(signer);
+    return { hash, blockNumber: null };
+  }
+
+  async function onVaultSigned(res: SignTxResult) {
+    if (!signModal) return;
+    setLastTx(res.hash);
+    await refreshLocks();
+    signModal.onDone(res.hash);
+  }
+
+  function claim() {
     if (!lock || !onChain) {
-      Alert.alert('No on-chain lock', 'This lock has no on-chain record, so there is nothing to claim on-chain.');
+      setNotice('This lock has no on-chain record, so there is nothing to claim on-chain.');
       return;
     }
-    const hash = await signAndRun('Claim', (signer) => claimMaturedOnChain(signer, lock.chainId, onChain.lockId));
-    if (!hash) return;
-    updateLock({ ...lock, status: 'completed', amountRemaining: 0 });
-    addTx({
-      id: hash, hash, kind: 'unlock', token: lock.tokenSymbol,
-      amount: lock.amountRemaining, amountRaw: String(lock.amountRemaining), usd: value,
-      note: `Matured lock claimed on-chain`,
-      at: Date.now(), status: 'confirmed', isSpam: false, chainId: lock.chainId, blockNumber: null,
-    });
-    Alert.alert('Claimed', `${fmtNum(lock.amountRemaining)} ${lock.tokenSymbol} returned to your wallet.\nTx ${hash.slice(0, 12)}…${hash.slice(-6)}.`);
+    openSign(
+      'Claim',
+      'Sign & Claim',
+      [
+        { label: 'You claim', value: `${fmtNum(lock.amountRemaining)} ${lock.tokenSymbol}` },
+        { label: 'Value', value: fmtUsd(value) },
+        { label: 'Lock', value: lock.id },
+      ],
+      null,
+      (signer) => claimMaturedOnChain(signer, lock.chainId, onChain.lockId),
+      (hash) => {
+        updateLock({ ...lock, status: 'completed', amountRemaining: 0 });
+        addTx({
+          id: hash, hash, kind: 'unlock', token: lock.tokenSymbol,
+          amount: lock.amountRemaining, amountRaw: String(lock.amountRemaining), usd: value,
+          note: `Matured lock claimed on-chain`,
+          at: Date.now(), status: 'confirmed', isSpam: false, chainId: lock.chainId, blockNumber: null,
+        });
+      },
+    );
   }
 
   /** First ladder stage whose target the live price has reached. The
@@ -138,25 +181,33 @@ export default function LockDetail() {
   async function claimStage() {
     if (!lock || !onChain || dueStageIndex < 0) return;
     const stage = lock.ladder[dueStageIndex];
-    const hash = await signAndRun('Claim stage', (signer) =>
-      claimTriggeredStageOnChain(signer, lock.chainId, onChain.lockId, dueStageIndex),
-    );
-    if (!hash) return;
-    const nextLadder = lock.ladder.map((s, i) => (i === dueStageIndex ? { ...s, status: 'sold' as const } : s));
     const soldAmount = (lock.amount * stage.percent) / 100;
-    updateLock({
-      ...lock,
-      ladder: nextLadder,
-      amountRemaining: Math.max(0, lock.amountRemaining - soldAmount),
-      status: lock.amountRemaining - soldAmount <= 0 ? 'completed' : 'partially-sold',
-    });
-    addTx({
-      id: hash, hash, kind: 'autosell', token: lock.tokenSymbol,
-      amount: soldAmount, amountRaw: String(soldAmount), usd: soldAmount * currentPrice,
-      note: `Ladder stage claimed on-chain: ${stage.percent}% at ${stage.multiple}x`,
-      at: Date.now(), status: 'confirmed', isSpam: false, chainId: lock.chainId, blockNumber: null,
-    });
-    Alert.alert('Stage claimed', `${stage.percent}% at ${stage.multiple}x returned to your wallet.\nTx ${hash.slice(0, 12)}…${hash.slice(-6)}.`);
+    openSign(
+      'Claim Stage',
+      'Sign & Claim Stage',
+      [
+        { label: 'You claim', value: `${fmtNum(soldAmount)} ${lock.tokenSymbol} (${stage.percent}% at ${stage.multiple}x)` },
+        { label: 'Value', value: fmtUsd(soldAmount * currentPrice) },
+        { label: 'Lock', value: lock.id },
+      ],
+      null,
+      (signer) => claimTriggeredStageOnChain(signer, lock.chainId, onChain.lockId, dueStageIndex),
+      (hash) => {
+        const nextLadder = lock.ladder.map((s, i) => (i === dueStageIndex ? { ...s, status: 'sold' as const } : s));
+        updateLock({
+          ...lock,
+          ladder: nextLadder,
+          amountRemaining: Math.max(0, lock.amountRemaining - soldAmount),
+          status: lock.amountRemaining - soldAmount <= 0 ? 'completed' : 'partially-sold',
+        });
+        addTx({
+          id: hash, hash, kind: 'autosell', token: lock.tokenSymbol,
+          amount: soldAmount, amountRaw: String(soldAmount), usd: soldAmount * currentPrice,
+          note: `Ladder stage claimed on-chain: ${stage.percent}% at ${stage.multiple}x`,
+          at: Date.now(), status: 'confirmed', isSpam: false, chainId: lock.chainId, blockNumber: null,
+        });
+      },
+    );
   }
 
   const coolingOffMs = lock?.breakMode === 'guardian' ? 48 * 3_600_000 : 24 * 3_600_000;
@@ -165,51 +216,54 @@ export default function LockDetail() {
 
   async function executeBreak() {
     if (!lock || !onChain) return;
-    const hash = await signAndRun('Execute break', (signer) => executeBreakOnChain(signer, lock.chainId, onChain.lockId));
-    if (!hash) return;
-    updateLock({ ...lock, status: 'broken', amountRemaining: 0 });
-    addTx({
-      id: hash, hash, kind: 'unlock', token: lock.tokenSymbol,
-      amount: lock.amountRemaining, amountRaw: String(lock.amountRemaining), usd: value,
-      note: `Lock broken on-chain after cooling-off${penalty > 0 ? ` (penalty ${fmtNum(penalty)} ${lock.tokenSymbol})` : ''}`,
-      at: Date.now(), status: 'confirmed', isSpam: false, chainId: lock.chainId, blockNumber: null,
-    });
-    Alert.alert('Lock broken', `Tx ${hash.slice(0, 12)}…${hash.slice(-6)}. The remaining funds (minus any penalty) are back in your wallet.`);
+    openSign(
+      'Execute Break',
+      'Sign & Execute Break',
+      [
+        { label: 'You receive', value: `${fmtNum(Math.max(0, lock.amountRemaining - penalty))} ${lock.tokenSymbol}` },
+        { label: 'Penalty', value: penalty > 0 ? `${fmtNum(penalty)} ${lock.tokenSymbol} (${lock.penaltyBps / 100}%)` : 'None' },
+        { label: 'Lock', value: lock.id },
+      ],
+      'Completing the break returns the remaining funds (minus any penalty) to your wallet.',
+      (signer) => executeBreakOnChain(signer, lock.chainId, onChain.lockId),
+      (hash) => {
+        updateLock({ ...lock, status: 'broken', amountRemaining: 0 });
+        addTx({
+          id: hash, hash, kind: 'unlock', token: lock.tokenSymbol,
+          amount: lock.amountRemaining, amountRaw: String(lock.amountRemaining), usd: value,
+          note: `Lock broken on-chain after cooling-off${penalty > 0 ? ` (penalty ${fmtNum(penalty)} ${lock.tokenSymbol})` : ''}`,
+          at: Date.now(), status: 'confirmed', isSpam: false, chainId: lock.chainId, blockNumber: null,
+        });
+      },
+    );
   }
 
   function requestBreak() {
     if (!lock) return;
     if (lock.breakMode === 'immutable') {
-      Alert.alert('Immutable lock', 'This lock cannot be broken early. It unlocks on its date or its price target.');
+      setNotice('Immutable lock — this lock cannot be broken early. It unlocks on its date or its price target.');
       return;
     }
     if (!onChain) {
-      Alert.alert('No on-chain lock', 'This lock has no on-chain record, so no break can be requested on-chain.');
+      setNotice('This lock has no on-chain record, so no break can be requested on-chain.');
       return;
     }
-    Alert.alert(
-      'Break this lock?',
-      penalty > 0
-        ? `Early break costs ${fmtNum(penalty)} ${lock.tokenSymbol} (${lock.penaltyBps / 100}% penalty) after a 24-hour cooling-off period. The penalty is waived only when a target or the date triggers the exit.`
-        : 'This break has no token penalty, but it still needs the cooling-off period and your session password to sign.',
+    openSign(
+      'Request Break',
+      'Sign & Start Cooling-off',
       [
-        { text: 'Cancel', style: 'cancel' },
-        {
-          text: 'Start cooling-off',
-          style: 'destructive',
-          onPress: () => {
-            void (async () => {
-              const hash = await signAndRun('Request break', (signer) =>
-                requestBreakOnChain(signer, lock.chainId, onChain.lockId),
-              );
-              if (!hash) return;
-              updateLock({ ...lock, breakRequestedAt: Date.now() });
-              addTx({ id: hash, hash, kind: 'unlock', token: lock.tokenSymbol, amount: 0, amountRaw: '0', usd: 0, note: `Break requested on-chain for ${lock.id} — cooling-off started`, at: Date.now(), status: 'confirmed', isSpam: false, chainId: lock.chainId, blockNumber: null });
-              Alert.alert('Cooling-off started', `You can complete the break after ${lock.breakMode === 'guardian' ? '48' : '24'} hours.\nTx ${hash.slice(0, 12)}…${hash.slice(-6)}.`);
-            })();
-          },
-        },
+        { label: 'Locked', value: `${fmtNum(lock.amountRemaining)} ${lock.tokenSymbol}` },
+        { label: 'Penalty', value: penalty > 0 ? `${fmtNum(penalty)} ${lock.tokenSymbol} (${lock.penaltyBps / 100}%)` : 'None' },
+        { label: 'Cooling-off', value: lock.breakMode === 'guardian' ? '48 hours' : '24 hours' },
       ],
+      penalty > 0
+        ? `Early break costs ${fmtNum(penalty)} ${lock.tokenSymbol} (${lock.penaltyBps / 100}% penalty) after a ${lock.breakMode === 'guardian' ? '48' : '24'}-hour cooling-off period. The penalty is waived only when a target or the date triggers the exit.`
+        : 'This break has no token penalty, but it still needs the cooling-off period.',
+      (signer) => requestBreakOnChain(signer, lock.chainId, onChain.lockId),
+      (hash) => {
+        updateLock({ ...lock, breakRequestedAt: Date.now() });
+        addTx({ id: hash, hash, kind: 'unlock', token: lock.tokenSymbol, amount: 0, amountRaw: '0', usd: 0, note: `Break requested on-chain for ${lock.id} — cooling-off started`, at: Date.now(), status: 'confirmed', isSpam: false, chainId: lock.chainId, blockNumber: null });
+      },
     );
   }
 
@@ -293,18 +347,7 @@ export default function LockDetail() {
         <Text style={styles.sentence}>{lockSummarySentence(lock, chain.exitStablecoinLabel)}</Text>
       </Card>
 
-      <Text style={styles.label}>Session password (to sign)</Text>
-      <TextInput
-        style={styles.passwordInput}
-        secureTextEntry
-        placeholder="••••••••"
-        placeholderTextColor={COLORS.textMuted}
-        value={password}
-        onChangeText={setPassword}
-        autoCapitalize="none"
-        autoCorrect={false}
-      />
-      <Text style={styles.hint}>Claim, stage-claim and break are signed on-chain with your session password. A wrong password sends nothing.</Text>
+      {notice ? <Text style={styles.notice}>{notice}</Text> : null}
       {lastTx ? (
         <Text style={styles.sentLine}>Last tx {lastTx.slice(0, 12)}…{lastTx.slice(-6)} — recorded in History.</Text>
       ) : null}
@@ -314,13 +357,13 @@ export default function LockDetail() {
 
       <View style={styles.actions}>
         {matured && lock.status !== 'completed' && (
-          <Btn label={busy ? 'Signing…' : 'Claim'} variant="mint" onPress={() => void claim()} disabled={busy || !onChain} style={styles.actionBtn} />
+          <Btn label="Claim" variant="mint" onPress={() => void claim()} disabled={!onChain} style={styles.actionBtn} />
         )}
         {dueStageIndex >= 0 && lock.status !== 'completed' && (
-          <Btn label={busy ? 'Signing…' : `Claim ${lock.ladder[dueStageIndex].multiple}x stage`} variant="mint" onPress={() => void claimStage()} disabled={busy || !onChain} style={styles.actionBtn} />
+          <Btn label={`Claim ${lock.ladder[dueStageIndex].multiple}x stage`} variant="mint" onPress={() => void claimStage()} disabled={!onChain} style={styles.actionBtn} />
         )}
         {breakReady && lock.status !== 'completed' && lock.status !== 'broken' ? (
-          <Btn label={busy ? 'Signing…' : 'Execute Break'} variant="danger" onPress={() => void executeBreak()} disabled={busy || !onChain} style={styles.actionBtn} />
+          <Btn label="Execute Break" variant="danger" onPress={() => void executeBreak()} disabled={!onChain} style={styles.actionBtn} />
         ) : lock.status === 'completed' ? (
           <Chip label="Completed" tone="mint" />
         ) : (
@@ -328,13 +371,22 @@ export default function LockDetail() {
             label={penaltyError ? 'Break Lock (not allowed)' : lock.breakRequestedAt !== undefined ? 'Cooling-off running…' : 'Break Lock'}
             variant="danger"
             onPress={requestBreak}
-            disabled={!!penaltyError || busy || !onChain || lock.breakRequestedAt !== undefined}
+            disabled={!!penaltyError || !onChain || lock.breakRequestedAt !== undefined}
             style={styles.actionBtn}
           />
         )}
         <Btn label="Share Receipt" variant="ghost" onPress={() => Alert.alert('Receipt', `${lock.id} · ${fmtNum(lock.amount)} ${lock.tokenSymbol} · ${chain.name}`)} style={styles.actionBtn} />
       </View>
       <RiskNote />
+
+      <SignTransactionModal
+        visible={signModal !== null}
+        request={signModal?.request ?? null}
+        biometricsEnabled={settings.biometrics}
+        onClose={() => setSignModal(null)}
+        onSign={signVaultTx}
+        onSigned={(res) => void onVaultSigned(res)}
+      />
     </ScrollView>
   );
 }
@@ -359,15 +411,7 @@ const styles = StyleSheet.create({
   label: { color: COLORS.textOnNavyMuted, fontSize: 12, fontWeight: '700' },
   missing: { backgroundColor: COLORS.bg, flex: 1, gap: 12, justifyContent: 'center', padding: 16 },
   missingBody: { color: COLORS.textMuted, fontSize: 12 },
-  passwordInput: {
-    borderColor: COLORS.border,
-    borderRadius: 12,
-    borderWidth: 1,
-    fontSize: 14,
-    marginTop: 6,
-    paddingHorizontal: 12,
-    paddingVertical: 10,
-  },
+  notice: { color: COLORS.red, fontSize: 12, fontWeight: '700', lineHeight: 17, marginTop: 8 },
   sentLine: { color: COLORS.mintDark, fontSize: 12, fontWeight: '700', lineHeight: 17, marginTop: 8 },
   progressLabel: { color: COLORS.textMuted, fontSize: 12, marginTop: 6 },
   root: { backgroundColor: COLORS.bg, flex: 1 },

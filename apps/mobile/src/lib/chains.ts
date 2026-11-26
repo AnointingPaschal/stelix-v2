@@ -269,3 +269,67 @@ export function requireVaultAddress(chainId: string): string {
   }
   return status.address;
 }
+
+// ---------------------------------------------------------------------------
+// Launchpad contract registry — StelixTokenFactory + StelixLaunchpad
+// (contracts/src/launchpad/). Both null until deployed on Arc testnet and
+// registered here AND in the admin D1 `deployments` table. Fill an address
+// ONLY after a verified testnet deploy; see contracts/DEPLOY_ARC_TESTNET.md.
+// The launchpad is FREE: no Stelix launch fee, gas only (Arc USDC gas).
+// ---------------------------------------------------------------------------
+
+export const LAUNCHPAD_NOT_DEPLOYED_MESSAGE =
+  'Launchpad contracts are not deployed on Arc testnet yet';
+
+export const TOKEN_FACTORY_ADDRESSES: Record<string, string | null> = {
+  arc: null,
+  bnb: null,
+  base: null,
+  ethereum: null,
+  polygon: null,
+  solana: null,
+};
+
+export const LAUNCHPAD_ADDRESSES: Record<string, string | null> = {
+  arc: null,
+  bnb: null,
+  base: null,
+  ethereum: null,
+  polygon: null,
+  solana: null,
+};
+
+export type LaunchpadDeploymentStatus =
+  | { deployed: true; factory: string; launchpad: string }
+  | { deployed: false; factory: string | null; launchpad: string | null; message: string };
+
+export function getLaunchpadDeploymentStatus(chainId: string): LaunchpadDeploymentStatus {
+  const factory = TOKEN_FACTORY_ADDRESSES[chainId] ?? null;
+  const launchpad = LAUNCHPAD_ADDRESSES[chainId] ?? null;
+  if (factory && launchpad) return { deployed: true, factory, launchpad };
+  return { deployed: false, factory, launchpad, message: LAUNCHPAD_NOT_DEPLOYED_MESSAGE };
+}
+
+/** Throws when the launchpad is not deployed on this chain. Use before any
+ *  on-chain launchpad call so the UI can show the not-deployed state. */
+export function requireLaunchpadAddress(chainId: string): string {
+  const status = getLaunchpadDeploymentStatus(chainId);
+  if (!status.deployed) {
+    throw new Error(
+      `${LAUNCHPAD_NOT_DEPLOYED_MESSAGE} (${getChain(chainId).name}). ` +
+        'Launches go live once the launchpad contracts are deployed on Arc testnet.',
+    );
+  }
+  return status.launchpad;
+}
+
+export function requireTokenFactoryAddress(chainId: string): string {
+  const status = getLaunchpadDeploymentStatus(chainId);
+  if (!status.deployed) {
+    throw new Error(
+      `${LAUNCHPAD_NOT_DEPLOYED_MESSAGE} (${getChain(chainId).name}). ` +
+        'Token creation goes live once the launchpad contracts are deployed on Arc testnet.',
+    );
+  }
+  return status.factory;
+}

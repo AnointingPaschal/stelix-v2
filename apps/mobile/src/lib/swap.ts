@@ -277,6 +277,75 @@ export async function executeSwap(
   return executeOneInchSwap(signer, fromAddress, quote, amountIn, chain.chainId);
 }
 
+export interface SwapFeeEstimate {
+  feeNative: string;
+  feeUsd: number | null;
+  gasLimit: bigint;
+}
+
+/** Live gas estimate for a PancakeSwap (BNB) swap from a fresh quote.
+ *  Returns null when no estimate is possible — non-BNB chains (1inch
+ *  builds the tx at execution time), Arc (no router), or an RPC failure
+ *  (e.g. a token→token estimate reverts before the router allowance is
+ *  set). The caller shows "estimated at signing" instead of inventing
+ *  a fee. Never throws. */
+export async function estimateSwapFee(
+  quote: SwapQuote,
+  fromAddress: string,
+  nativePriceUsd: number | null,
+): Promise<SwapFeeEstimate | null> {
+  if (quote.chainId !== 'bnb') return null;
+  try {
+    const chain = getChain(quote.chainId);
+    const provider = getProvider(chain);
+    const router = new ethers.Contract(PANCAKESWAP_V2_ROUTER, ROUTER_SWAP_ABI, provider);
+    const path = pancakeSwapPath(quote.fromTokenAddress, quote.toTokenAddress);
+    const amountIn = BigInt(quote.amountIn);
+    const amountOutMin = BigInt(quote.minReceive);
+    const deadline = BigInt(Math.floor(Date.now() / 1000) + 20 * 60);
+    const fromNative =
+      !quote.fromTokenAddress || quote.fromTokenAddress.toLowerCase() === NATIVE_SENTINEL.toLowerCase();
+    const toNative =
+      !quote.toTokenAddress || quote.toTokenAddress.toLowerCase() === NATIVE_SENTINEL.toLowerCase();
+    let populated: ethers.TransactionRequest;
+    if (fromNative) {
+      populated = await router.swapExactETHForTokens.populateTransaction(amountOutMin, path, fromAddress, deadline, {
+        value: amountIn,
+      });
+    } else if (toNative) {
+      populated = await router.swapExactTokensForETH.populateTransaction(
+        amountIn,
+        amountOutMin,
+        path,
+        fromAddress,
+        deadline,
+      );
+    } else {
+      populated = await router.swapExactTokensForTokens.populateTransaction(
+        amountIn,
+        amountOutMin,
+        path,
+        fromAddress,
+        deadline,
+      );
+    }
+    const [gasLimit, feeData] = await Promise.all([
+      provider.estimateGas({ ...populated, from: fromAddress }),
+      provider.getFeeData(),
+    ]);
+    const gasPrice = feeData.gasPrice ?? feeData.maxFeePerGas ?? 0n;
+    const feeRaw = gasLimit * gasPrice;
+    const feeNative = ethers.formatUnits(feeRaw, chain.nativeDecimals);
+    return {
+      feeNative,
+      feeUsd: nativePriceUsd !== null ? Number(feeNative) * nativePriceUsd : null,
+      gasLimit,
+    };
+  } catch {
+    return null;
+  }
+}
+
 async function executePancakeSwap(
   signer: ethers.Signer,
   fromAddress: string,
