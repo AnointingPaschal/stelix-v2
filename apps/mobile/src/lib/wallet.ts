@@ -1,7 +1,7 @@
 /**
  * Non-custodial wallet — ethers v6.
  *
- * LIVE ONLY. No demo wallets, no sample balances, no fallback seed.
+ * LIVE ONLY. No placeholder wallets, no sample balances, no fallback seed.
  * - Create: a real 12-word mnemonic from ethers (Wallet.createRandom),
  *   derived address, stored ONLY as a PBKDF2/AES-GCM encrypted payload
  *   (see crypto.ts) under the user's session password.
@@ -12,6 +12,10 @@
  *   long it is. There is no password bypass.
  * - Export: only after password re-entry (decrypt), never from a cached
  *   plaintext copy.
+ * - Solana: the Solana address is derived from the same mnemonic at the
+ *   standard path m/44'/501'/0'/0' (see lib/solana.ts) and stored as a
+ *   PUBLIC address in the wallet meta. Wallets imported from a raw
+ *   private key have no mnemonic, so they have no Solana address.
  *
  * Storage: expo-secure-store on native (where available — it is a native
  * module, so a development build is required; it is NOT in Expo Go).
@@ -22,6 +26,7 @@
  */
 import { ethers } from 'ethers';
 import { assertStrongPassword, decryptSecret, encryptSecret } from './crypto';
+import { deriveSolanaAddress } from './solana';
 import { kvDelete, kvGet, kvSet } from './storage';
 
 /** Web detection without importing react-native (which Jest cannot
@@ -41,12 +46,23 @@ const WALLET_META_KEY = 'stelix_wallet_meta_v2';
 export interface WalletMeta {
   address: string;
   createdAt: number;
-  /** Kept for backwards compatibility with the old demo-era field.
-   *  Always false now — Stelix no longer creates demo wallets. */
-  isDemo: boolean;
   hasBiometrics: boolean;
   /** Optional display name given at create/import time. */
   name?: string;
+  /** Solana address derived from the same mnemonic (m/44'/501'/0'/0').
+   *  Null when the wallet was imported from a raw private key. */
+  solanaAddress?: string | null;
+}
+
+/** Best-effort Solana derivation: never fails wallet creation/import.
+ *  Returns null when there is no mnemonic to derive from. */
+function tryDeriveSolanaAddress(phrase: string | null): string | null {
+  if (!phrase) return null;
+  try {
+    return deriveSolanaAddress(phrase);
+  } catch {
+    return null;
+  }
 }
 
 /**
@@ -156,9 +172,9 @@ export async function createWallet(password: string, name?: string): Promise<{ m
   const meta: WalletMeta = {
     address: wallet.address,
     createdAt: Date.now(),
-    isDemo: false,
     hasBiometrics: false,
     name: name?.trim() || undefined,
+    solanaAddress: tryDeriveSolanaAddress(phrase),
   };
   await storeSet(WALLET_META_KEY, JSON.stringify(meta));
   return { mnemonic: phrase, address: wallet.address };
@@ -195,9 +211,9 @@ export async function importWallet(secret: string, password: string, name?: stri
   const meta: WalletMeta = {
     address: wallet.address,
     createdAt: Date.now(),
-    isDemo: false,
     hasBiometrics: false,
     name: name?.trim() || undefined,
+    solanaAddress: tryDeriveSolanaAddress((wallet as ethers.HDNodeWallet).mnemonic?.phrase ?? null),
   };
   await storeSet(WALLET_META_KEY, JSON.stringify(meta));
   return wallet.address;
@@ -242,8 +258,7 @@ export async function getWalletMeta(): Promise<WalletMeta | null> {
   const raw = await storeGet(WALLET_META_KEY);
   if (!raw) return null;
   try {
-    const meta = JSON.parse(raw) as WalletMeta;
-    return { ...meta, isDemo: false };
+    return JSON.parse(raw) as WalletMeta;
   } catch {
     return null;
   }
@@ -268,8 +283,5 @@ export function isValidMnemonic(phrase: string): boolean {
   return ethers.Mnemonic.isValidMnemonic(phrase.trim());
 }
 
-/** Validate a Solana base58 address format (32–44 base58 chars).
- *  Format-only check — it does not prove the account exists on-chain. */
-export function isValidSolanaAddress(addr: string): boolean {
-  return /^[1-9A-HJ-NP-Za-km-z]{32,44}$/.test(addr.trim());
-}
+/** Solana address validation lives in lib/solana.ts (PublicKey-based). */
+export { isValidSolanaAddress } from './solana';
