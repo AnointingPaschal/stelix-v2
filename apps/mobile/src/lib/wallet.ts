@@ -24,6 +24,17 @@ import { ethers } from 'ethers';
 import { assertStrongPassword, decryptSecret, encryptSecret } from './crypto';
 import { kvDelete, kvGet, kvSet } from './storage';
 
+/** Web detection without importing react-native (which Jest cannot
+ *  transform in this setup): web has document + localStorage, native
+ *  and Node do not. */
+function isWeb(): boolean {
+  try {
+    return typeof document !== 'undefined' && typeof localStorage !== 'undefined';
+  } catch {
+    return false;
+  }
+}
+
 const WALLET_KEY = 'stelix_encrypted_wallet_v2';
 const WALLET_META_KEY = 'stelix_wallet_meta_v2';
 
@@ -34,17 +45,46 @@ export interface WalletMeta {
    *  Always false now — Stelix no longer creates demo wallets. */
   isDemo: boolean;
   hasBiometrics: boolean;
+  /** Optional display name given at create/import time. */
+  name?: string;
 }
 
-/** Whether SecureStore could be loaded in this runtime. */
+/**
+ * Whether SecureStore could be loaded in this runtime.
+ *
+ * ROOT CAUSE of the web Create Wallet bug (2026-11-26): on web the
+ * dynamic `import('expo-secure-store')` SUCCEEDS, but the web build of
+ * the native module (`ExpoSecureStore.web.js`) is literally
+ * `export default {}` — an empty object. The old code treated a
+ * successful import as "SecureStore is available", so `storeSet` called
+ * `SecureStore.setItemAsync`, which calls the missing
+ * `ExpoSecureStore.setValueWithKeyAsync` and throws a TypeError on every
+ * save. The handler caught it and called `Alert.alert`, which on
+ * react-native-web is an empty no-op class — so the user saw nothing.
+ * Fix: never use SecureStore on web, verify `isAvailableAsync()` and
+ * that the methods exist, and fall back to encrypted localStorage
+ * whenever SecureStore fails for any reason.
+ */
 let secureStoreAvailable: boolean | null = null;
 
 async function secureStore(): Promise<typeof import('expo-secure-store') | null> {
+  if (isWeb()) return null;
   if (secureStoreAvailable === false) return null;
   try {
     // Dynamic import: static import breaks Jest/node and web bundles
     // where the native module is absent.
     const mod = await import('expo-secure-store');
+    if (typeof mod.setItemAsync !== 'function' || typeof mod.getItemAsync !== 'function') {
+      secureStoreAvailable = false;
+      return null;
+    }
+    if (typeof mod.isAvailableAsync === 'function') {
+      const available = await mod.isAvailableAsync().catch(() => false);
+      if (!available) {
+        secureStoreAvailable = false;
+        return null;
+      }
+    }
     secureStoreAvailable = true;
     return mod;
   } catch {
@@ -56,8 +96,14 @@ async function secureStore(): Promise<typeof import('expo-secure-store') | null>
 async function storeSet(key: string, value: string): Promise<void> {
   const ss = await secureStore();
   if (ss) {
-    await ss.setItemAsync(key, value);
-    return;
+    try {
+      await ss.setItemAsync(key, value);
+      return;
+    } catch {
+      // SecureStore failed at runtime — fall through to the encrypted
+      // localStorage fallback instead of losing the wallet.
+      secureStoreAvailable = false;
+    }
   }
   // WEB FALLBACK (labelled): encrypted payload in localStorage. The value
   // is already PBKDF2/AES-GCM encrypted (wallet.ts/crypto.ts); plaintext
@@ -67,15 +113,25 @@ async function storeSet(key: string, value: string): Promise<void> {
 
 async function storeGet(key: string): Promise<string | null> {
   const ss = await secureStore();
-  if (ss) return ss.getItemAsync(key);
+  if (ss) {
+    try {
+      const value = await ss.getItemAsync(key);
+      if (value !== null) return value;
+    } catch {
+      secureStoreAvailable = false;
+    }
+  }
   return kvGet(key);
 }
 
 async function storeDelete(key: string): Promise<void> {
   const ss = await secureStore();
   if (ss) {
-    await ss.deleteItemAsync(key);
-    return;
+    try {
+      await ss.deleteItemAsync(key);
+    } catch {
+      secureStoreAvailable = false;
+    }
   }
   await kvDelete(key);
 }
@@ -91,7 +147,7 @@ export function generateMnemonic(): string {
   return phrase;
 }
 
-export async function createWallet(password: string): Promise<{ mnemonic: string; address: string }> {
+export async function createWallet(password: string, name?: string): Promise<{ mnemonic: string; address: string }> {
   assertStrongPassword(password);
   const phrase = generateMnemonic();
   const wallet = ethers.Wallet.fromPhrase(phrase);
@@ -102,6 +158,7 @@ export async function createWallet(password: string): Promise<{ mnemonic: string
     createdAt: Date.now(),
     isDemo: false,
     hasBiometrics: false,
+    name: name?.trim() || undefined,
   };
   await storeSet(WALLET_META_KEY, JSON.stringify(meta));
   return { mnemonic: phrase, address: wallet.address };
@@ -127,7 +184,7 @@ function walletFromSecret(secret: string): ethers.Wallet | ethers.HDNodeWallet {
 }
 
 /** Import from a seed phrase or private key. Throws on invalid input. */
-export async function importWallet(secret: string, password: string): Promise<string> {
+export async function importWallet(secret: string, password: string, name?: string): Promise<string> {
   assertStrongPassword(password);
   const wallet = walletFromSecret(secret);
   // Store the canonical secret (phrase when available, else private key)
@@ -140,6 +197,7 @@ export async function importWallet(secret: string, password: string): Promise<st
     createdAt: Date.now(),
     isDemo: false,
     hasBiometrics: false,
+    name: name?.trim() || undefined,
   };
   await storeSet(WALLET_META_KEY, JSON.stringify(meta));
   return wallet.address;
