@@ -10,14 +10,17 @@ crons = ["*/5 * * * *"]
 [[d1_databases]]
 binding = "DB"
 database_name = "stelix-admin-db"
-database_id = "REPLACE_WITH_D1_DATABASE_ID"
+database_id = "598cd9fd-a29b-4286-b99d-f51c534d0308"
 
 [vars]
 TWAP_WINDOW_MINUTES = "30"
 MAX_PRICE_IMPACT_BPS = "500"
 DEFAULT_SLIPPAGE_BPS = "150"
 MAX_RETRIES = "3"
-
+# Chain RPC + vault addresses (public config, not secrets). Fill in after the
+# Arc testnet deploy; the keeper skips a chain whose vault is unset.
+RPC_URL_ARC = "https://rpc.testnet.arc.network"
+VAULT_ADDRESS_ARC = ""
 # Secrets (set via `wrangler secret put <NAME>` — never commit values):
-# KEEPER_PRIVATE_KEY (keeper wallet; can ONLY call executeTrigger per contract),
-# RPC_URL_ARC, RPC_URL_BNB, CHAINLINK / DEX API keys, NOTIFY_WEBHOOK_URL
+# KEEPER_PRIVATE_KEY (keeper wallet; can ONLY call executeTrigger/pokePrice per contract),
+# NOTIFY_WEBHOOK_URL
