@@ -2,14 +2,17 @@
   "name": "stelix-admin",
   "version": "0.1.0",
   "private": true,
-  "description": "Stelix 2.0 admin portal — Cloudflare Pages + Workers + D1. Demo data labelled DEMO; production reads D1 via Workers API.",
+  "description": "Stelix 2.0 admin portal — Cloudflare Pages + Workers + D1. All data is live: D1 rows and on-chain RPC reads; no sample data.",
   "type": "module",
   "scripts": {
     "dev": "vite",
     "build": "tsc --noEmit && vite build && npm run build:worker",
     "build:worker": "esbuild src/worker/index.ts --bundle --format=esm --outfile=dist/_worker.js",
     "preview": "vite preview",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "typecheck:worker": "tsc --noEmit -p tsconfig.worker.json",
+    "compile:contract": "node scripts/compile.mjs",
+    "test": "vitest run"
   },
   "dependencies": {
     "lucide-react": "^1.81.0",
@@ -18,11 +21,14 @@
     "react-router-dom": "^6.28.0"
   },
   "devDependencies": {
+    "@cloudflare/workers-types": "^4.20260702.1",
     "@types/react": "^18.3.12",
     "@types/react-dom": "^18.3.0",
     "@vitejs/plugin-react": "^4.3.4",
+    "solc": "^0.8.24",
     "typescript": "^5.6.3",
     "vite": "^5.4.11",
+    "vitest": "^2.1.8",
     "wrangler": "^3.80.0"
   }
 }
