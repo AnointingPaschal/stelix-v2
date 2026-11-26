@@ -1,11 +1,8 @@
 import type { ReactNode } from 'react'
-import { FlaskConical, Radio } from 'lucide-react'
+import { Radio } from 'lucide-react'
 
 export function LivePill() {
   return <span className="pill pill-live"><span className="dot" />Live</span>
-}
-export function DemoPill() {
-  return <span className="pill pill-demo"><FlaskConical />Demo</span>
 }
 export function LiveNote() {
   return (
