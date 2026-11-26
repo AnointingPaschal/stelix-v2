@@ -2,11 +2,29 @@ import { useEffect, useState } from 'react'
 import { Download, KeyRound, ShieldCheck, Users } from 'lucide-react'
 import { api } from '../lib/api'
 import type { AuditEntry } from '../lib/types'
-import { DemoPill, LiveNote, PageHeader, SectionTitle } from '../components/ui'
+import { LiveNote, PageHeader, SectionTitle } from '../components/ui'
 
 export default function Audit() {
   const [rows, setRows] = useState<AuditEntry[]>([])
-  useEffect(() => { api.getAudit().then(setRows) }, [])
+  const [error, setError] = useState('')
+  const [notice, setNotice] = useState('')
+  useEffect(() => { api.getAudit().then(setRows).catch((e: Error) => setError(e.message)) }, [])
+
+  const exportBackup = async () => {
+    setError(''); setNotice('')
+    try {
+      const data = await api.getBackup()
+      const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' })
+      const url = URL.createObjectURL(blob)
+      const a = document.createElement('a')
+      a.href = url
+      a.download = `stelix-admin-backup-${new Date().toISOString().slice(0, 10)}.json`
+      a.click()
+      URL.revokeObjectURL(url)
+      setNotice('Backup exported (config + deployments + fees + audit runs — secrets are never included).')
+    } catch (e) { setError(e instanceof Error ? e.message : 'Backup export failed.') }
+  }
+
   return (
     <div>
       <PageHeader
@@ -15,6 +33,8 @@ export default function Audit() {
         sub="Immutable record of every admin login, config change and deployment (who, what, when, before / after)."
         pill={<LiveNote />}
       />
+      {error && <p className="muted">{error}</p>}
+      {notice && <div className="notice ok"><ShieldCheck /><span>{notice}</span></div>}
       <div className="card">
         <SectionTitle icon={<ShieldCheck />}>Audit log</SectionTitle>
         {rows.length === 0 ? (
@@ -41,13 +61,12 @@ export default function Audit() {
         <div className="card">
           <SectionTitle icon={<Users />}>Admin users</SectionTitle>
           <p className="muted">Owner only. Additional admins are added here in production; every login is audited.</p>
-          <DemoPill />
         </div>
         <div className="card">
           <SectionTitle icon={<KeyRound />}>Secrets &amp; backup</SectionTitle>
           <p className="muted">Secrets rotation and backup export of config and deployment records live here. Secrets are stored in Cloudflare, never in this repo.</p>
-          <button className="btn ghost" onClick={() => alert('Demo: backup export downloads config + deployment records as JSON in production.')}>
-            <Download />Export backup (demo)
+          <button className="btn ghost" onClick={exportBackup}>
+            <Download />Export backup
           </button>
         </div>
       </div>
