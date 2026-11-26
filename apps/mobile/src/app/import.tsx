@@ -1,9 +1,13 @@
 /** Screen 4 — Import Wallet (v1 sheet layout as a full screen):
  *  Seed Phrase / Private Key toggle, Wallet Name, recovery phrase or key,
  *  new session password + confirm, Import & Secure button. Scam warning
- *  kept at the top. */
+ *  kept at the top.
+ *
+ *  Errors are shown INLINE on the page. Never use Alert.alert here:
+ *  on react-native-web Alert.alert is an empty no-op, so a failure used
+ *  to look like a silent dead button (2026-11-26 bug). */
 import { useState } from 'react';
-import { Alert, ScrollView, StyleSheet, Text, TextInput, View } from 'react-native';
+import { ScrollView, StyleSheet, Text, TextInput, View } from 'react-native';
 import { router } from 'expo-router';
 import { COLORS } from '../theme';
 import { Btn, RiskNote } from '../components/ui';
@@ -19,36 +23,38 @@ export default function ImportWallet() {
   const [secret, setSecret] = useState('');
   const [password, setPassword] = useState('');
   const [confirm, setConfirm] = useState('');
+  const [error, setError] = useState('');
   const [busy, setBusy] = useState(false);
 
   async function handleImport() {
+    setError('');
     if (method === 'seed') {
       const words = secret.trim().split(/\s+/);
       if (words.length < 12 || !isValidMnemonic(secret)) {
-        Alert.alert('Invalid seed phrase', 'Check every word and the order, then try again.');
+        setError('Invalid seed phrase — check every word and the order, then try again.');
         return;
       }
     } else if (secret.trim().length < 32) {
-      Alert.alert('Invalid private key', 'Paste the full private key (with or without 0x).');
+      setError('Invalid private key — paste the full private key (with or without 0x).');
       return;
     }
     if (password.length < 8) {
-      Alert.alert('Password too short', 'Use at least 8 characters for your app password.');
+      setError('Password too short — use at least 8 characters for your app password.');
       return;
     }
     if (password !== confirm) {
-      Alert.alert('Passwords do not match', 'Re-type the same session password in both fields.');
+      setError('Passwords do not match — re-type the same session password in both fields.');
       return;
     }
     setBusy(true);
     try {
-      const address = await importWallet(secret, password);
+      const address = await importWallet(secret, password, name);
       setAddress(address);
       setOnboarded(true);
       setUnlocked(true);
       router.replace('/(tabs)');
-    } catch {
-      Alert.alert('Import failed', 'That seed phrase or private key could not be used. Check it and try again.');
+    } catch (e) {
+      setError(`Import failed: ${e instanceof Error ? e.message : 'That seed phrase or private key could not be used. Check it and try again.'}`);
     } finally {
       setBusy(false);
     }
@@ -102,6 +108,7 @@ export default function ImportWallet() {
         onChangeText={setConfirm}
       />
       <View style={styles.spacer} />
+      {error ? <Text style={styles.error}>{error}</Text> : null}
       <Btn label="Import & Secure" onPress={handleImport} loading={busy} />
       <RiskNote />
     </ScrollView>
@@ -109,6 +116,15 @@ export default function ImportWallet() {
 }
 
 const styles = StyleSheet.create({
+  error: {
+    backgroundColor: COLORS.redSoft,
+    borderRadius: 12,
+    color: COLORS.red,
+    fontSize: 12,
+    lineHeight: 17,
+    marginBottom: 12,
+    padding: 10,
+  },
   inner: { padding: 16 },
   input: {
     backgroundColor: COLORS.bgMuted,
