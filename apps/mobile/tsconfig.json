@@ -1,0 +1,1 @@
+{"compilerOptions":{"esModuleInterop":true,"moduleResolution":"bundler","resolveJsonModule":true,"skipLibCheck":true,"strict":true,"types":["jest","node"]},"exclude":["node_modules","dist"],"extends":"expo/tsconfig.base","include":["src","index.ts","jest.config.js"]}
