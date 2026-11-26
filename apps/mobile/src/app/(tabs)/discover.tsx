@@ -1,75 +1,195 @@
-/** Screen 11 — Discover: Trending / Gainers / Top Tokens per chain, safety chips. */
-import { useMemo, useState } from 'react';
-import { ScrollView, StyleSheet, Text, TextInput, View } from 'react-native';
+/** Screen 11 — Discover (v1): centred title, Trending / Gainers /
+ *  Top SMC Token tabs (amber underline on the active tab), token count pill,
+ *  search, Token / Price / 24h / Liquidity table. Rows tap through to the
+ *  token detail. Data is LIVE from DexScreener search (verified) and
+ *  GeckoTerminal trending (unverified — an empty list + error is shown
+ *  when it fails, never a fabricated list). Empty state when the feed
+ *  returns nothing. */
+import { useCallback, useEffect, useMemo, useState } from 'react';
+import { Pressable, ScrollView, StyleSheet, Text, TextInput, View } from 'react-native';
 import { router } from 'expo-router';
+import { Flame, Landmark, RefreshCw, Search, TrendingUp } from 'lucide-react-native';
 import { COLORS } from '../../theme';
 import { useApp } from '../../store/AppContext';
 import { fmtPct, fmtPrice, fmtUsd } from '../../lib/format';
-import { Btn, Chip, DemoBadge } from '../../components/ui';
+import { fetchTrending, searchTokens, type DiscoverToken } from '../../lib/discover';
+import { EmptyState } from '../../components/ui';
 
 type Tab = 'trending' | 'gainers' | 'top';
 
+const TABS: { key: Tab; label: string; icon: React.ReactNode }[] = [
+  { key: 'trending', label: 'Trending', icon: <Flame size={14} color={COLORS.amber} /> },
+  { key: 'gainers', label: 'Gainers', icon: <TrendingUp size={14} color={COLORS.textMuted} /> },
+  { key: 'top', label: 'Top SMC Token', icon: <Landmark size={14} color={COLORS.textMuted} /> },
+];
+
+function compactUsd(n: number | null): string {
+  if (n === null) return '—';
+  if (n >= 1_000_000) return `$${(n / 1_000_000).toFixed(1)}M`;
+  if (n >= 1_000) return `$${(n / 1_000).toFixed(1)}K`;
+  return fmtUsd(n, 0);
+}
+
 export default function Discover() {
-  const { tokens, chain } = useApp();
+  const { chain } = useApp();
   const [tab, setTab] = useState<Tab>('trending');
   const [query, setQuery] = useState('');
+  const [tokens, setTokens] = useState<DiscoverToken[]>([]);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [source, setSource] = useState<string | null>(null);
+
+  const load = useCallback(
+    async (q: string) => {
+      setLoading(true);
+      setError(null);
+      try {
+        const res = q.trim()
+          ? await searchTokens(q.trim())
+          : await fetchTrending(20);
+        setTokens(res.tokens);
+        setSource(res.source);
+        setError(res.error);
+      } catch (e) {
+        setTokens([]);
+        setSource(null);
+        setError(e instanceof Error ? e.message : String(e));
+      } finally {
+        setLoading(false);
+      }
+    },
+    [],
+  );
+
+  useEffect(() => {
+    void load('');
+  }, [load]);
+
+  // Live search as the user types (debounced 500ms); clearing the query
+  // reloads trending.
+  useEffect(() => {
+    const t = setTimeout(() => void load(query), 500);
+    return () => clearTimeout(t);
+  }, [query, load]);
 
   const list = useMemo(() => {
-    const base = tokens.filter((t) => !t.isSpam);
-    const q = query.trim().toLowerCase();
-    const filtered = q
-      ? base.filter((t) => t.symbol.toLowerCase().includes(q) || t.name.toLowerCase().includes(q) || t.address.toLowerCase().includes(q))
-      : base;
-    if (tab === 'gainers') return [...filtered].sort((a, b) => b.change24h - a.change24h);
-    if (tab === 'top') return [...filtered].sort((a, b) => b.marketCap - a.marketCap);
-    return [...filtered].sort((a, b) => b.volume24h - a.volume24h);
-  }, [tokens, tab, query]);
+    const sorted = [...tokens];
+    if (tab === 'gainers') return sorted.sort((a, b) => (b.change24h ?? -Infinity) - (a.change24h ?? -Infinity));
+    if (tab === 'top') return sorted.sort((a, b) => (b.marketCap ?? -Infinity) - (a.marketCap ?? -Infinity));
+    return sorted.sort((a, b) => (b.volume24h ?? -Infinity) - (a.volume24h ?? -Infinity));
+  }, [tokens, tab]);
+
+  const tabTitle = tab === 'trending' ? 'Trending' : tab === 'gainers' ? 'Gainers' : 'Top SMC Token';
+  const tabSub =
+    tab === 'trending'
+      ? `Most active DEX pools on ${chain.name} right now`
+      : tab === 'gainers'
+        ? `Biggest 24h movers on ${chain.name}`
+        : `Largest tokens on ${chain.name} by market cap`;
 
   return (
     <ScrollView style={styles.root} contentContainerStyle={styles.inner}>
       <View style={styles.head}>
+        <View style={styles.headSide} />
         <Text style={styles.title}>Discover</Text>
-        <DemoBadge />
+        <Pressable
+          onPress={() => void load(query)}
+          style={styles.headSide}
+          hitSlop={8}
+        >
+          <RefreshCw size={18} color={COLORS.text} />
+        </Pressable>
       </View>
-      <Text style={styles.chain}>{chain.name} · safety scores are independent of any listing</Text>
-      <TextInput
-        style={styles.search}
-        placeholder="Search symbol, name or contract address"
-        value={query}
-        onChangeText={setQuery}
-      />
+
       <View style={styles.tabs}>
-        {(['trending', 'gainers', 'top'] as Tab[]).map((t) => (
-          <Btn
-            key={t}
-            label={t === 'top' ? 'Top Tokens' : t[0].toUpperCase() + t.slice(1)}
-            variant={tab === t ? 'primary' : 'ghost'}
-            onPress={() => setTab(t)}
-            style={styles.tabBtn}
-          />
+        {TABS.map((t) => (
+          <Pressable key={t.key} style={styles.tab} onPress={() => setTab(t.key)}>
+            <View style={styles.tabLabel}>
+              {t.icon}
+              <Text style={[styles.tabText, tab === t.key && styles.tabTextOn]}>{t.label}</Text>
+            </View>
+            {tab === t.key ? <View style={styles.tabUnderline} /> : <View style={styles.tabUnderlineOff} />}
+          </Pressable>
         ))}
       </View>
-      {list.map((t) => (
-        <View key={t.symbol} style={styles.row}>
-          <View style={styles.avatar}>
-            <Text style={styles.avatarText}>{t.symbol.slice(0, 2)}</Text>
-          </View>
-          <View style={styles.mid}>
-            <Text style={styles.name}>{t.symbol} <Text style={styles.sub}>· {t.name}</Text></Text>
-            <Text style={styles.sub}>
-              {fmtPrice(t.price)} · Liq {fmtUsd(t.liquidity, 0)}
-            </Text>
-          </View>
-          <View style={styles.right}>
-            <Text style={[styles.change, { color: t.change24h >= 0 ? COLORS.mintDark : COLORS.red }]}>
-              {fmtPct(t.change24h)}
-            </Text>
-            <Chip label={`Safety ${t.safetyScore}`} tone={t.safetyScore >= 80 ? 'mint' : t.safetyScore >= 60 ? 'amber' : 'red'} />
-          </View>
-          <Btn label="View" variant="ghost" onPress={() => router.push(`/token/${t.symbol}`)} style={styles.viewBtn} />
+
+      <View style={styles.blockHead}>
+        <View style={styles.blockIcon}>
+          <Flame size={16} color={COLORS.amber} />
         </View>
-      ))}
-      {list.length === 0 && <Text style={styles.empty}>No tokens match that search.</Text>}
+        <View style={styles.blockMid}>
+          <Text style={styles.blockTitle}>{tabTitle}</Text>
+          <Text style={styles.blockSub}>{tabSub}</Text>
+        </View>
+        <View style={styles.countPill}>
+          <Text style={styles.countText}>{list.length} tokens</Text>
+        </View>
+      </View>
+
+      <View style={styles.searchWrap}>
+        <Search size={16} color={COLORS.textMuted} />
+        <TextInput
+          style={styles.search}
+          placeholder="Search symbol or name…"
+          placeholderTextColor={COLORS.textMuted}
+          value={query}
+          onChangeText={setQuery}
+        />
+      </View>
+
+      {error ? <Text style={styles.error}>{error}</Text> : null}
+      {source ? <Text style={styles.source}>Source: {source}</Text> : null}
+
+      <View style={styles.tableHead}>
+        <Text style={[styles.th, styles.thToken]}>Token</Text>
+        <Text style={[styles.th, styles.thRight]}>Price</Text>
+        <Text style={[styles.th, styles.thRight]}>24h</Text>
+        <Text style={[styles.th, styles.thRight]}>Liquidity</Text>
+      </View>
+
+      {loading ? (
+        <Text style={styles.loading}>Loading tokens…</Text>
+      ) : list.length === 0 ? (
+        <EmptyState
+          title={query ? 'No tokens match that search' : `No tokens found on ${chain.name} yet`}
+          body={query ? 'Try a different symbol or name.' : 'Trending tokens will appear here once the live feed returns data.'}
+        />
+      ) : (
+        list.map((t, i) => (
+          <Pressable
+            key={`${t.chainId}:${t.address}`}
+            style={styles.row}
+            onPress={() =>
+              router.push({
+                pathname: '/token/[symbol]',
+                params: { symbol: t.symbol, address: t.address, chainId: t.chainId },
+              })
+            }
+          >
+            <Text style={styles.rank}>{i + 1}</Text>
+            <View style={styles.avatar}>
+              <Text style={styles.avatarText}>{t.symbol.slice(0, 1)}</Text>
+            </View>
+            <View style={styles.mid}>
+              <Text style={styles.name}>{t.symbol}</Text>
+              <Text style={styles.sub} numberOfLines={1}>
+                {t.symbol} / {t.chainId === 'bsc' ? 'WBNB' : chain.nativeSymbol} · {t.name}
+              </Text>
+            </View>
+            <Text style={[styles.cell, styles.cellRight]}>{t.priceUsd === null ? '—' : fmtPrice(t.priceUsd)}</Text>
+            <Text
+              style={[
+                styles.cell,
+                styles.cellRight,
+                { color: t.change24h === null ? COLORS.textMuted : t.change24h >= 0 ? COLORS.mintDark : COLORS.red },
+              ]}
+            >
+              {t.change24h === null ? '—' : fmtPct(t.change24h)}
+            </Text>
+            <Text style={[styles.cell, styles.cellRight, styles.liq]}>{compactUsd(t.liquidityUsd)}</Text>
+          </Pressable>
+        ))
+      )}
     </ScrollView>
   );
 }
@@ -77,40 +197,79 @@ export default function Discover() {
 const styles = StyleSheet.create({
   avatar: {
     alignItems: 'center',
-    backgroundColor: COLORS.navy,
+    backgroundColor: COLORS.bgMuted,
+    borderColor: COLORS.border,
     borderRadius: 999,
-    height: 40,
+    borderWidth: 1,
+    height: 36,
     justifyContent: 'center',
-    width: 40,
+    width: 36,
   },
-  avatarText: { color: '#fff', fontSize: 13, fontWeight: '800' },
-  chain: { color: COLORS.textMuted, fontSize: 13, marginTop: 4 },
-  change: { fontSize: 13, fontWeight: '700', textAlign: 'right' },
-  empty: { color: COLORS.textMuted, marginTop: 20, textAlign: 'center' },
+  avatarText: { color: COLORS.text, fontSize: 14, fontWeight: '800' },
+  blockHead: { alignItems: 'center', flexDirection: 'row', gap: 10, marginTop: 12 },
+  blockIcon: {
+    alignItems: 'center',
+    backgroundColor: COLORS.amberSoft,
+    borderRadius: 999,
+    height: 32,
+    justifyContent: 'center',
+    width: 32,
+  },
+  blockMid: { flex: 1 },
+  blockSub: { color: COLORS.textMuted, fontSize: 12, marginTop: 2 },
+  blockTitle: { color: COLORS.text, fontSize: 16, fontWeight: '800' },
+  cell: { color: COLORS.text, fontSize: 12, fontWeight: '700' },
+  cellRight: { textAlign: 'right', width: 62 },
+  countPill: { backgroundColor: COLORS.amberSoft, borderRadius: 999, paddingHorizontal: 8, paddingVertical: 4 },
+  countText: { color: '#B45309', fontSize: 11, fontWeight: '700' },
+  error: { color: COLORS.red, fontSize: 12, lineHeight: 17, marginTop: 10 },
   head: { alignItems: 'center', flexDirection: 'row', justifyContent: 'space-between' },
-  inner: { padding: 20 },
+  headSide: { alignItems: 'center', width: 32 },
+  inner: { padding: 12 },
+  liq: { color: COLORS.textMuted, fontWeight: '600' },
+  loading: { color: COLORS.textMuted, fontSize: 12, marginTop: 20, textAlign: 'center' },
   mid: { flex: 1 },
-  name: { color: COLORS.text, fontSize: 15, fontWeight: '700' },
-  right: { alignItems: 'flex-end', gap: 4 },
+  name: { color: COLORS.text, fontSize: 14, fontWeight: '700' },
+  rank: { color: COLORS.textMuted, fontSize: 12, width: 16 },
   root: { backgroundColor: COLORS.bg, flex: 1 },
   row: {
     alignItems: 'center',
     borderBottomColor: COLORS.border,
     borderBottomWidth: 1,
     flexDirection: 'row',
-    gap: 10,
-    paddingVertical: 12,
+    gap: 8,
+    paddingVertical: 10,
   },
-  search: {
+  search: { flex: 1, fontSize: 14, paddingVertical: 8 },
+  searchWrap: {
+    alignItems: 'center',
     backgroundColor: COLORS.bgMuted,
     borderRadius: 12,
-    fontSize: 15,
-    marginTop: 14,
-    padding: 12,
+    flexDirection: 'row',
+    gap: 8,
+    marginTop: 12,
+    paddingHorizontal: 10,
   },
-  sub: { color: COLORS.textMuted, fontSize: 12, fontWeight: '400', marginTop: 2 },
-  tabBtn: { flex: 1, minHeight: 40, paddingHorizontal: 8 },
-  tabs: { flexDirection: 'row', gap: 8, marginVertical: 14 },
-  title: { color: COLORS.text, fontSize: 24, fontWeight: '800' },
-  viewBtn: { minHeight: 36, paddingHorizontal: 10 },
+  source: { color: COLORS.textMuted, fontSize: 11, marginTop: 6 },
+  sub: { color: COLORS.textMuted, fontSize: 11, marginTop: 2 },
+  tab: { flex: 1 },
+  tabLabel: { alignItems: 'center', flexDirection: 'row', gap: 4, justifyContent: 'center', paddingVertical: 8 },
+  tabText: { color: COLORS.textMuted, fontSize: 12, fontWeight: '700' },
+  tabTextOn: { color: COLORS.text },
+  tabUnderline: { backgroundColor: COLORS.amber, height: 3, borderRadius: 2 },
+  tabUnderlineOff: { height: 3 },
+  tableHead: {
+    borderBottomColor: COLORS.border,
+    borderBottomWidth: 1,
+    flexDirection: 'row',
+    gap: 8,
+    marginTop: 12,
+    paddingBottom: 6,
+    paddingLeft: 60,
+  },
+  tabs: { borderBottomColor: COLORS.border, borderBottomWidth: 1, flexDirection: 'row', marginTop: 8 },
+  th: { color: COLORS.textMuted, fontSize: 11, fontWeight: '700' },
+  thRight: { textAlign: 'right', width: 62 },
+  thToken: { flex: 1 },
+  title: { color: COLORS.text, fontSize: 18, fontWeight: '800' },
 });
