@@ -1,10 +1,12 @@
-/** Screen 3 — Create Wallet: password, seed display, backup quiz, biometrics, Discipline PIN. */
+/** Screen 3 — Create Wallet: password, seed display, backup quiz,
+ *  biometrics, Discipline PIN. Compact v1 sizes (18px title, 12px labels,
+ *  14px inputs). */
 import { useState } from 'react';
 import { Alert, ScrollView, StyleSheet, Text, TextInput, View } from 'react-native';
 import { router } from 'expo-router';
 import * as LocalAuthentication from 'expo-local-authentication';
 import { COLORS } from '../theme';
-import { Btn, Card, DemoBadge, RiskNote, SectionTitle } from '../components/ui';
+import { Btn, Card, RiskNote, SectionTitle } from '../components/ui';
 import { createWallet } from '../lib/wallet';
 import { useApp } from '../store/AppContext';
 
@@ -58,10 +60,7 @@ export default function CreateWallet() {
 
   return (
     <ScrollView style={styles.root} contentContainerStyle={styles.inner}>
-      <View style={styles.head}>
-        <Text style={styles.title}>Create Wallet</Text>
-        <DemoBadge />
-      </View>
+      <Text style={styles.title}>Create Wallet</Text>
       {step === 0 && (
         <>
           <Text style={styles.label}>App password</Text>
@@ -118,18 +117,17 @@ export default function CreateWallet() {
 }
 
 const styles = StyleSheet.create({
-  head: { alignItems: 'center', flexDirection: 'row', justifyContent: 'space-between' },
-  hint: { color: COLORS.textMuted, fontSize: 13, lineHeight: 19, marginBottom: 16, marginTop: 8 },
-  inner: { padding: 24 },
+  hint: { color: COLORS.textMuted, fontSize: 12, lineHeight: 17, marginBottom: 12, marginTop: 6 },
+  inner: { padding: 16 },
   input: {
     backgroundColor: COLORS.bgMuted,
     borderRadius: 12,
-    fontSize: 16,
-    marginTop: 8,
-    padding: 14,
+    fontSize: 14,
+    marginTop: 6,
+    padding: 12,
   },
-  label: { color: COLORS.text, fontSize: 14, fontWeight: '700', marginTop: 16 },
+  label: { color: COLORS.text, fontSize: 12, fontWeight: '700', marginTop: 14 },
   root: { backgroundColor: COLORS.bg, flex: 1 },
-  seed: { color: '#fff', fontSize: 16, fontWeight: '600', lineHeight: 30 },
-  title: { color: COLORS.text, fontSize: 24, fontWeight: '800' },
+  seed: { color: '#fff', fontSize: 14, fontWeight: '600', lineHeight: 26 },
+  title: { color: COLORS.text, fontSize: 18, fontWeight: '800' },
 });
