@@ -1,93 +1,198 @@
-/** Screen 11 — Discover (v1): centred title, Trending / Gainers /
- *  Top SMC Token tabs (amber underline on the active tab), token count pill,
- *  search, Token / Price / 24h / Liquidity table. Rows tap through to the
- *  token detail. Data is LIVE from DexScreener search (verified) and
- *  GeckoTerminal trending (unverified — an empty list + error is shown
- *  when it fails, never a fabricated list). Empty state when the feed
- *  returns nothing. */
-import { useCallback, useEffect, useMemo, useState } from 'react';
+/** Screen 11 — Discover: a full DEX browser (DexScreener-style).
+ *
+ * Tabs: Trending / Gainers / New Pairs / Top by Market Cap, plus a chain
+ * filter (All, Arc, BNB, Base, Ethereum, Polygon, Solana). Data is LIVE:
+ * GeckoTerminal trending pools (Trending/Gainers/Top — same feed, ranked
+ * differently) and new pools per network (New Pairs), DexScreener search
+ * for symbol/name/address, DexScreener batch lookup enriching each row
+ * with its real logo, full name and market cap. DexScreener boosts /
+ * profiles are the fallbacks when a primary feed fails.
+ *
+ * One row per token (deduplicated on the highest-liquidity pair, DEX
+ * noted in the row). Every row shows the real logo (letter circle only
+ * when no source has a logo), price in subscript format for tiny prices,
+ * 24h change, market cap, 24h volume, liquidity and pair age — before
+ * the user taps through to the full Token Detail. Advanced filters: min
+ * liquidity, min 24h volume, min market cap, max age / new only, DEX,
+ * chain, search. Sort: Trending, Volume, Market Cap, Newest, Gainers.
+ * No auto-refresh polling (GeckoTerminal free tier is 30 calls/min) —
+ * the user refreshes manually. */
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Pressable, ScrollView, StyleSheet, Text, TextInput, View } from 'react-native';
 import { router } from 'expo-router';
-import { Flame, Landmark, RefreshCw, Search, TrendingUp } from 'lucide-react-native';
+import { Flame, Landmark, RefreshCw, Search, SlidersHorizontal, Sparkles, TrendingUp, X } from 'lucide-react-native';
 import { COLORS } from '../../theme';
-import { useApp } from '../../store/AppContext';
-import { fmtPct, fmtPrice, fmtUsd } from '../../lib/format';
-import { fetchTrending, searchTokens, type DiscoverToken } from '../../lib/discover';
+import { fmtPct, fmtPrice } from '../../lib/format';
+import {
+  DISCOVER_CHAINS,
+  applyDiscoverFilters,
+  fetchDiscoverTab,
+  formatTokenAge,
+  prettyDexId,
+  searchTokens,
+  sortDiscoverTokens,
+  type DiscoverSort,
+  type DiscoverTab,
+  type DiscoverToken,
+} from '../../lib/discover';
 import { tokenDetailRoute } from '../../lib/tokenResolve';
 import { EmptyState } from '../../components/ui';
 import { TokenLogo } from '../../components/TokenLogo';
 
-type Tab = 'trending' | 'gainers' | 'top';
-
-const TABS: { key: Tab; label: string; icon: React.ReactNode }[] = [
+const TABS: { key: DiscoverTab; label: string; icon: React.ReactNode }[] = [
   { key: 'trending', label: 'Trending', icon: <Flame size={14} color={COLORS.amber} /> },
   { key: 'gainers', label: 'Gainers', icon: <TrendingUp size={14} color={COLORS.textMuted} /> },
-  { key: 'top', label: 'Top SMC Token', icon: <Landmark size={14} color={COLORS.textMuted} /> },
+  { key: 'new', label: 'New Pairs', icon: <Sparkles size={14} color={COLORS.textMuted} /> },
+  { key: 'top', label: 'Top by MC', icon: <Landmark size={14} color={COLORS.textMuted} /> },
+];
+
+const TAB_DEFAULT_SORT: Record<DiscoverTab, DiscoverSort> = {
+  trending: 'trending',
+  gainers: 'gainers',
+  new: 'newest',
+  top: 'marketcap',
+};
+
+const SORTS: { key: DiscoverSort; label: string }[] = [
+  { key: 'trending', label: 'Trending' },
+  { key: 'volume', label: 'Volume' },
+  { key: 'marketcap', label: 'Market Cap' },
+  { key: 'newest', label: 'Newest' },
+  { key: 'gainers', label: 'Gainers' },
+];
+
+const AGE_CHOICES: { label: string; ms: number | null }[] = [
+  { label: 'Any age', ms: null },
+  { label: '1h', ms: 60 * 60 * 1000 },
+  { label: '24h', ms: 24 * 60 * 60 * 1000 },
+  { label: '7d', ms: 7 * 24 * 60 * 60 * 1000 },
+  { label: '30d', ms: 30 * 24 * 60 * 60 * 1000 },
 ];
 
 function compactUsd(n: number | null): string {
   if (n === null) return '—';
+  if (n >= 1_000_000_000) return `$${(n / 1_000_000_000).toFixed(2)}B`;
   if (n >= 1_000_000) return `$${(n / 1_000_000).toFixed(1)}M`;
   if (n >= 1_000) return `$${(n / 1_000).toFixed(1)}K`;
-  return fmtUsd(n, 0);
+  return `$${n.toFixed(0)}`;
+}
+
+function parseMin(s: string): number | null {
+  const n = Number(s.replace(/[$,\s]/g, ''));
+  return s.trim() !== '' && Number.isFinite(n) && n > 0 ? n : null;
 }
 
 export default function Discover() {
-  const { chain } = useApp();
-  const [tab, setTab] = useState<Tab>('trending');
+  const [tab, setTab] = useState<DiscoverTab>('trending');
+  const [chainFilter, setChainFilter] = useState<string>('all');
   const [query, setQuery] = useState('');
+  const [debouncedQuery, setDebouncedQuery] = useState('');
+  const [sort, setSort] = useState<DiscoverSort | null>(null);
   const [tokens, setTokens] = useState<DiscoverToken[]>([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [source, setSource] = useState<string | null>(null);
+  const [updatedAt, setUpdatedAt] = useState<number | null>(null);
+  const [filtersOpen, setFiltersOpen] = useState(false);
+  const [minLiq, setMinLiq] = useState('');
+  const [minVol, setMinVol] = useState('');
+  const [minMc, setMinMc] = useState('');
+  const [maxAgeMs, setMaxAgeMs] = useState<number | null>(null);
+  const [newOnly, setNewOnly] = useState(false);
+  const [dexFilter, setDexFilter] = useState<string | null>(null);
+  const reqId = useRef(0);
 
-  const load = useCallback(
-    async (q: string) => {
-      setLoading(true);
-      setError(null);
-      try {
-        const res = q.trim()
-          ? await searchTokens(q.trim())
-          : await fetchTrending(20);
-        setTokens(res.tokens);
-        setSource(res.source);
-        setError(res.error);
-      } catch (e) {
-        setTokens([]);
-        setSource(null);
-        setError(e instanceof Error ? e.message : String(e));
-      } finally {
-        setLoading(false);
-      }
-    },
-    [],
-  );
+  const load = useCallback(async (tabV: DiscoverTab, chainV: string, q: string) => {
+    const id = ++reqId.current;
+    setLoading(true);
+    setError(null);
+    try {
+      const res = q.trim()
+        ? await searchTokens(q.trim())
+        : await fetchDiscoverTab(tabV, chainV === 'all' ? 'all' : chainV, 30);
+      if (id !== reqId.current) return; // a newer load superseded this one
+      setTokens(res.tokens);
+      setSource(res.source);
+      setError(res.error);
+      setUpdatedAt(res.updatedAt);
+    } catch (e) {
+      if (id !== reqId.current) return;
+      setTokens([]);
+      setSource(null);
+      setError(e instanceof Error ? e.message : String(e));
+    } finally {
+      if (id === reqId.current) setLoading(false);
+    }
+  }, []);
 
+  // Debounced search (500ms); clearing the query reloads the tab.
   useEffect(() => {
-    void load('');
-  }, [load]);
-
-  // Live search as the user types (debounced 500ms); clearing the query
-  // reloads trending.
-  useEffect(() => {
-    const t = setTimeout(() => void load(query), 500);
+    const t = setTimeout(() => setDebouncedQuery(query), 500);
     return () => clearTimeout(t);
-  }, [query, load]);
+  }, [query]);
 
-  const list = useMemo(() => {
-    const sorted = [...tokens];
-    if (tab === 'gainers') return sorted.sort((a, b) => (b.change24h ?? -Infinity) - (a.change24h ?? -Infinity));
-    if (tab === 'top') return sorted.sort((a, b) => (b.marketCap ?? -Infinity) - (a.marketCap ?? -Infinity));
-    return sorted.sort((a, b) => (b.volume24h ?? -Infinity) - (a.volume24h ?? -Infinity));
-  }, [tokens, tab]);
+  useEffect(() => {
+    void load(tab, chainFilter, debouncedQuery);
+  }, [tab, chainFilter, debouncedQuery, load]);
 
-  const tabTitle = tab === 'trending' ? 'Trending' : tab === 'gainers' ? 'Gainers' : 'Top SMC Token';
+  const dexOptions = useMemo(() => {
+    const seen = new Set<string>();
+    for (const t of tokens) if (t.dexId) seen.add(t.dexId);
+    return [...seen].sort();
+  }, [tokens]);
+
+  const activeFilterCount = useMemo(() => {
+    let n = 0;
+    if (parseMin(minLiq) !== null) n += 1;
+    if (parseMin(minVol) !== null) n += 1;
+    if (parseMin(minMc) !== null) n += 1;
+    if (maxAgeMs !== null) n += 1;
+    if (newOnly) n += 1;
+    if (dexFilter) n += 1;
+    return n;
+  }, [minLiq, minVol, minMc, maxAgeMs, newOnly, dexFilter]);
+
+  const visible = useMemo(() => {
+    const filtered = applyDiscoverFilters(tokens, {
+      minLiquidityUsd: parseMin(minLiq),
+      minVolume24h: parseMin(minVol),
+      minMarketCap: parseMin(minMc),
+      maxAgeMs: newOnly ? 24 * 60 * 60 * 1000 : maxAgeMs,
+      newOnly,
+      dexId: dexFilter,
+      chainId: chainFilter,
+      query: debouncedQuery || undefined,
+    });
+    return sortDiscoverTokens(filtered, sort ?? TAB_DEFAULT_SORT[tab]);
+  }, [tokens, minLiq, minVol, minMc, maxAgeMs, newOnly, dexFilter, chainFilter, debouncedQuery, sort, tab]);
+
+  const showsFdvMc = useMemo(() => visible.some((t) => t.marketCapSource === 'fdv'), [visible]);
+
+  const tabTitle =
+    tab === 'trending' ? 'Trending' : tab === 'gainers' ? 'Gainers' : tab === 'new' ? 'New Pairs' : 'Top by Market Cap';
   const tabSub =
     tab === 'trending'
-      ? `Most active DEX pools on ${chain.name} right now`
+      ? 'Most active DEX pools right now'
       : tab === 'gainers'
-        ? `Biggest 24h movers on ${chain.name}`
-        : `Largest tokens on ${chain.name} by market cap`;
+        ? 'Biggest 24h movers'
+        : tab === 'new'
+          ? 'Newest pairs listed on DEXes'
+          : 'Largest tokens by market cap';
+
+  const changeTab = (next: DiscoverTab) => {
+    setTab(next);
+    setSort(null);
+    setDexFilter(null);
+  };
+
+  const clearFilters = () => {
+    setMinLiq('');
+    setMinVol('');
+    setMinMc('');
+    setMaxAgeMs(null);
+    setNewOnly(false);
+    setDexFilter(null);
+  };
 
   return (
     <ScrollView style={styles.root} contentContainerStyle={styles.inner}>
@@ -95,9 +200,10 @@ export default function Discover() {
         <View style={styles.headSide} />
         <Text style={styles.title}>Discover</Text>
         <Pressable
-          onPress={() => void load(query)}
+          onPress={() => void load(tab, chainFilter, debouncedQuery)}
           style={styles.headSide}
           hitSlop={8}
+          accessibilityLabel="Refresh"
         >
           <RefreshCw size={18} color={COLORS.text} />
         </Pressable>
@@ -105,7 +211,7 @@ export default function Discover() {
 
       <View style={styles.tabs}>
         {TABS.map((t) => (
-          <Pressable key={t.key} style={styles.tab} onPress={() => setTab(t.key)}>
+          <Pressable key={t.key} style={styles.tab} onPress={() => changeTab(t.key)}>
             <View style={styles.tabLabel}>
               {t.icon}
               <Text style={[styles.tabText, tab === t.key && styles.tabTextOn]}>{t.label}</Text>
@@ -114,6 +220,24 @@ export default function Discover() {
           </Pressable>
         ))}
       </View>
+
+      <ScrollView horizontal showsHorizontalScrollIndicator={false} style={styles.chips} contentContainerStyle={styles.chipsInner}>
+        <Pressable
+          style={[styles.chip, chainFilter === 'all' && styles.chipOn]}
+          onPress={() => setChainFilter('all')}
+        >
+          <Text style={[styles.chipText, chainFilter === 'all' && styles.chipTextOn]}>All chains</Text>
+        </Pressable>
+        {DISCOVER_CHAINS.map((c) => (
+          <Pressable
+            key={c.id}
+            style={[styles.chip, chainFilter === c.id && styles.chipOn]}
+            onPress={() => setChainFilter(c.id)}
+          >
+            <Text style={[styles.chipText, chainFilter === c.id && styles.chipTextOn]}>{c.label}</Text>
+          </Pressable>
+        ))}
+      </ScrollView>
 
       <View style={styles.blockHead}>
         <View style={styles.blockIcon}>
@@ -124,7 +248,7 @@ export default function Discover() {
           <Text style={styles.blockSub}>{tabSub}</Text>
         </View>
         <View style={styles.countPill}>
-          <Text style={styles.countText}>{list.length} tokens</Text>
+          <Text style={styles.countText}>{visible.length} tokens</Text>
         </View>
       </View>
 
@@ -132,61 +256,197 @@ export default function Discover() {
         <Search size={16} color={COLORS.textMuted} />
         <TextInput
           style={styles.search}
-          placeholder="Search symbol or name…"
+          placeholder="Search symbol, name or contract address…"
           placeholderTextColor={COLORS.textMuted}
           value={query}
           onChangeText={setQuery}
+          autoCapitalize="none"
+          autoCorrect={false}
         />
+        {query ? (
+          <Pressable onPress={() => setQuery('')} hitSlop={8}>
+            <X size={16} color={COLORS.textMuted} />
+          </Pressable>
+        ) : null}
       </View>
+
+      <ScrollView horizontal showsHorizontalScrollIndicator={false} style={styles.chips} contentContainerStyle={styles.chipsInner}>
+        {SORTS.map((s) => {
+          const active = (sort ?? TAB_DEFAULT_SORT[tab]) === s.key;
+          return (
+            <Pressable key={s.key} style={[styles.chip, active && styles.chipOn]} onPress={() => setSort(s.key)}>
+              <Text style={[styles.chipText, active && styles.chipTextOn]}>{s.label}</Text>
+            </Pressable>
+          );
+        })}
+        <Pressable
+          style={[styles.chip, styles.filterChip, filtersOpen && styles.chipOn]}
+          onPress={() => setFiltersOpen((v) => !v)}
+        >
+          <SlidersHorizontal size={13} color={filtersOpen ? '#fff' : COLORS.text} />
+          <Text style={[styles.chipText, filtersOpen && styles.chipTextOn]}>
+            Filters{activeFilterCount > 0 ? ` (${activeFilterCount})` : ''}
+          </Text>
+        </Pressable>
+      </ScrollView>
+
+      {filtersOpen ? (
+        <View style={styles.filterPanel}>
+          <Text style={styles.filterLabel}>Minimums (USD)</Text>
+          <View style={styles.filterRow}>
+            <View style={styles.filterField}>
+              <Text style={styles.filterFieldLabel}>Liquidity</Text>
+              <TextInput
+                style={styles.filterInput}
+                placeholder="$0"
+                placeholderTextColor={COLORS.textMuted}
+                value={minLiq}
+                onChangeText={setMinLiq}
+                keyboardType="numeric"
+              />
+            </View>
+            <View style={styles.filterField}>
+              <Text style={styles.filterFieldLabel}>24h volume</Text>
+              <TextInput
+                style={styles.filterInput}
+                placeholder="$0"
+                placeholderTextColor={COLORS.textMuted}
+                value={minVol}
+                onChangeText={setMinVol}
+                keyboardType="numeric"
+              />
+            </View>
+            <View style={styles.filterField}>
+              <Text style={styles.filterFieldLabel}>Market cap</Text>
+              <TextInput
+                style={styles.filterInput}
+                placeholder="$0"
+                placeholderTextColor={COLORS.textMuted}
+                value={minMc}
+                onChangeText={setMinMc}
+                keyboardType="numeric"
+              />
+            </View>
+          </View>
+          <Text style={styles.filterLabel}>Pair age</Text>
+          <View style={styles.filterRow}>
+            {AGE_CHOICES.map((a) => (
+              <Pressable
+                key={a.label}
+                style={[styles.chip, maxAgeMs === a.ms && !newOnly && styles.chipOn]}
+                onPress={() => {
+                  setMaxAgeMs(a.ms);
+                  setNewOnly(false);
+                }}
+              >
+                <Text style={[styles.chipText, maxAgeMs === a.ms && !newOnly && styles.chipTextOn]}>{a.label}</Text>
+              </Pressable>
+            ))}
+            <Pressable
+              style={[styles.chip, newOnly && styles.chipOn]}
+              onPress={() => {
+                setNewOnly((v) => !v);
+                setMaxAgeMs(null);
+              }}
+            >
+              <Text style={[styles.chipText, newOnly && styles.chipTextOn]}>New only (&lt;24h)</Text>
+            </Pressable>
+          </View>
+          {dexOptions.length > 0 ? (
+            <>
+              <Text style={styles.filterLabel}>DEX</Text>
+              <View style={styles.filterRow}>
+                <Pressable
+                  style={[styles.chip, dexFilter === null && styles.chipOn]}
+                  onPress={() => setDexFilter(null)}
+                >
+                  <Text style={[styles.chipText, dexFilter === null && styles.chipTextOn]}>All DEXes</Text>
+                </Pressable>
+                {dexOptions.map((d) => (
+                  <Pressable
+                    key={d}
+                    style={[styles.chip, dexFilter === d && styles.chipOn]}
+                    onPress={() => setDexFilter(d)}
+                  >
+                    <Text style={[styles.chipText, dexFilter === d && styles.chipTextOn]}>{prettyDexId(d)}</Text>
+                  </Pressable>
+                ))}
+              </View>
+            </>
+          ) : null}
+          {activeFilterCount > 0 ? (
+            <Pressable style={styles.clearBtn} onPress={clearFilters}>
+              <Text style={styles.clearBtnText}>Clear all filters</Text>
+            </Pressable>
+          ) : null}
+        </View>
+      ) : null}
 
       {error ? <Text style={styles.error}>{error}</Text> : null}
-      {source ? <Text style={styles.source}>Source: {source}</Text> : null}
-
-      <View style={styles.tableHead}>
-        <Text style={[styles.th, styles.thToken]}>Token</Text>
-        <Text style={[styles.th, styles.thRight]}>Price</Text>
-        <Text style={[styles.th, styles.thRight]}>24h</Text>
-        <Text style={[styles.th, styles.thRight]}>Liquidity</Text>
-      </View>
+      {source ? (
+        <Text style={styles.source}>
+          Source: {source}
+          {updatedAt ? ` · Updated ${new Date(updatedAt).toLocaleTimeString()}` : ''}
+        </Text>
+      ) : null}
 
       {loading ? (
         <Text style={styles.loading}>Loading tokens…</Text>
-      ) : list.length === 0 ? (
+      ) : visible.length === 0 ? (
         <EmptyState
-          title={query ? 'No tokens match that search' : `No tokens found on ${chain.name} yet`}
-          body={query ? 'Try a different symbol or name.' : 'Trending tokens will appear here once the live feed returns data.'}
+          title={debouncedQuery ? 'No tokens match that search' : 'No tokens found'}
+          body={
+            debouncedQuery
+              ? 'Try a different symbol, name or contract address.'
+              : activeFilterCount > 0
+                ? 'Try loosening the filters — nothing in this list passes them.'
+                : 'Tokens will appear here once the live feed returns data.'
+          }
         />
       ) : (
-        list.map((t, i) => (
+        visible.map((t, i) => (
           <Pressable
             key={`${t.chainId}:${t.address}`}
             style={styles.row}
-            onPress={() =>
-              router.push(tokenDetailRoute({ symbol: t.symbol, address: t.address, chainId: t.chainId || chain.id }))
-            }
+            onPress={() => router.push(tokenDetailRoute({ symbol: t.symbol, address: t.address, chainId: t.chainId }))}
           >
             <Text style={styles.rank}>{i + 1}</Text>
-            <TokenLogo chainId={t.chainId} address={t.address} symbol={t.symbol} size={36} fallbackTone="light" />
+            <TokenLogo chainId={t.chainId} address={t.address} symbol={t.symbol} size={38} logoUrl={t.iconUrl} fallbackTone="light" />
             <View style={styles.mid}>
-              <Text style={styles.name}>{t.symbol}</Text>
-              <Text style={styles.sub} numberOfLines={1}>
-                {t.symbol} / {t.chainId === 'bsc' ? 'WBNB' : chain.nativeSymbol} · {t.name}
+              <View style={styles.line}>
+                <Text style={styles.name} numberOfLines={1}>
+                  {t.symbol}
+                </Text>
+                <Text style={[styles.cell, styles.cellRight]}>{t.priceUsd === null ? '—' : fmtPrice(t.priceUsd)}</Text>
+              </View>
+              <View style={styles.line}>
+                <Text style={styles.sub} numberOfLines={1}>
+                  {t.name && t.name !== t.symbol ? `${t.name} · ` : ''}
+                  {prettyDexId(t.dexId)} · {formatTokenAge(t.pairCreatedAt)}
+                </Text>
+                <Text
+                  style={[
+                    styles.cell,
+                    styles.cellRight,
+                    {
+                      color:
+                        t.change24h === null ? COLORS.textMuted : t.change24h >= 0 ? COLORS.mintDark : COLORS.red,
+                    },
+                  ]}
+                >
+                  {t.change24h === null ? '—' : fmtPct(t.change24h)}
+                </Text>
+              </View>
+              <Text style={styles.stats} numberOfLines={1}>
+                MC {compactUsd(t.marketCap)} · Vol {compactUsd(t.volume24h)} · Liq {compactUsd(t.liquidityUsd)}
               </Text>
             </View>
-            <Text style={[styles.cell, styles.cellRight]}>{t.priceUsd === null ? '—' : fmtPrice(t.priceUsd)}</Text>
-            <Text
-              style={[
-                styles.cell,
-                styles.cellRight,
-                { color: t.change24h === null ? COLORS.textMuted : t.change24h >= 0 ? COLORS.mintDark : COLORS.red },
-              ]}
-            >
-              {t.change24h === null ? '—' : fmtPct(t.change24h)}
-            </Text>
-            <Text style={[styles.cell, styles.cellRight, styles.liq]}>{compactUsd(t.liquidityUsd)}</Text>
           </Pressable>
         ))
       )}
+      {showsFdvMc ? (
+        <Text style={styles.footnote}>* MC shows FDV where the feed does not report a market cap yet.</Text>
+      ) : null}
     </ScrollView>
   );
 }
@@ -205,17 +465,57 @@ const styles = StyleSheet.create({
   blockSub: { color: COLORS.textMuted, fontSize: 12, marginTop: 2 },
   blockTitle: { color: COLORS.text, fontSize: 16, fontWeight: '800' },
   cell: { color: COLORS.text, fontSize: 12, fontWeight: '700' },
-  cellRight: { textAlign: 'right', width: 62 },
+  cellRight: { textAlign: 'right' },
+  chip: {
+    alignItems: 'center',
+    backgroundColor: COLORS.bgMuted,
+    borderRadius: 999,
+    flexDirection: 'row',
+    gap: 4,
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+  },
+  chipOn: { backgroundColor: COLORS.navy },
+  chipText: { color: COLORS.text, fontSize: 12, fontWeight: '700' },
+  chipTextOn: { color: '#fff' },
+  chips: { marginTop: 10 },
+  chipsInner: { gap: 6, paddingRight: 4 },
+  clearBtn: { alignSelf: 'flex-start', marginTop: 10 },
+  clearBtnText: { color: COLORS.red, fontSize: 12, fontWeight: '700' },
   countPill: { backgroundColor: COLORS.amberSoft, borderRadius: 999, paddingHorizontal: 8, paddingVertical: 4 },
   countText: { color: '#B45309', fontSize: 11, fontWeight: '700' },
   error: { color: COLORS.red, fontSize: 12, lineHeight: 17, marginTop: 10 },
+  filterChip: { gap: 5 },
+  filterField: { flex: 1 },
+  filterFieldLabel: { color: COLORS.textMuted, fontSize: 11, fontWeight: '700', marginBottom: 4 },
+  filterInput: {
+    backgroundColor: COLORS.bg,
+    borderColor: COLORS.border,
+    borderRadius: 8,
+    borderWidth: 1,
+    color: COLORS.text,
+    fontSize: 13,
+    paddingHorizontal: 8,
+    paddingVertical: 7,
+  },
+  filterLabel: { color: COLORS.text, fontSize: 12, fontWeight: '800', marginBottom: 6, marginTop: 10 },
+  filterPanel: {
+    backgroundColor: COLORS.bgMuted,
+    borderColor: COLORS.border,
+    borderRadius: 12,
+    borderWidth: 1,
+    marginTop: 10,
+    padding: 10,
+  },
+  filterRow: { flexDirection: 'row', flexWrap: 'wrap', gap: 6 },
+  footnote: { color: COLORS.textMuted, fontSize: 11, marginTop: 10 },
   head: { alignItems: 'center', flexDirection: 'row', justifyContent: 'space-between' },
   headSide: { alignItems: 'center', width: 32 },
   inner: { padding: 12 },
-  liq: { color: COLORS.textMuted, fontWeight: '600' },
+  line: { alignItems: 'center', flexDirection: 'row', justifyContent: 'space-between', gap: 8 },
   loading: { color: COLORS.textMuted, fontSize: 12, marginTop: 20, textAlign: 'center' },
-  mid: { flex: 1 },
-  name: { color: COLORS.text, fontSize: 14, fontWeight: '700' },
+  mid: { flex: 1, gap: 2 },
+  name: { color: COLORS.text, flex: 1, fontSize: 14, fontWeight: '700' },
   rank: { color: COLORS.textMuted, fontSize: 12, width: 16 },
   root: { backgroundColor: COLORS.bg, flex: 1 },
   row: {
@@ -237,25 +537,14 @@ const styles = StyleSheet.create({
     paddingHorizontal: 10,
   },
   source: { color: COLORS.textMuted, fontSize: 11, marginTop: 6 },
-  sub: { color: COLORS.textMuted, fontSize: 11, marginTop: 2 },
+  stats: { color: COLORS.textMuted, fontSize: 11, fontWeight: '600' },
+  sub: { color: COLORS.textMuted, flex: 1, fontSize: 11, marginTop: 2 },
   tab: { flex: 1 },
   tabLabel: { alignItems: 'center', flexDirection: 'row', gap: 4, justifyContent: 'center', paddingVertical: 8 },
   tabText: { color: COLORS.textMuted, fontSize: 12, fontWeight: '700' },
   tabTextOn: { color: COLORS.text },
   tabUnderline: { backgroundColor: COLORS.amber, height: 3, borderRadius: 2 },
   tabUnderlineOff: { height: 3 },
-  tableHead: {
-    borderBottomColor: COLORS.border,
-    borderBottomWidth: 1,
-    flexDirection: 'row',
-    gap: 8,
-    marginTop: 12,
-    paddingBottom: 6,
-    paddingLeft: 60,
-  },
   tabs: { borderBottomColor: COLORS.border, borderBottomWidth: 1, flexDirection: 'row', marginTop: 8 },
-  th: { color: COLORS.textMuted, fontSize: 11, fontWeight: '700' },
-  thRight: { textAlign: 'right', width: 62 },
-  thToken: { flex: 1 },
   title: { color: COLORS.text, fontSize: 18, fontWeight: '800' },
 });
