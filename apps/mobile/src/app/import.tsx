@@ -9,6 +9,7 @@
 import { useState } from 'react';
 import { ScrollView, StyleSheet, Text, TextInput, View } from 'react-native';
 import { router } from 'expo-router';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { COLORS } from '../theme';
 import { Btn, RiskNote, centeredContent } from '../components/ui';
 import { importWallet, isValidMnemonic } from '../lib/wallet';
@@ -18,6 +19,8 @@ type Method = 'seed' | 'key';
 
 export default function ImportWallet() {
   const { setOnboarded, setUnlocked, setAddress } = useApp();
+  const insets = useSafeAreaInsets();
+
   const [method, setMethod] = useState<Method>('seed');
   const [name, setName] = useState('');
   const [secret, setSecret] = useState('');
@@ -61,7 +64,7 @@ export default function ImportWallet() {
   }
 
   return (
-    <ScrollView style={styles.root} contentContainerStyle={[styles.inner, centeredContent]}>
+    <ScrollView style={styles.root} contentContainerStyle={[styles.inner, centeredContent, { paddingTop: 12 + insets.top, paddingBottom: 24 + insets.bottom }]}>
       <Text style={styles.title}>Import Wallet</Text>
       <Text style={styles.sub}>Name your wallet, select your import method, and provide the credentials.</Text>
       <Text style={styles.warn}>

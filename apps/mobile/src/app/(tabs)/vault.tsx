@@ -5,6 +5,7 @@
 import { useState } from 'react';
 import { Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
 import { router } from 'expo-router';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Clock, Lock, RefreshCw, Unlock } from 'lucide-react-native';
 import { COLORS } from '../../theme';
 import { useApp } from '../../store/AppContext';
@@ -14,6 +15,8 @@ import { LockCard } from '../../components/TokenRow';
 
 export default function VaultHub() {
   const { locks, tokens, refreshLocks, vaultNote } = useApp();
+  const insets = useSafeAreaInsets();
+
   const [refreshing, setRefreshing] = useState(false);
   // Live price from the store (null = no live price — contributes $0, never
   // a placeholder price).
@@ -42,7 +45,7 @@ export default function VaultHub() {
   }
 
   return (
-    <ScrollView style={styles.root} contentContainerStyle={[styles.inner, centeredContent]}>
+    <ScrollView style={styles.root} contentContainerStyle={[styles.inner, centeredContent, { paddingTop: 12 + insets.top, paddingBottom: 24 + insets.bottom }]}>
       <View style={styles.head}>
         <View style={styles.headSide} />
         <Text style={styles.title}>Vault</Text>

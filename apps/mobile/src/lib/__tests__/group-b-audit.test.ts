@@ -63,6 +63,55 @@ const SCROLL_SCREENS = [
   'app/notifications.tsx',
 ];
 
+describe('safe-area: every screen clears the status bar / notch and the gesture bar', () => {
+  // Regression test for 2026-11-26: Import Wallet's header was clipped
+  // under the status bar on the dev APK. Root cause: only the (tabs)
+  // screens and Token Detail applied useSafeAreaInsets; every stack
+  // screen (Import, Create, Send, Receive, Settings, Vault, …) rendered
+  // from y=0 with only 12–16px of padding. With headerShown: false and
+  // Android edge-to-edge, that puts the header under the status bar.
+  // Every screen must read the REAL insets — no fixed pixel padding.
+  const SAFE_AREA_SCREENS = [
+    'app/index.tsx',
+    'app/_layout.tsx',
+    'app/onboarding.tsx',
+    'app/create.tsx',
+    'app/import.tsx',
+    'app/unlock.tsx',
+    'app/send.tsx',
+    'app/receive.tsx',
+    'app/(tabs)/vault.tsx',
+    'app/vault/create.tsx',
+    'app/vault/[id].tsx',
+    'app/settings.tsx',
+    'app/discipline.tsx',
+    'app/notifications.tsx',
+    'app/token/[symbol].tsx',
+    'app/(tabs)/index.tsx',
+    'app/(tabs)/swap.tsx',
+    'app/(tabs)/discover.tsx',
+    'app/(tabs)/history.tsx',
+  ];
+
+  it('every screen reads the real insets (top and bottom)', () => {
+    const offenders = SAFE_AREA_SCREENS.filter(
+      (f) => !read(f).includes('useSafeAreaInsets') || !read(f).includes('insets.top') || !read(f).includes('insets.bottom'),
+    );
+    expect(offenders).toEqual([]);
+  });
+
+  it('no screen ScrollView relies on the static 12/16px inner padding alone', () => {
+    const offenders = SCROLL_SCREENS.filter((f) => !read(f).includes('insets.top'));
+    expect(offenders).toEqual([]);
+  });
+
+  it('the bottom tab bar grows with the gesture-bar inset instead of a fixed 60px', () => {
+    const tabs = read('app/(tabs)/_layout.tsx');
+    expect(tabs).toContain('useSafeAreaInsets');
+    expect(tabs).toContain('60 + insets.bottom');
+  });
+});
+
 describe('no dead Alert.alert buttons in Group B', () => {
   it('no Group B screen calls Alert.alert (comments warning against it do not count)', () => {
     const offenders = GROUP_B_SCREENS.filter((f) => read(f).includes('Alert.alert('));

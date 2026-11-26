@@ -484,7 +484,7 @@ export default function TokenDetail() {
 
   if (!ref.found) {
     return (
-      <View style={styles.missing}>
+      <View style={[styles.missing, { paddingTop: 12 + insets.top, paddingBottom: 24 + insets.bottom }]}>
         <Text style={styles.title}>Token not found</Text>
         <Text style={styles.missingBody}>This token is not in your wallet and no contract address was given.</Text>
         <Btn label="Back" onPress={() => router.back()} />

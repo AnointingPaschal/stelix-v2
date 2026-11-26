@@ -152,9 +152,44 @@ async function storeDelete(key: string): Promise<void> {
   await kvDelete(key);
 }
 
+/**
+ * ethers' mnemonic generation (`Wallet.createRandom`) draws entropy from
+ * `ethers.randomBytes`, which on the ESM build reads
+ * `globalThis.crypto.getRandomValues` — a global Hermes does not ship.
+ * On native, Create Wallet would therefore fail with the same missing-
+ * crypto root cause as Import did (see lib/crypto.ts). Register a secure
+ * random source backed by the expo-crypto native module (OS CSPRNG) when
+ * — and only when — the platform has no `crypto.getRandomValues`. On web
+ * and in Jest the default already works, so nothing is registered there
+ * and `expo-crypto` is never loaded. Never Math.random.
+ */
+let ethersRandomRegistered = false;
+
+function ensureEthersSecureRandom(): void {
+  if (ethersRandomRegistered) return;
+  ethersRandomRegistered = true;
+  if (typeof globalThis.crypto?.getRandomValues === 'function') return;
+  try {
+    // Lazy require: static import would load the native module in Jest /
+    // Node, where this branch never runs. Metro bundles expo-crypto
+    // because the require is statically analyzable.
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    const ExpoCrypto = require('expo-crypto') as typeof import('expo-crypto');
+    if (typeof ExpoCrypto.getRandomBytes !== 'function') {
+      throw new Error('expo-crypto getRandomBytes is unavailable');
+    }
+    ethers.randomBytes.register((length: number) => ExpoCrypto.getRandomBytes(length));
+  } catch {
+    throw new Error(
+      'No secure random source is available in this environment — wallet creation cannot run.',
+    );
+  }
+}
+
 /** Generate a fresh random 12-word mnemonic (ethers v6). Returns the
  *  mnemonic — the caller must show it once for backup and never log it. */
 export function generateMnemonic(): string {
+  ensureEthersSecureRandom();
   const wallet = ethers.Wallet.createRandom();
   const phrase = wallet.mnemonic?.phrase ?? '';
   if (phrase.split(/\s+/).length !== 12 || !ethers.Mnemonic.isValidMnemonic(phrase)) {

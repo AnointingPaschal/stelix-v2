@@ -1,4 +1,5 @@
 import { Tabs } from 'expo-router';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { ArrowLeftRight, Compass, History, Home, Settings as SettingsIcon } from 'lucide-react-native';
 import { COLORS } from '../../theme';
 
@@ -7,13 +8,19 @@ import { COLORS } from '../../theme';
  *  not a tab, as in v1. Launchpad is admin-only (apps/admin Launchpad
  *  Manager) and has no tab, screen or link in the wallet. */
 export default function TabsLayout() {
+  const insets = useSafeAreaInsets();
   return (
     <Tabs
       screenOptions={{
         headerShown: false,
         tabBarActiveTintColor: COLORS.navy,
         tabBarInactiveTintColor: COLORS.textMuted,
-        tabBarStyle: { backgroundColor: '#fff', borderTopColor: COLORS.border, height: 60, paddingBottom: 6 },
+        tabBarStyle: {
+          backgroundColor: '#fff',
+          borderTopColor: COLORS.border,
+          height: 60 + insets.bottom,
+          paddingBottom: 6 + insets.bottom,
+        },
         tabBarLabelStyle: { fontSize: 11, fontWeight: '700' },
       }}
     >

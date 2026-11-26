@@ -1,7 +1,7 @@
 import { Image, StyleSheet, Text, View } from 'react-native';
 import { Stack } from 'expo-router';
 import { StatusBar } from 'expo-status-bar';
-import { SafeAreaProvider } from 'react-native-safe-area-context';
+import { SafeAreaProvider, useSafeAreaInsets } from 'react-native-safe-area-context';
 import { AppProvider, useApp } from '../store/AppContext';
 import { COLORS } from '../theme';
 
@@ -9,14 +9,15 @@ import { COLORS } from '../theme';
  *  load / reload never renders a blank white page. Same white/navy v1
  *  splash look as the Splash screen (logo, STELIX, tagline, mint line). */
 function BootSplash() {
+  const insets = useSafeAreaInsets();
   return (
-    <View style={styles.root}>
+    <View style={[styles.root, { paddingTop: insets.top, paddingBottom: insets.bottom }]}>
       <View style={styles.glow}>
         <Image source={require('../../assets/icon.png')} style={styles.logo} resizeMode="contain" />
       </View>
       <Text style={styles.name}>S T E L I X</Text>
       <Text style={styles.tag}>Your Financial Discipline</Text>
-      <View style={styles.lineTrack}>
+      <View style={[styles.lineTrack, { bottom: 48 + insets.bottom }]}>
         <View style={styles.line} />
       </View>
     </View>

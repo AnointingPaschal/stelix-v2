@@ -1,16 +1,41 @@
 /**
- * Session-password encryption for the wallet secret — pure, no RN imports
- * so it is unit-testable in Jest (node).
+ * Session-password encryption for the wallet secret — pure JS, no WebCrypto
+ * and no React Native imports at module load, so it is unit-testable in
+ * Jest (node) and runs identically on web and native.
  *
  * Scheme: PBKDF2-HMAC-SHA-256 (600,000 iterations, 32-byte key) +
  * AES-GCM (96-bit random IV). The stored payload is a base64 JSON blob
  * `{ v: 1, salt, iv, data }`. A wrong password fails AES-GCM
  * authentication and throws — it is NEVER accepted.
  *
- * Uses WebCrypto (`globalThis.crypto.subtle`), available on web, iOS/Android
- * (Expo / Hermes exposes it in SDK 58) and Node 18+. No secret is ever
- * stored or logged in plaintext by this module.
+ * ROOT CAUSE of the native Import Wallet failure (2026-11-26): the old
+ * implementation used WebCrypto (`globalThis.crypto.subtle`). Hermes, the
+ * React Native JS engine, ships NO `crypto` global at all — no `subtle`
+ * and no `getRandomValues` — so every encrypt/decrypt threw
+ * "WebCrypto (crypto.subtle) is unavailable in this environment" on the
+ * dev APK, while the same code worked on web and in Jest (Node has
+ * WebCrypto). Fix: the KDF and cipher are now pure JS from
+ * @noble/hashes / @noble/ciphers, which need no platform API, and random
+ * bytes come from `globalThis.crypto.getRandomValues` where it exists
+ * (web / Node) and from the expo-crypto native module (SecureRandom) on
+ * native. `Math.random` is NEVER used for keys, salts or IVs.
+ *
+ * FORMAT: unchanged (v1). @noble's PBKDF2-SHA-256 output is byte-identical
+ * to WebCrypto's, and its AES-GCM ciphertext is the same layout
+ * (ciphertext with the 16-byte auth tag appended), so payloads encrypted
+ * by the old WebCrypto build — on web, or in any earlier release — still
+ * decrypt with this code. No migration, no wallet loss. Verified by the
+ * cross-implementation tests in __tests__/crypto.test.ts.
  */
+
+import { gcm } from '@noble/ciphers/aes.js';
+import { pbkdf2 } from '@noble/hashes/pbkdf2.js';
+import { sha256 } from '@noble/hashes/sha2.js';
+
+const PBKDF2_ITERATIONS = 600_000;
+const KEY_LENGTH_BYTES = 32;
+const SALT_LENGTH_BYTES = 16;
+const IV_LENGTH_BYTES = 12;
 
 export interface EncryptedPayload {
   v: 1;
@@ -36,32 +61,40 @@ function b64decode(s: string): Uint8Array {
   return out;
 }
 
-function getSubtle(): SubtleCrypto {
-  const c = globalThis.crypto;
-  if (!c?.subtle) {
-    throw new Error(
-      'WebCrypto (crypto.subtle) is unavailable in this environment — wallet encryption cannot run.',
-    );
+/**
+ * Cryptographically secure random bytes on every platform.
+ * Order: WebCrypto `getRandomValues` (web, Node/Jest) → expo-crypto
+ * native module (Hermes, where no `crypto` global exists). Throws when
+ * no secure source exists — never falls back to Math.random.
+ */
+async function randomBytes(length: number): Promise<Uint8Array> {
+  const g = globalThis.crypto;
+  if (typeof g?.getRandomValues === 'function') {
+    return g.getRandomValues(new Uint8Array(length));
   }
-  return c.subtle;
+  // Native (Hermes): dynamic import so this module stays loadable in
+  // Jest/Node and on web, where this branch never runs. expo-crypto
+  // getRandomBytesAsync is backed by the OS CSPRNG on iOS/Android
+  // (max 1024 bytes per call; we need 16 and 12).
+  try {
+    const ExpoCrypto = await import('expo-crypto');
+    if (typeof ExpoCrypto.getRandomBytesAsync === 'function') {
+      return ExpoCrypto.getRandomBytesAsync(length);
+    }
+  } catch {
+    // Fall through to the throw below.
+  }
+  throw new Error(
+    'No secure random source is available in this environment — wallet encryption cannot run.',
+  );
 }
 
-async function deriveKey(password: string, salt: Uint8Array): Promise<CryptoKey> {
-  const subtle = getSubtle();
-  const base = await subtle.importKey(
-    'raw',
-    new TextEncoder().encode(password),
-    'PBKDF2',
-    false,
-    ['deriveKey'],
-  );
-  return subtle.deriveKey(
-    { name: 'PBKDF2', salt: salt as BufferSource, iterations: 600_000, hash: 'SHA-256' },
-    base,
-    { name: 'AES-GCM', length: 256 },
-    false,
-    ['encrypt', 'decrypt'],
-  );
+/** PBKDF2-HMAC-SHA-256, 600k iterations — pure JS, byte-identical to WebCrypto. */
+function deriveKey(password: string, salt: Uint8Array): Uint8Array {
+  return pbkdf2(sha256, new TextEncoder().encode(password), salt, {
+    c: PBKDF2_ITERATIONS,
+    dkLen: KEY_LENGTH_BYTES,
+  });
 }
 
 export function assertStrongPassword(password: string): void {
@@ -73,26 +106,25 @@ export function assertStrongPassword(password: string): void {
 /** Encrypt a secret (mnemonic or private key) under the session password. */
 export async function encryptSecret(secret: string, password: string): Promise<string> {
   assertStrongPassword(password);
-  const subtle = getSubtle();
-  const salt = globalThis.crypto.getRandomValues(new Uint8Array(16));
-  const iv = globalThis.crypto.getRandomValues(new Uint8Array(12));
-  const key = await deriveKey(password, salt);
-  const ct = await subtle.encrypt(
-    { name: 'AES-GCM', iv: iv as BufferSource },
-    key,
-    new TextEncoder().encode(secret),
-  );
+  const salt = await randomBytes(SALT_LENGTH_BYTES);
+  const iv = await randomBytes(IV_LENGTH_BYTES);
+  const key = deriveKey(password, salt);
+  // @noble/ciphers AES-GCM appends the 16-byte auth tag to the
+  // ciphertext — the same layout WebCrypto produced, so v1 payloads
+  // stay interchangeable.
+  const ct = gcm(key, iv).encrypt(new TextEncoder().encode(secret));
   const payload: EncryptedPayload = {
     v: 1,
     salt: b64encode(salt),
     iv: b64encode(iv),
-    data: b64encode(new Uint8Array(ct)),
+    data: b64encode(ct),
   };
   return b64encode(new TextEncoder().encode(JSON.stringify(payload)));
 }
 
 /**
- * Decrypt a payload produced by encryptSecret.
+ * Decrypt a payload produced by encryptSecret (current or legacy
+ * WebCrypto build — same v1 format).
  * THROWS on a wrong password (AES-GCM auth failure) — never returns a
  * secret for the wrong password.
  */
@@ -106,15 +138,10 @@ export async function decryptSecret(payloadB64: string, password: string): Promi
   if (payload.v !== 1 || !payload.salt || !payload.iv || !payload.data) {
     throw new Error('Stored wallet data is corrupt or in an unknown format.');
   }
-  const subtle = getSubtle();
-  const key = await deriveKey(password, b64decode(payload.salt));
-  let pt: ArrayBuffer;
+  const key = deriveKey(password, b64decode(payload.salt));
+  let pt: Uint8Array;
   try {
-    pt = await subtle.decrypt(
-      { name: 'AES-GCM', iv: b64decode(payload.iv) as BufferSource },
-      key,
-      b64decode(payload.data) as BufferSource,
-    );
+    pt = gcm(key, b64decode(payload.iv)).decrypt(b64decode(payload.data));
   } catch {
     throw new Error('Wrong password — wallet could not be unlocked.');
   }

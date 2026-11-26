@@ -1,5 +1,14 @@
 /** Wallet password change — decrypt with old, re-encrypt under new. */
-import { changePassword, createWallet, exportSecret, getWalletMeta, unlockWallet, wipeWallet } from '../wallet';
+import { ethers } from 'ethers';
+import {
+  changePassword,
+  createWallet,
+  exportSecret,
+  getWalletMeta,
+  importWallet,
+  unlockWallet,
+  wipeWallet,
+} from '../wallet';
 
 describe('createWallet', () => {
   beforeEach(async () => {
@@ -46,5 +55,55 @@ describe('changePassword', () => {
   it('rejects a new password shorter than 8 characters', async () => {
     await createWallet('old-password-123');
     await expect(changePassword('old-password-123', 'short')).rejects.toThrow(/at least 8/);
+  });
+});
+
+describe('importWallet (fresh mnemonic generated per run — never a reused phrase)', () => {
+  beforeEach(async () => {
+    await wipeWallet();
+  });
+
+  it('imports a freshly generated 12-word mnemonic and unlocks with it', async () => {
+    const phrase = ethers.Wallet.createRandom().mnemonic?.phrase ?? '';
+    expect(phrase.split(' ').length).toBe(12);
+    expect(ethers.Mnemonic.isValidMnemonic(phrase)).toBe(true);
+    const address = await importWallet(phrase, 'import-password-123', 'Imported');
+    expect(address).toMatch(/^0x[0-9a-fA-F]{40}$/);
+    const meta = await getWalletMeta();
+    expect(meta?.address).toBe(address);
+    expect(meta?.name).toBe('Imported');
+    const unlocked = await unlockWallet('import-password-123');
+    expect(unlocked?.address).toBe(address);
+    await expect(unlockWallet('wrong-password-1234')).rejects.toThrow(/Wrong password/);
+    // The stored secret round-trips exactly.
+    await expect(exportSecret('import-password-123')).resolves.toBe(phrase);
+  });
+
+  it('imports a freshly generated 24-word mnemonic', async () => {
+    const phrase = ethers.Mnemonic.fromEntropy(ethers.randomBytes(32)).phrase;
+    expect(phrase.split(' ').length).toBe(24);
+    const address = await importWallet(phrase, 'import-password-123');
+    const unlocked = await unlockWallet('import-password-123');
+    expect(unlocked?.address).toBe(address);
+  });
+
+  it('imports a raw 64-hex private key', async () => {
+    const key = ethers.Wallet.createRandom().privateKey;
+    const address = await importWallet(key, 'import-password-123');
+    const unlocked = await unlockWallet('import-password-123');
+    expect(unlocked?.address).toBe(address);
+  });
+
+  it('rejects an invalid seed phrase or private key', async () => {
+    await expect(importWallet('abandon abandon abandon', 'import-password-123')).rejects.toThrow();
+    await expect(
+      importWallet('not a real seed phrase at all just words here', 'import-password-123'),
+    ).rejects.toThrow();
+    await expect(importWallet('zzzz', 'import-password-123')).rejects.toThrow();
+  });
+
+  it('rejects a password shorter than 8 characters at import time', async () => {
+    const phrase = ethers.Wallet.createRandom().mnemonic?.phrase ?? '';
+    await expect(importWallet(phrase, 'short')).rejects.toThrow(/at least 8/);
   });
 });

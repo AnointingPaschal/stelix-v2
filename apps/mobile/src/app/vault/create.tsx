@@ -10,6 +10,7 @@
 import { useMemo, useState } from 'react';
 import { ScrollView, StyleSheet, Text, TextInput, View } from 'react-native';
 import { router, useLocalSearchParams } from 'expo-router';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { COLORS } from '../../theme';
 import { useApp } from '../../store/AppContext';
 import { getChain, getVaultDeploymentStatus, VAULT_DEFAULTS } from '../../lib/chains';
@@ -58,6 +59,8 @@ export default function CreateLock() {
     breakMode?: string;
   }>();
   const { tokens, chain, address, settings, addLock, addTx, refreshLocks } = useApp();
+  const insets = useSafeAreaInsets();
+
   const [step, setStep] = useState(1);
   const [symbol, setSymbol] = useState(params.symbol ?? tokens[0]?.symbol ?? '');
   const [amount, setAmount] = useState(params.amount ?? '');
@@ -240,7 +243,7 @@ export default function CreateLock() {
 
   if (created) {
     return (
-      <ScrollView style={styles.root} contentContainerStyle={[styles.inner, centeredContent]}>
+      <ScrollView style={styles.root} contentContainerStyle={[styles.inner, centeredContent, { paddingTop: 12 + insets.top, paddingBottom: 24 + insets.bottom }]}>
         <Card style={styles.done}>
           <Text style={styles.doneTitle}>Lock created on-chain</Text>
           <Text style={styles.doneBody}>Lock ID {created.id}</Text>
@@ -256,7 +259,7 @@ export default function CreateLock() {
   }
 
   return (
-    <ScrollView style={styles.root} contentContainerStyle={[styles.inner, centeredContent]}>
+    <ScrollView style={styles.root} contentContainerStyle={[styles.inner, centeredContent, { paddingTop: 12 + insets.top, paddingBottom: 24 + insets.bottom }]}>
       <Text style={styles.title}>Create Lock</Text>
       <Text style={styles.steps}>Step {step} of 4 · {['Token & amount', 'Date & target', 'Exit plan', 'Review & confirm'][step - 1]}</Text>
       <View style={styles.progress}>

@@ -5,6 +5,7 @@
 import { useState } from 'react';
 import { ScrollView, StyleSheet, Text, View } from 'react-native';
 import { router } from 'expo-router';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import * as Clipboard from 'expo-clipboard';
 import QRCode from 'react-native-qrcode-svg';
 import { COLORS } from '../theme';
@@ -13,6 +14,8 @@ import { Btn, Card, ScreenHeader, centeredContent } from '../components/ui';
 
 export default function Receive() {
   const { address, chain } = useApp();
+  const insets = useSafeAreaInsets();
+
   const [copied, setCopied] = useState(false);
 
   async function copy() {
@@ -23,7 +26,7 @@ export default function Receive() {
   }
 
   return (
-    <ScrollView style={styles.root} contentContainerStyle={[styles.inner, centeredContent]}>
+    <ScrollView style={styles.root} contentContainerStyle={[styles.inner, centeredContent, { paddingTop: 12 + insets.top, paddingBottom: 24 + insets.bottom }]}>
       <ScreenHeader title="Receive Assets" onBack={() => router.back()} />
 
       <View style={styles.chainPill}>

@@ -10,6 +10,7 @@
 import { useState } from 'react';
 import { Pressable, ScrollView, StyleSheet, Text, TextInput, View } from 'react-native';
 import { router } from 'expo-router';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Check } from 'lucide-react-native';
 import { COLORS } from '../theme';
 import { Btn, Card, RiskNote, centeredContent } from '../components/ui';
@@ -17,6 +18,8 @@ import { useApp } from '../store/AppContext';
 
 export default function CreateWallet() {
   const { setOnboarded, setUnlocked, setAddress } = useApp();
+  const insets = useSafeAreaInsets();
+
   const [step, setStep] = useState(0);
   const [name, setName] = useState('');
   const [password, setPassword] = useState('');
@@ -64,7 +67,7 @@ export default function CreateWallet() {
   }
 
   return (
-    <ScrollView style={styles.root} contentContainerStyle={[styles.inner, centeredContent]}>
+    <ScrollView style={styles.root} contentContainerStyle={[styles.inner, centeredContent, { paddingTop: 12 + insets.top, paddingBottom: 24 + insets.bottom }]}>
       <Text style={styles.title}>Secure Your Vault</Text>
       {step === 0 && (
         <>

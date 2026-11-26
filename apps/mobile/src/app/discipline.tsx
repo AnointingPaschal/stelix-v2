@@ -8,6 +8,7 @@
 import { useState } from 'react';
 import { ScrollView, StyleSheet, Text, View } from 'react-native';
 import { router } from 'expo-router';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import * as Clipboard from 'expo-clipboard';
 import { COLORS } from '../theme';
 import { useApp } from '../store/AppContext';
@@ -17,6 +18,8 @@ import { Btn, Card, EmptyState, ProgressBar, RiskNote, SectionTitle, centeredCon
 
 export default function Discipline() {
   const { discipline, locks } = useApp();
+  const insets = useSafeAreaInsets();
+
   const [copied, setCopied] = useState(false);
   const score = disciplineScore({
     lockedRatio: discipline.lockedRatio,
@@ -27,7 +30,7 @@ export default function Discipline() {
   const active = locks.filter((l) => l.status === 'active' || l.status === 'partially-sold').length;
 
   return (
-    <ScrollView style={styles.root} contentContainerStyle={[styles.inner, centeredContent]}>
+    <ScrollView style={styles.root} contentContainerStyle={[styles.inner, centeredContent, { paddingTop: 12 + insets.top, paddingBottom: 24 + insets.bottom }]}>
       <Text style={styles.title}>Discipline Report</Text>
 
       <Card dark style={styles.scoreCard}>

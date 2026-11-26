@@ -9,6 +9,7 @@
 import { useEffect, useState } from 'react';
 import { Pressable, ScrollView, StyleSheet, Text, TextInput, View } from 'react-native';
 import { router } from 'expo-router';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { ChevronDown, Clipboard as ClipboardIcon } from 'lucide-react-native';
 import * as Clipboard from 'expo-clipboard';
 import { COLORS } from '../theme';
@@ -28,6 +29,8 @@ import {
 
 export default function Send() {
   const { tokens, chain, address, settings, addTx, refreshBalances } = useApp();
+  const insets = useSafeAreaInsets();
+
   const spendable = tokens.filter((t) => !t.isSpam);
   const [symbol, setSymbol] = useState(chain.nativeSymbol);
   const [to, setTo] = useState('');
@@ -154,7 +157,7 @@ export default function Send() {
 
   if (spendable.length === 0) {
     return (
-      <View style={[styles.root, centeredContent]}>
+      <View style={[styles.root, centeredContent, { paddingTop: 12 + insets.top, paddingBottom: 24 + insets.bottom }]}>
         <ScreenHeader title="Transfer Assets" onBack={() => router.back()} />
         <View style={styles.inner}>
           <Text style={styles.emptyTitle}>Nothing to send yet</Text>
@@ -166,7 +169,7 @@ export default function Send() {
   }
 
   return (
-    <ScrollView style={styles.root} contentContainerStyle={[styles.inner, centeredContent]}>
+    <ScrollView style={styles.root} contentContainerStyle={[styles.inner, centeredContent, { paddingTop: 12 + insets.top, paddingBottom: 24 + insets.bottom }]}>
       <ScreenHeader title="Transfer Assets" onBack={() => router.back()} />
 
       <View style={styles.chainPill}>

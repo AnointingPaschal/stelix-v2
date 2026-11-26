@@ -4,6 +4,7 @@
 import { useEffect, useRef } from 'react';
 import { Animated, Image, StyleSheet, Text, View } from 'react-native';
 import { router } from 'expo-router';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { COLORS } from '../theme';
 import { useApp } from '../store/AppContext';
 
@@ -21,6 +22,8 @@ export default function Splash() {
   const fade = useRef(new Animated.Value(0)).current;
   const line = useRef(new Animated.Value(0)).current;
   const { onboarded, unlocked, hydrated } = useApp();
+  const insets = useSafeAreaInsets();
+
 
   useEffect(() => {
     // Wait for the stored-wallet check before deciding where to go —
@@ -38,7 +41,7 @@ export default function Splash() {
   }, [fade, line, onboarded, unlocked, hydrated]);
 
   return (
-    <View style={styles.root}>
+    <View style={[styles.root, { paddingTop: insets.top, paddingBottom: insets.bottom }]}>
       {DOTS.map((d, i) => (
         <View key={i} style={[styles.dot, { left: d.left as never, top: d.top as never, height: d.size, width: d.size }]} />
       ))}
@@ -49,7 +52,7 @@ export default function Splash() {
         <Text style={styles.name}>S T E L I X</Text>
         <Text style={styles.tag}>Your Financial Discipline</Text>
       </Animated.View>
-      <View style={styles.lineTrack}>
+      <View style={[styles.lineTrack, { bottom: 48 + insets.bottom }]}>
         <Animated.View style={[styles.line, { width: line.interpolate({ inputRange: [0, 1], outputRange: ['0%', '100%'] }) }]} />
       </View>
     </View>

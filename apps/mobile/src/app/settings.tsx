@@ -14,6 +14,7 @@
 import { useEffect, useState } from 'react';
 import { Pressable, ScrollView, StyleSheet, Switch, Text, TextInput, View } from 'react-native';
 import { router } from 'expo-router';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import {
   Bell,
   BookUser,
@@ -48,6 +49,8 @@ const autoLockLabel = (m: number) => (m === 0 ? 'Immediately' : `${m} min`);
 
 export default function Settings() {
   const { settings, updateSettings, chain, resetState } = useApp();
+  const insets = useSafeAreaInsets();
+
   const [netOpen, setNetOpen] = useState(false);
   const [wipeText, setWipeText] = useState('');
   const [wipeMsg, setWipeMsg] = useState('');
@@ -167,7 +170,7 @@ export default function Settings() {
   }
 
   return (
-    <ScrollView style={styles.root} contentContainerStyle={[styles.inner, centeredContent]}>
+    <ScrollView style={styles.root} contentContainerStyle={[styles.inner, centeredContent, { paddingTop: 12 + insets.top, paddingBottom: 24 + insets.bottom }]}>
       <Text style={styles.title}>Advanced Settings</Text>
 
       <Text style={styles.section}>SECURITY & BACKUP</Text>

@@ -3,6 +3,7 @@
  *  Wallet buttons. No oversized headings. */
 import { Image, StyleSheet, Text, View } from 'react-native';
 import { router } from 'expo-router';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Lock, Target, TrendingUp } from 'lucide-react-native';
 import { COLORS } from '../theme';
 import { Btn, RiskNote, centeredContent } from '../components/ui';
@@ -14,8 +15,9 @@ const POINTS = [
 ];
 
 export default function Onboarding() {
+  const insets = useSafeAreaInsets();
   return (
-    <View style={[styles.root, centeredContent]}>
+    <View style={[styles.root, centeredContent, { paddingTop: 16 + insets.top, paddingBottom: 16 + insets.bottom }]}>
       <View style={styles.brandRow}>
         <Image source={require('../../assets/icon.png')} style={styles.logo} resizeMode="contain" />
         <View>

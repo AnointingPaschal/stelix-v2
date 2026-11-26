@@ -8,6 +8,7 @@
 import { useEffect, useState } from 'react';
 import { ScrollView, StyleSheet, Text, View } from 'react-native';
 import { router, useLocalSearchParams } from 'expo-router';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import * as Clipboard from 'expo-clipboard';
 import { COLORS } from '../../theme';
 import { useApp } from '../../store/AppContext';
@@ -43,6 +44,8 @@ interface PendingVaultSign {
 export default function LockDetail() {
   const { id } = useLocalSearchParams<{ id: string }>();
   const { locks, tokens, address, settings, updateLock, addTx, refreshLocks } = useApp();
+  const insets = useSafeAreaInsets();
+
   const lock = locks.find((l) => l.id === id);
   const [notice, setNotice] = useState('');
   const [lastTx, setLastTx] = useState<string | null>(null);
@@ -76,7 +79,7 @@ export default function LockDetail() {
 
   if (!lock) {
     return (
-      <View style={[styles.missing, centeredContent]}>
+      <View style={[styles.missing, centeredContent, { paddingTop: 12 + insets.top, paddingBottom: 24 + insets.bottom }]}>
         <Text style={styles.title}>Lock not found</Text>
         <Text style={styles.missingBody}>This lock is no longer in your vault.</Text>
         <Btn label="Back to Vault" onPress={() => router.replace('/(tabs)/vault')} />
@@ -270,7 +273,7 @@ export default function LockDetail() {
   }
 
   return (
-    <ScrollView style={styles.root} contentContainerStyle={[styles.inner, centeredContent]}>
+    <ScrollView style={styles.root} contentContainerStyle={[styles.inner, centeredContent, { paddingTop: 12 + insets.top, paddingBottom: 24 + insets.bottom }]}>
       <Text style={styles.title}>{lock.id}</Text>
       <Text style={styles.sub}>
         {fmtNum(lock.amountRemaining)} {lock.tokenSymbol} · {chain.name} · {lock.status.replace('-', ' ')}

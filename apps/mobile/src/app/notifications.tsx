@@ -10,6 +10,7 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { ScrollView, StyleSheet, Text, View } from 'react-native';
 import { Bell } from 'lucide-react-native';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { COLORS } from '../theme';
 import { useApp } from '../store/AppContext';
 import { fmtDateTime } from '../lib/format';
@@ -30,6 +31,8 @@ interface Row {
 
 export default function Notifications() {
   const { notifications, markNotificationsRead, locks, tokens } = useApp();
+  const insets = useSafeAreaInsets();
+
   const [readDerived, setReadDerived] = useState<string[]>([]);
 
   useEffect(() => {
@@ -84,7 +87,7 @@ export default function Notifications() {
   }, [markNotificationsRead, derived, readDerived]);
 
   return (
-    <ScrollView style={styles.root} contentContainerStyle={[styles.inner, centeredContent]}>
+    <ScrollView style={styles.root} contentContainerStyle={[styles.inner, centeredContent, { paddingTop: 12 + insets.top, paddingBottom: 24 + insets.bottom }]}>
       <Text style={styles.title}>Notifications</Text>
       {rows.length > 0 && unreadCount > 0 ? (
         <Btn label={`Mark all read (${unreadCount})`} variant="ghost" onPress={markAllRead} style={styles.markBtn} />
