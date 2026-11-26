@@ -8,6 +8,12 @@
 import * as nodeCrypto from 'crypto';
 import { decryptSecret, encryptSecret } from '../crypto';
 
+// PBKDF2-HMAC-SHA-256 at 600,000 iterations in pure JS takes several
+// seconds on a throttled CI VM — Jest's 5s default is not a product
+// limit, so the crypto suite gets a longer budget. The iteration count
+// itself is the security parameter and must not be lowered for tests.
+jest.setTimeout(60_000);
+
 const PASSWORD = 'correct horse battery staple';
 const SECRET = 'abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about';
 

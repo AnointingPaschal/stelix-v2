@@ -44,21 +44,47 @@ export interface EncryptedPayload {
   data: string; // base64 ciphertext (AES-GCM, auth tag appended)
 }
 
+/**
+ * Base64 without ANY platform API — pure JS over a lookup table.
+ * The old code used `Buffer` (Node-only) with a `btoa`/`atob` fallback
+ * (browser-only). Neither exists in Hermes, the native JS engine, so
+ * on a real phone the fallback threw `ReferenceError: btoa is not
+ * defined` the first time a wallet was created or unlocked. This
+ * implementation runs identically on native, web and Node, and is
+ * byte-compatible with the v1 payload format (verified by the
+ * cross-implementation tests in __tests__/crypto.test.ts).
+ */
+const B64_ALPHABET = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/';
+
 function b64encode(bytes: Uint8Array): string {
-  if (typeof Buffer !== 'undefined') return Buffer.from(bytes).toString('base64');
-  let s = '';
-  bytes.forEach((b) => {
-    s += String.fromCharCode(b);
-  });
-  return btoa(s);
+  let out = '';
+  for (let i = 0; i < bytes.length; i += 3) {
+    const b0 = bytes[i];
+    const b1 = i + 1 < bytes.length ? bytes[i + 1] : 0;
+    const b2 = i + 2 < bytes.length ? bytes[i + 2] : 0;
+    out += B64_ALPHABET[b0 >> 2];
+    out += B64_ALPHABET[((b0 & 0x03) << 4) | (b1 >> 4)];
+    out += i + 1 < bytes.length ? B64_ALPHABET[((b1 & 0x0f) << 2) | (b2 >> 6)] : '=';
+    out += i + 2 < bytes.length ? B64_ALPHABET[b2 & 0x3f] : '=';
+  }
+  return out;
 }
 
 function b64decode(s: string): Uint8Array {
-  if (typeof Buffer !== 'undefined') return new Uint8Array(Buffer.from(s, 'base64'));
-  const bin = atob(s);
-  const out = new Uint8Array(bin.length);
-  for (let i = 0; i < bin.length; i++) out[i] = bin.charCodeAt(i);
-  return out;
+  const clean = s.replace(/[^A-Za-z0-9+/=]/g, '');
+  const lookup = new Map<string, number>();
+  for (let i = 0; i < B64_ALPHABET.length; i++) lookup.set(B64_ALPHABET[i], i);
+  const bytes: number[] = [];
+  for (let i = 0; i < clean.length; i += 4) {
+    const c0 = lookup.get(clean[i]) ?? 0;
+    const c1 = lookup.get(clean[i + 1]) ?? 0;
+    const c2 = clean[i + 2] === '=' ? 0 : (lookup.get(clean[i + 2]) ?? 0);
+    const c3 = clean[i + 3] === '=' ? 0 : (lookup.get(clean[i + 3]) ?? 0);
+    bytes.push((c0 << 2) | (c1 >> 4));
+    if (clean[i + 2] !== '=') bytes.push(((c1 & 0x0f) << 4) | (c2 >> 2));
+    if (clean[i + 3] !== '=') bytes.push(((c2 & 0x03) << 6) | c3);
+  }
+  return new Uint8Array(bytes);
 }
 
 /**

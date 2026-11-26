@@ -21,6 +21,12 @@
     "plugins": [
       "expo-router",
       "expo-secure-store",
+      [
+        "expo-local-authentication",
+        {
+          "faceIDPermission": "Allow $(PRODUCT_NAME) to use Face ID to unlock your wallet and sign transactions."
+        }
+      ],
       "expo-status-bar",
       [
         "expo-splash-screen",

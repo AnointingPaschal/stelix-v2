@@ -19,25 +19,26 @@
  *
  * Storage: expo-secure-store on native (where available — it is a native
  * module, so a development build is required; it is NOT in Expo Go).
- * On web, SecureStore is unavailable, so the ENCRYPTED payload falls back
- * to localStorage — clearly labelled below and in the README. The payload
+ * When SecureStore is unavailable the ENCRYPTED payload falls back to
+ * the durable kv store in lib/storage.ts — AsyncStorage on native,
+ * localStorage on the web build — clearly labelled there. The payload
  * is encrypted before storage either way, so the fallback never holds a
  * plaintext secret. Nothing here logs a mnemonic or private key.
  */
 import { ethers } from 'ethers';
 import { assertStrongPassword, decryptSecret, encryptSecret } from './crypto';
 import { deriveSolanaAddress } from './solana';
-import { kvDelete, kvGet, kvSet } from './storage';
+import { isNativeApp, kvDelete, kvGet, kvSet } from './storage';
 
-/** Web detection without importing react-native (which Jest cannot
- *  transform in this setup): web has document + localStorage, native
- *  and Node do not. */
+/** "Web" here means "not the native app" — SecureStore is a native
+ *  module and must never be attempted off native. Detection is
+ *  `navigator.product === 'ReactNative'` (see lib/storage.ts): no
+ *  `document` / `localStorage` sniffing, no react-native import (which
+ *  Jest cannot transform in this setup). In Node/Jest this is true,
+ *  which is the safe side — SecureStore is skipped and the kv store
+ *  (in-memory there) is used. */
 function isWeb(): boolean {
-  try {
-    return typeof document !== 'undefined' && typeof localStorage !== 'undefined';
-  } catch {
-    return false;
-  }
+  return !isNativeApp();
 }
 
 const WALLET_KEY = 'stelix_encrypted_wallet_v2';
@@ -78,8 +79,9 @@ function tryDeriveSolanaAddress(phrase: string | null): string | null {
  * save. The handler caught it and called `Alert.alert`, which on
  * react-native-web is an empty no-op class — so the user saw nothing.
  * Fix: never use SecureStore on web, verify `isAvailableAsync()` and
- * that the methods exist, and fall back to encrypted localStorage
- * whenever SecureStore fails for any reason.
+ * that the methods exist, and fall back to the durable encrypted kv
+ * store (AsyncStorage on native, localStorage on web) whenever
+ * SecureStore fails for any reason.
  */
 let secureStoreAvailable: boolean | null = null;
 
@@ -116,14 +118,16 @@ async function storeSet(key: string, value: string): Promise<void> {
       await ss.setItemAsync(key, value);
       return;
     } catch {
-      // SecureStore failed at runtime — fall through to the encrypted
-      // localStorage fallback instead of losing the wallet.
+      // SecureStore failed at runtime — fall through to the durable
+      // encrypted kv fallback (AsyncStorage on native) instead of
+      // losing the wallet.
       secureStoreAvailable = false;
     }
   }
-  // WEB FALLBACK (labelled): encrypted payload in localStorage. The value
-  // is already PBKDF2/AES-GCM encrypted (wallet.ts/crypto.ts); plaintext
-  // secrets are never written here.
+  // FALLBACK (labelled): encrypted payload in the kv store
+  // (AsyncStorage on native, localStorage on web — see lib/storage.ts).
+  // The value is already PBKDF2/AES-GCM encrypted (wallet.ts/crypto.ts);
+  // plaintext secrets are never written here.
   await kvSet(key, value);
 }
 

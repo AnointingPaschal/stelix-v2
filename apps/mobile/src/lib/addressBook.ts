@@ -1,9 +1,9 @@
 /**
  * Address book — saved recipient addresses for Send (and any future
  * recipient picker). Stored in the same non-secret kv storage as the
- * imported-token list (localStorage on web; in-memory only on native
- * until a durable store lands — see lib/storage.ts). Never stores a
- * secret; addresses are public by design.
+ * imported-token list (AsyncStorage on native, localStorage on the web
+ * build — see lib/storage.ts). Never stores a secret; addresses are
+ * public by design.
  *
  * Validation is real: EVM addresses must pass ethers.isAddress,
  * Solana addresses must pass the PublicKey check in lib/solana.ts

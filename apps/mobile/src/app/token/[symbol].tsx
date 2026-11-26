@@ -20,14 +20,14 @@
  *  resolve market data + candles through their wrapped twin. Anything
  *  unavailable shows "—" / "No data", never an invented value. */
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { Alert, Animated, Pressable, ScrollView, StyleSheet, Switch, Text, TextInput, View, useWindowDimensions } from 'react-native';
+import { Animated, Pressable, ScrollView, StyleSheet, Switch, Text, TextInput, View, useWindowDimensions } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { router, useLocalSearchParams } from 'expo-router';
 import * as Clipboard from 'expo-clipboard';
 import { ChevronLeft, Lock, RefreshCw, Star } from 'lucide-react-native';
 import { COLORS } from '../../theme';
 import { useApp } from '../../store/AppContext';
-import { kvGet, kvSet } from '../../lib/storage';
+import { isWatched, toggleWatchlist, watchKey as buildWatchKey } from '../../lib/watchlist';
 import {
   COINGECKO_IDS_BY_SYMBOL,
   candlesMatchPrice,
@@ -50,7 +50,7 @@ import { bucketMsFor, lastMacd, mergeLivePrice, type ChartTimeframe } from '../.
 import { resolveTokenRef } from '../../lib/tokenResolve';
 import { getChain } from '../../lib/chains';
 import { fmtDate, fmtNum, fmtPct, fmtPrice, fmtUsd } from '../../lib/format';
-import { Btn, Card, Chip, EmptyState, RiskNote, SectionTitle } from '../../components/ui';
+import { Btn, Card, Chip, RiskNote, SectionTitle } from '../../components/ui';
 import { PriceChart, type ChartType } from '../../components/PriceChart';
 import { SafetyScoreCard } from '../../components/SafetyScoreCard';
 import { TokenLogo } from '../../components/TokenLogo';
@@ -65,11 +65,6 @@ const DURATIONS = [
   { label: 'Custom', days: 0 },
 ];
 const TARGETS = [2, 3, 5, 10];
-
-/** Local-storage key for the persisted watchlist (JSON array of
- *  `${chainId}:${address || symbol}` keys). Non-secret, same mechanism
- *  as the imported-token list (see lib/storage). */
-const WATCHLIST_KEY = 'stelix:watchlist';
 
 const priceText = (p: number | null) => (p === null ? '—' : fmtPrice(p));
 const pctText = (v: number | null) => (v === null ? '—' : fmtPct(v));
@@ -397,25 +392,16 @@ export default function TokenDetail() {
   const [showMacd, setShowMacd] = useState(false);
   const [showVol, setShowVol] = useState(true);
   const [showRsi, setShowRsi] = useState(true);
-  const [tab, setTab] = useState<'contract' | 'orderbook'>('contract');
   const [watched, setWatched] = useState(false);
 
-  // --- Watchlist (persisted per token) -----------------------------------
-  const watchKey = `${chainId}:${address || sym}`;
+  // --- Watchlist (persisted per token, listed on Home) -------------------
+  // The key format lives in lib/watchlist.ts — the same key the star
+  // always used, so stars saved by earlier builds keep working.
+  const watchKey = buildWatchKey(chainId, address, sym);
   useEffect(() => {
     let cancelled = false;
-    void kvGet(WATCHLIST_KEY).then((raw) => {
-      if (cancelled) return;
-      if (!raw) {
-        setWatched(false);
-        return;
-      }
-      try {
-        const list: unknown = JSON.parse(raw);
-        setWatched(Array.isArray(list) && list.includes(watchKey));
-      } catch {
-        setWatched(false);
-      }
+    void isWatched(watchKey).then((w) => {
+      if (!cancelled) setWatched(w);
     });
     return () => {
       cancelled = true;
@@ -426,14 +412,10 @@ export default function TokenDetail() {
     const next = !watched;
     setWatched(next);
     try {
-      const raw = await kvGet(WATCHLIST_KEY);
-      const list: string[] = raw ? (JSON.parse(raw) as string[]) : [];
-      const updated = next
-        ? [...new Set([...list, watchKey])]
-        : list.filter((k) => k !== watchKey);
-      await kvSet(WATCHLIST_KEY, JSON.stringify(updated));
+      await toggleWatchlist(watchKey);
     } catch {
       // Storage failure leaves the in-memory star state as-is.
+      setWatched(!next);
     }
   }
 
@@ -447,6 +429,10 @@ export default function TokenDetail() {
   const [ladderOn, setLadderOn] = useState(false);
   const [trailing, setTrailing] = useState<number | null>(null);
   const [noEarlyBreak, setNoEarlyBreak] = useState(true);
+  // Inline validation error for the lock form. Never Alert.alert here:
+  // on react-native-web it is an empty no-op, so the user would see
+  // nothing — the same failure mode as the old Create/Import screens.
+  const [lockError, setLockError] = useState<string | null>(null);
 
   const lockDays = days === 0 ? parseInt(customDays, 10) || 0 : days;
   const unlockDate = new Date(Date.now() + lockDays * 86_400_000);
@@ -455,16 +441,17 @@ export default function TokenDetail() {
 
   function reviewLock() {
     const amt = parseFloat(amount) || 0;
+    setLockError(null);
     if (amt <= 0 || amt > balance) {
-      Alert.alert('Check the amount', `Enter an amount up to your spendable ${fmtNum(balance)} ${sym}.`);
+      setLockError(`Enter an amount up to your spendable ${fmtNum(balance)} ${sym}.`);
       return;
     }
     if (lockDays <= 0) {
-      Alert.alert('Choose a duration', 'Choose a lock duration.');
+      setLockError('Choose a lock duration.');
       return;
     }
     if (unlockMode === 'price' && (price === null || !targetPrice || targetPrice <= price)) {
-      Alert.alert('Check the target', 'Set a price target above the current price (live price unavailable right now).');
+      setLockError('Set a price target above the current price (live price unavailable right now).');
       return;
     }
     router.push({
@@ -760,22 +747,10 @@ export default function TokenDetail() {
           <Switch value={noEarlyBreak} onValueChange={setNoEarlyBreak} trackColor={{ true: COLORS.mint }} />
         </View>
         <Btn label="Review & Lock" variant="secondary" onPress={reviewLock} style={styles.reviewBtn} />
+        {lockError ? <Text style={styles.lockError}>{lockError}</Text> : null}
       </Card>
 
-      <View style={styles.tabRow}>
-        <Pressable onPress={() => setTab('contract')} style={[styles.tabBtn, tab === 'contract' && styles.tabBtnOn]}>
-          <Text style={[styles.tabBtnText, tab === 'contract' && styles.tabBtnTextOn]}>Contract Info</Text>
-        </Pressable>
-        <Pressable onPress={() => setTab('orderbook')} style={[styles.tabBtn, tab === 'orderbook' && styles.tabBtnOn]}>
-          <Text style={[styles.tabBtnText, tab === 'orderbook' && styles.tabBtnTextOn]}>Orderbook</Text>
-        </Pressable>
-      </View>
-
-      {tab === 'orderbook' ? (
-        <EmptyState title="No orderbook yet" body="Orderbook data is not available for this pair yet." />
-      ) : (
-        <>
-          <SectionTitle title="Price Performance" />
+      <SectionTitle title="Price Performance" />
           <Card>
             <DataRow label="1h" value={pctText(change1h)} tone={change1h === null ? undefined : change1h >= 0 ? 'mint' : 'red'} />
             <DataRow label="24h" value={pctText(change24h)} tone={change24h === null ? undefined : change24h >= 0 ? 'mint' : 'red'} />
@@ -826,8 +801,6 @@ export default function TokenDetail() {
             <DataRow label="DEX" value={tokenChain.dex.split(' ')[0]} />
             <DataRow label="Chain" value={chainId} />
           </Card>
-        </>
-      )}
 
       <View style={styles.actions}>
         <Btn
@@ -924,6 +897,7 @@ const styles = StyleSheet.create({
     width: 36,
   },
   discLabel: { color: '#fff', fontSize: 12, fontWeight: '700', marginTop: 14 },
+  lockError: { color: '#FCA5A5', fontSize: 13, fontWeight: '600', marginTop: 10 },
   discSub: { color: COLORS.textOnNavyMuted, fontSize: 12, marginTop: 2 },
   discTitle: { color: '#fff', fontSize: 16, fontWeight: '800' },
   disciplineCard: { marginTop: 12, padding: 14 },
@@ -995,18 +969,6 @@ const styles = StyleSheet.create({
   statSub: { color: COLORS.textMuted, fontSize: 11, marginTop: 2 },
   statValue: { color: COLORS.text, fontSize: 13, fontWeight: '800', marginTop: 2 },
   sub: { color: COLORS.textMuted, fontSize: 12, marginTop: 2 },
-  tabBtn: {
-    alignItems: 'center',
-    borderColor: COLORS.border,
-    borderRadius: 999,
-    borderWidth: 1,
-    flex: 1,
-    paddingVertical: 10,
-  },
-  tabBtnOn: { backgroundColor: COLORS.navy, borderColor: COLORS.navy },
-  tabBtnText: { color: COLORS.textMuted, fontSize: 12, fontWeight: '700' },
-  tabBtnTextOn: { color: '#fff' },
-  tabRow: { flexDirection: 'row', gap: 8, marginTop: 14 },
   tf: { borderRadius: 999, paddingHorizontal: 8, paddingVertical: 4 },
   tfOn: { backgroundColor: COLORS.bgMuted },
   tfText: { color: COLORS.textMuted, fontSize: 12, fontWeight: '700' },

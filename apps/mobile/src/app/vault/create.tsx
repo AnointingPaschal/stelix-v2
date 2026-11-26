@@ -4,9 +4,11 @@
  *  customPrice, ladder, trailing, breakMode). No invented fees — the Stelix
  *  fee comes from VAULT_DEFAULTS and the network fee is shown by the wallet
  *  before signing. Signing happens ONLY in the shared
- *  SignTransactionModal — there is no session-password field on this page.
- *  The Discipline PIN stays on the page: it is a 6-digit discipline check,
- *  not the session password. */
+ *  SignTransactionModal — there is no session-password field on this page,
+ *  and no "Discipline PIN" either: the old 6-digit PIN accepted ANY six
+ *  digits (it was never set or verified anywhere), so it was security
+ *  theatre, not a check. The signing modal's session password is the
+ *  real confirmation. */
 import { useMemo, useState } from 'react';
 import { ScrollView, StyleSheet, Text, TextInput, View } from 'react-native';
 import { router, useLocalSearchParams } from 'expo-router';
@@ -19,7 +21,7 @@ import { getSignerForChain } from '../../lib/signer';
 import {
   createLockOnChain,
   lockSummarySentence,
-  minimumReceive,
+  minReceivePerStageUsd,
   validateLadder,
   type BreakMode,
   type BullLock,
@@ -65,7 +67,12 @@ export default function CreateLock() {
   const [symbol, setSymbol] = useState(params.symbol ?? tokens[0]?.symbol ?? '');
   const [amount, setAmount] = useState(params.amount ?? '');
   const [days, setDays] = useState(params.days ? parseInt(params.days, 10) : 365);
-  const [target, setTarget] = useState<number | null>(params.target ? parseInt(params.target, 10) : 3);
+  // An explicit empty `target` param means "date only" (Token Detail's
+  // Date mode passes target=''). The old code treated '' as falsy and
+  // defaulted to 3x — a date-only prefill silently became a 3x lock.
+  const [target, setTarget] = useState<number | null>(
+    params.target === '' ? null : params.target ? parseInt(params.target, 10) : 3,
+  );
   const [customPrice, setCustomPrice] = useState(params.customPrice ?? '');
   const [ladderOn, setLadderOn] = useState(params.ladder !== '0');
   const [ladder, setLadder] = useState<LadderStage[]>([
@@ -81,7 +88,6 @@ export default function CreateLock() {
       ? params.breakMode
       : 'penalty',
   );
-  const [pin, setPin] = useState('');
   const [created, setCreated] = useState<BullLock | null>(null);
   const [formError, setFormError] = useState('');
   const [signModal, setSignModal] = useState<SignTxRequest | null>(null);
@@ -90,10 +96,28 @@ export default function CreateLock() {
   const token = tokens.find((t) => t.symbol === symbol) ?? tokens[0];
   const amt = parseFloat(amount) || 0;
   const entryPrice = token?.price ?? 0;
+  const spendable = token ? Math.max(0, token.balance - token.locked) : 0;
   const targetPrice = target === null ? null : customPrice ? parseFloat(customPrice) || null : entryPrice * target;
   const unlockTime = Date.now() + days * 86_400_000;
   const exitLabel = getChain(chain.id).exitStablecoinLabel;
   const ladderError = ladderOn ? validateLadder(ladder) : null;
+  // A malformed custom price used to parse to NaN, then `|| null`
+  // silently dropped the target — the lock became date-only with no
+  // warning. Validate it instead.
+  const customPriceError =
+    target !== null && customPrice.trim() !== '' && !(parseFloat(customPrice) > 0)
+      ? 'Enter a valid custom target price (a number above 0).'
+      : null;
+  // Minimum receive per stage, from the real stage value (see
+  // lib/vault.ts minReceivePerStageUsd) — never the old hardcoded $100.
+  const minReceiveUsd = minReceivePerStageUsd({
+    amount: amt,
+    entryPrice,
+    targetPrice,
+    ladder,
+    ladderOn,
+    slippageBps: VAULT_DEFAULTS.slippageBps,
+  });
 
   const preview: BullLock = useMemo(
     () => ({
@@ -114,20 +138,24 @@ export default function CreateLock() {
       penaltyBps: breakMode === 'penalty' ? 500 : 0,
       autoSell: targetPrice !== null ? autoSell : false,
       slippageBps: VAULT_DEFAULTS.slippageBps,
-      minReceiveUsd: 100,
+      minReceiveUsd,
       status: 'active',
       createdAt: Date.now(),
     }),
-    [amt, chain.id, token, symbol, entryPrice, unlockTime, targetPrice, target, ladderOn, ladder, trailing, breakMode, autoSell],
+    [amt, chain.id, token, symbol, entryPrice, unlockTime, targetPrice, target, ladderOn, ladder, trailing, breakMode, autoSell, minReceiveUsd],
   );
 
   function next() {
     setFormError('');
     if (step === 1) {
-      if (!token || amt <= 0 || amt > token.balance) {
-        setFormError(`Check the amount — enter an amount up to your spendable ${fmtNum(token?.balance ?? 0)} ${token?.symbol ?? ''}. Locked funds cannot be locked twice.`);
+      if (!token || amt <= 0 || amt > spendable) {
+        setFormError(`Check the amount — enter an amount up to your spendable ${fmtNum(spendable)} ${token?.symbol ?? ''}. Locked funds cannot be locked twice.`);
         return;
       }
+    }
+    if (step === 2 && customPriceError) {
+      setFormError(customPriceError);
+      return;
     }
     if (step === 3 && ladderError) {
       setFormError(ladderError);
@@ -141,8 +169,12 @@ export default function CreateLock() {
    *  (or biometrics) and calls signLock below. */
   async function confirm() {
     setFormError('');
-    if (pin.length !== 6) {
-      setFormError('Discipline PIN required — enter your 6-digit Discipline PIN to confirm this lock.');
+    if (customPriceError) {
+      setFormError(customPriceError);
+      return;
+    }
+    if (targetPrice !== null && entryPrice > 0 && targetPrice <= entryPrice) {
+      setFormError('Target price must be above the entry price — otherwise the target is already met.');
       return;
     }
     if (chain.kind !== 'evm') {
@@ -250,7 +282,7 @@ export default function CreateLock() {
           <Text style={styles.doneBody}>Receipt: {fmtNum(created.amount)} {created.tokenSymbol} · {fmtUsd(created.amount * created.entryPrice)}</Text>
           <Text style={styles.doneBody}>Unlock: {new Date(created.unlockTime).toLocaleDateString('en-GB', { day: 'numeric', month: 'long', year: 'numeric' })}</Text>
           <Text style={styles.doneBody}>Tx: {created.txHash ? `${created.txHash.slice(0, 12)}…${created.txHash.slice(-6)}` : '—'}</Text>
-          <Text style={styles.doneBody}>Reminders on: 7 days, 1 day and 1 hour before maturity; at 50% / 80% / 100% of target.</Text>
+          <Text style={styles.doneBody}>Maturity and target alerts will appear in Notifications as the lock progresses.</Text>
         </Card>
         <Btn label="View Lock" onPress={() => router.replace(`/vault/${created.id}`)} />
         <Btn label="Back to Vault" variant="ghost" onPress={() => router.replace('/(tabs)/vault')} />
@@ -281,13 +313,13 @@ export default function CreateLock() {
           <TextInput style={styles.amountInput} keyboardType="decimal-pad" placeholder="0.0" value={amount} onChangeText={setAmount} />
           <View style={styles.pctRow}>
             {[25, 50, 75, 100].map((p) => (
-              <Btn key={p} label={`${p}%`} variant="ghost" onPress={() => token && setAmount(String((token.balance * p) / 100))} style={styles.pctBtn} />
+              <Btn key={p} label={`${p}%`} variant="ghost" onPress={() => token && setAmount(String((spendable * p) / 100))} style={styles.pctBtn} />
             ))}
           </View>
           {token && (
             <Text style={styles.hint}>
-              Spendable: {fmtNum(token.balance)} {token.symbol} ({fmtUsd(token.balance * (token.price ?? 0))}) · after lock:{' '}
-              {fmtUsd(Math.max(0, token.balance - amt) * (token.price ?? 0))}
+              Spendable: {fmtNum(spendable)} {token.symbol} ({fmtUsd(spendable * (token.price ?? 0))}) · after lock:{' '}
+              {fmtUsd(Math.max(0, spendable - amt) * (token.price ?? 0))}
             </Text>
           )}
         </>
@@ -399,14 +431,12 @@ export default function CreateLock() {
             <ReviewRow label="Trailing stop" value={trailing ? `${trailing / 100}%` : 'Off'} />
             <ReviewRow label="Break mode" value={breakMode === 'immutable' ? 'Immutable — no early break' : breakMode === 'penalty' ? 'Penalty break — 5% after 24h cooling-off' : 'Guardian break — approval + 48h delay'} />
             <ReviewRow label="Slippage" value="1.5% (default)" />
-            <ReviewRow label="Minimum receive" value={targetPrice ? fmtUsd(minimumReceive(amt * (targetPrice ?? entryPrice), VAULT_DEFAULTS.slippageBps)) : '—'} />
+            <ReviewRow label="Minimum receive" value={targetPrice ? fmtUsd(minReceiveUsd) : '—'} />
             <ReviewRow label="Stelix fee" value={`${VAULT_DEFAULTS.autoSellFeeBps / 100}% (set in admin before mainnet)`} />
             <ReviewRow label="Network fee" value="Shown by the wallet before signing" />
           </Card>
           <Text style={styles.sentence}>{lockSummarySentence(preview, exitLabel)}</Text>
-          <Text style={styles.label}>Discipline PIN (6 digits)</Text>
-          <TextInput style={styles.input} keyboardType="number-pad" maxLength={6} secureTextEntry placeholder="••••••" value={pin} onChangeText={setPin} />
-          <Text style={styles.hint}>Confirm with your Discipline PIN, then review and sign in the signing sheet. The vault must be deployed on this chain — otherwise no lock is created.</Text>
+          <Text style={styles.hint}>Review the terms above, then confirm in the signing sheet — your session password authorises the lock.</Text>
         </>
       )}
 

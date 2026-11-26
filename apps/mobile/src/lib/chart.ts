@@ -94,9 +94,11 @@ export function bollingerSeries(
   const lower: number[] = [];
   for (let i = 0; i < closes.length; i++) {
     const start = Math.max(0, i - period + 1);
-    const window = closes.slice(start, i + 1);
-    const mean = window.reduce((s, v) => s + v, 0) / window.length;
-    const variance = window.reduce((s, v) => s + (v - mean) * (v - mean), 0) / window.length;
+    // Named `slice`, not `window`: a local called `window` would shadow
+    // the web global and trip the no-web-APIs audit (see native-audit.test.ts).
+    const slice = closes.slice(start, i + 1);
+    const mean = slice.reduce((s, v) => s + v, 0) / slice.length;
+    const variance = slice.reduce((s, v) => s + (v - mean) * (v - mean), 0) / slice.length;
     const sd = Math.sqrt(variance);
     middle.push(mean);
     upper.push(mean + mult * sd);

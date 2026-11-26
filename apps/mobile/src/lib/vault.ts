@@ -513,9 +513,57 @@ export function canBreak(lock: BullLock): boolean {
   return lock.breakMode !== 'immutable';
 }
 
+/**
+ * Locked token units per token, from on-chain locks. Keyed
+ * `${chainId}:${symbol}`; a lock's remaining amount is what is still
+ * locked. Completed / broken locks hold nothing. The store fills each
+ * token's `locked` from this, so Home's Spendable / Locked split, the
+ * Discipline locked ratio and Send's spendable check use real figures
+ * instead of the always-0 placeholder. Unit-tested (see
+ * __tests__/audit-fixes.test.ts).
+ */
+export function lockedByToken(locks: BullLock[]): Record<string, number> {
+  const out: Record<string, number> = {};
+  for (const l of locks) {
+    if (l.status === 'completed' || l.status === 'broken') continue;
+    const key = `${l.chainId}:${l.tokenSymbol}`;
+    out[key] = (out[key] ?? 0) + Math.max(0, l.amountRemaining);
+  }
+  return out;
+}
+
 /** Minimum acceptable stablecoin for a stage, after slippage. */
 export function minimumReceive(stageUsdValue: number, slippageBps: number): number {
   return stageUsdValue * (1 - slippageBps / 10_000);
+}
+
+/**
+ * Minimum acceptable stablecoin for ONE ladder stage (USD), after
+ * slippage — the value written to the contract's minReceivePerStage.
+ * The binding stage is the FIRST (smallest) one: a min-receive sized
+ * to a later, bigger stage would make the first stage revert on-chain.
+ * Date-only locks have no stage: 0. The old create screen hardcoded
+ * $100 here, which would revert any lock whose stage is worth less
+ * than $100 — and mis-stated the review screen's own figure.
+ */
+export function minReceivePerStageUsd(args: {
+  amount: number;
+  entryPrice: number;
+  targetPrice: number | null;
+  ladder: { multiple: number; percent: number }[];
+  ladderOn: boolean;
+  slippageBps: number;
+}): number {
+  const { amount, entryPrice, targetPrice, ladder, ladderOn, slippageBps } = args;
+  if (amount <= 0 || entryPrice <= 0) return 0;
+  let stageUsd = 0;
+  if (ladderOn && ladder.length > 0) {
+    const first = ladder[0];
+    stageUsd = amount * entryPrice * first.multiple * (first.percent / 100);
+  } else if (targetPrice !== null && targetPrice > 0) {
+    stageUsd = amount * targetPrice;
+  }
+  return minimumReceive(stageUsd, slippageBps);
 }
 
 /**

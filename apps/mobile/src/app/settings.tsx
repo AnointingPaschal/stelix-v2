@@ -41,6 +41,7 @@ import {
   type SavedAddress,
 } from '../lib/addressBook';
 import { clearLogoCache } from '../lib/tokenLogos';
+import { wipeLocalData } from '../lib/storage';
 import * as Clipboard from 'expo-clipboard';
 import { Btn, Card, NetworkSheet, RiskNote, centeredContent } from '../components/ui';
 
@@ -165,6 +166,10 @@ export default function Settings() {
       return;
     }
     await wipeWallet();
+    // Wiping the wallet alone left imported tokens, the address book,
+    // watchlist and settings behind in local storage — wipe those too.
+    await wipeLocalData();
+    clearLogoCache();
     resetState();
     router.replace('/onboarding');
   }
@@ -260,6 +265,10 @@ export default function Settings() {
         />
         <Divider />
         <Row icon={<Bell size={18} color={COLORS.text} />} title="Notifications" sub="Targets, maturity and security alerts" onPress={() => router.push('/notifications')} />
+        <Divider />
+        <Row icon={<Bell size={18} color={COLORS.text} />} title="Maturity reminders" sub="Lock maturing / matured alerts in Notifications">
+          <Switch value={settings.maturityReminders} onValueChange={(v) => updateSettings({ maturityReminders: v })} trackColor={{ true: COLORS.mint }} />
+        </Row>
         <Divider />
         <Row icon={<Paintbrush size={18} color={COLORS.text} />} title="Hide spam tokens" sub={settings.hideSpam ? 'On' : 'Off'}>
           <Switch value={settings.hideSpam} onValueChange={(v) => updateSettings({ hideSpam: v })} trackColor={{ true: COLORS.mint }} />

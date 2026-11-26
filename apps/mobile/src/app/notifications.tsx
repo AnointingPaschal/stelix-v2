@@ -30,7 +30,7 @@ interface Row {
 }
 
 export default function Notifications() {
-  const { notifications, markNotificationsRead, locks, tokens } = useApp();
+  const { notifications, markNotificationsRead, locks, tokens, settings } = useApp();
   const insets = useSafeAreaInsets();
 
   const [readDerived, setReadDerived] = useState<string[]>([]);
@@ -52,8 +52,8 @@ export default function Notifications() {
       deriveLockNotifications(
         locks,
         (symbol) => tokens.find((t) => t.symbol === symbol)?.price ?? null,
-      ),
-    [locks, tokens],
+      ).filter((d) => settings.maturityReminders || d.kind !== 'maturity'),
+    [locks, tokens, settings.maturityReminders],
   );
 
   const rows: Row[] = useMemo(() => {
@@ -113,8 +113,10 @@ export default function Notifications() {
         ))
       )}
       <Text style={styles.note}>
-        Push alerts cover: target at 50% / 80% / 100%, target hit and auto-sell result, trailing-stop
-        activation, maturity at 7 days / 1 day / 1 hour, break cooling-off, and security events.
+        Alerts are derived from your locks and appear here when you open the app: target at 50% / 80% / 100%,
+        target hit and auto-sell result, trailing-stop activation, maturity at 7 days / 1 day / 1 hour, break
+        cooling-off, and security events. Stelix does not send push notifications yet — nothing arrives while
+        the app is closed.
       </Text>
     </ScrollView>
   );

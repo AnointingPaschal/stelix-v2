@@ -157,7 +157,10 @@ export async function fetchHistory(
             amount: Math.abs(st.solChange),
             amountRaw: String(Math.round(Math.abs(st.solChange) * 1e9)),
             usd: null,
-            at: st.blockTime !== null ? st.blockTime * 1000 : st.slot,
+            // blockTime is null for unconfirmed / very old signatures:
+            // 0 means "unknown date" (the screen renders "—"), never
+            // the slot number, which would display as 01/01/1970.
+            at: st.blockTime !== null ? st.blockTime * 1000 : 0,
             status: st.failed ? 'failed' : 'confirmed',
             isSpam: false,
             chainId: chain.id,
@@ -179,7 +182,8 @@ export async function fetchHistory(
             amount: Math.abs(tc.change),
             amountRaw: String(Math.round(Math.abs(tc.change) * 10 ** tc.decimals)),
             usd: null,
-            at: st.blockTime !== null ? st.blockTime * 1000 : st.slot,
+            // blockTime null => unknown date (0), never the slot number.
+            at: st.blockTime !== null ? st.blockTime * 1000 : 0,
             status: st.failed ? 'failed' : 'confirmed',
             isSpam: false,
             chainId: chain.id,

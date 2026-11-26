@@ -7,21 +7,18 @@
  * otherwise the list is empty with vaultNote set to the not-deployed
  * message (see lib/chains.ts / lib/vault.ts).
  */
-import React, { createContext, useCallback, useContext, useEffect, useMemo, useState } from 'react';
+import React, { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from 'react';
+import { AppState as RNAppState } from 'react-native';
 import { CHAINS, DEFAULT_CHAIN, VAULT_NOT_DEPLOYED_MESSAGE, type ChainConfig } from '../lib/chains';
 import { fetchBalances, loadImportedTokens, type TokenBalance } from '../lib/balances';
 import { fetchHistory, filterHistory, type TxRecord } from '../lib/history';
-import { getUserLocksOnChain, mapChainLockToBullLock, type BullLock } from '../lib/vault';
+import { getUserLocksOnChain, lockedByToken, mapChainLockToBullLock, type BullLock } from '../lib/vault';
 import { getWalletMeta, hasWallet } from '../lib/wallet';
+import { kvGet, kvSet } from '../lib/storage';
+import { parseStoredSettings, SETTINGS_KEY, type AppSettings } from '../lib/settings';
 
-export interface AppSettings {
-  biometrics: boolean;
-  autoLockMinutes: number; // 0 = immediately
-  currency: string;
-  language: string;
-  hideSpam: boolean;
-  maturityReminders: boolean;
-}
+/** Re-exported for screens that type against the store's settings. */
+export type { AppSettings };
 
 export interface AppNotification {
   id: string;
@@ -88,6 +85,10 @@ interface AppState {
   tokens: TokenBalance[];
   locks: BullLock[];
   history: TxRecord[];
+  /** Unfiltered history (spam included) — the History screen needs the
+   *  real spam count for its Show-spam toggle; `history` above is the
+   *  filtered view the rest of the app reads. */
+  allHistory: TxRecord[];
   notifications: AppNotification[];
   settings: AppSettings;
   discipline: DisciplineStats;
@@ -142,8 +143,6 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
   const [settings, setSettings] = useState<AppSettings>({
     biometrics: true,
     autoLockMinutes: 1,
-    currency: 'USD',
-    language: 'English',
     hideSpam: true,
     maturityReminders: true,
   });
@@ -169,7 +168,16 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     try {
       const imported = await loadImportedTokens();
       const res = await fetchBalances(chain.id, chainAddress, imported);
-      setTokens(res.tokens);
+      // Balances come back with locked: 0 (the RPC layer does not know
+      // about locks) — keep the locked figures refreshLocks filled in,
+      // or a balance refresh would silently zero the Locked split.
+      setTokens((prev) => {
+        const locked = new Map(prev.map((t) => [`${t.chainId}:${t.symbol}`, t.locked]));
+        return res.tokens.map((t) => ({
+          ...t,
+          locked: locked.get(`${t.chainId}:${t.symbol}`) ?? 0,
+        }));
+      });
       setBalancesError(res.error);
       if (res.error) setError(res.error);
     } catch (e) {
@@ -188,6 +196,9 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
       setVaultNote(res.deployed ? null : res.note);
       if (!res.deployed) {
         setLocks([]);
+        // No vault on this chain means nothing is locked: clear any
+        // stale `locked` figures instead of showing phantom locks.
+        setTokens((prev) => (prev.some((t) => t.locked > 0) ? prev.map((t) => ({ ...t, locked: 0 })) : prev));
         return;
       }
       const mapped = res.locks.map((l) => {
@@ -195,6 +206,14 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
         return mapChainLockToBullLock(l, token?.decimals ?? 18, token?.symbol ?? '');
       });
       setLocks(mapped);
+      // Fill each token's `locked` from the on-chain locks, so Home's
+      // Spendable / Locked split, the Discipline locked ratio, Send's
+      // spendable check and the TokenRow lock icon all use real figures
+      // instead of the always-0 placeholder this used to be.
+      const locked = lockedByToken(mapped);
+      setTokens((prev) =>
+        prev.map((t) => ({ ...t, locked: locked[`${t.chainId}:${t.symbol}`] ?? 0 })),
+      );
     } catch (e) {
       setVaultNote(e instanceof Error ? e.message : String(e));
       setLocks([]);
@@ -220,6 +239,9 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
   // the user unlocks with the session password). The SecureStore read is
   // async — until it resolves the root layout shows the splash, so the
   // user never sees a blank white page on first load / reload.
+  // Settings are loaded here too (kv: AsyncStorage on native,
+  // localStorage on web) — the old code kept them in memory only, so
+  // every restart reset the biometrics / auto-lock / spam toggles.
   useEffect(() => {
     let cancelled = false;
     // Safety net: never hold the splash longer than 5s even if storage hangs.
@@ -228,6 +250,8 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     }, 5000);
     void (async () => {
       try {
+        const stored = await kvGet(SETTINGS_KEY);
+        if (!cancelled && stored) setSettings(parseStoredSettings(stored));
         if (await hasWallet()) {
           const meta = await getWalletMeta();
           if (!cancelled && meta) {
@@ -244,6 +268,41 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
       cancelled = true;
       clearTimeout(fallback);
     };
+  }, []);
+
+  // Auto-lock: when the app goes to the background, note the time; on
+  // return, lock the wallet if it was away longer than the Auto-Lock
+  // Timer (0 = lock immediately on background). The old setting only
+  // changed a label — nothing ever enforced it.
+  const unlockedRef = useRef(unlocked);
+  const settingsRef = useRef(settings);
+  // Synced in effects, not during render: the AppState listener below
+  // reads the latest values without re-subscribing on every render.
+  useEffect(() => {
+    unlockedRef.current = unlocked;
+  }, [unlocked]);
+  useEffect(() => {
+    settingsRef.current = settings;
+  }, [settings]);
+  useEffect(() => {
+    let backgroundedAt: number | null = null;
+    const sub = RNAppState.addEventListener('change', (state) => {
+      if (state === 'background') {
+        backgroundedAt = Date.now();
+        if (settingsRef.current.autoLockMinutes === 0 && unlockedRef.current) {
+          setUnlocked(false);
+        }
+      } else if (state === 'active') {
+        if (backgroundedAt !== null && unlockedRef.current) {
+          const mins = settingsRef.current.autoLockMinutes;
+          if (mins > 0 && Date.now() - backgroundedAt >= mins * 60_000) {
+            setUnlocked(false);
+          }
+        }
+        backgroundedAt = null;
+      }
+    });
+    return () => sub.remove();
   }, []);
 
   // Live refresh when the wallet unlocks or the chain changes.
@@ -269,7 +328,14 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     [],
   );
   const updateSettings = useCallback(
-    (p: Partial<AppSettings>) => setSettings((prev) => ({ ...prev, ...p })),
+    (p: Partial<AppSettings>) =>
+      setSettings((prev) => {
+        const next = { ...prev, ...p };
+        // Persisted (kv: AsyncStorage on native, localStorage on web) —
+        // the write is idempotent, so a StrictMode double-invoke is harmless.
+        void kvSet(SETTINGS_KEY, JSON.stringify(next));
+        return next;
+      }),
     [],
   );
   const resetState = useCallback(() => {
@@ -289,14 +355,14 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
   const value = useMemo<AppState>(
     () => ({
       onboarded, unlocked, address, solanaAddress, chain,
-      tokens, locks, history, notifications, settings,
+      tokens, locks, history, allHistory, notifications, settings,
       discipline,
       loading, hydrated, error, balancesError, historyError, vaultNote, showDust,
       setOnboarded, setUnlocked, setAddress, setChain,
       addLock, updateLock, addTx, markNotificationsRead, updateSettings,
       setShowDust, refreshBalances, refreshLocks, refreshAll, resetState,
     }),
-    [onboarded, unlocked, address, solanaAddress, chain, tokens, locks, history, notifications, settings,
+    [onboarded, unlocked, address, solanaAddress, chain, tokens, locks, history, allHistory, notifications, settings,
      discipline, loading, hydrated, error, balancesError, historyError, vaultNote, showDust,
      setChain, addLock, updateLock, addTx, markNotificationsRead, updateSettings,
      refreshBalances, refreshLocks, refreshAll, resetState],

@@ -1,7 +1,13 @@
-/** Screen 15 — Transaction History (v1, via Ankr): centred title + "via
- *  Ankr" sub, refresh icon. Mint down-circle for Token Received, grey
- *  up-circle for Token Sent, amount right-aligned, date below. Spam hidden
- *  by default. Empty state: "No transactions yet". */
+/** Screen 15 — Transaction History: centred title + live-source sub,
+ *  refresh icon. Mint down-circle for Token Received, grey up-circle
+ *  for Token Sent, amount right-aligned, date below. Spam hidden by
+ *  default. Empty state: "No transactions yet".
+ *
+ *  The source is the Etherscan-family explorer API on EVM chains
+ *  (needs EXPO_PUBLIC_EXPLORER_API_KEY) and the Solana RPC on Solana —
+ *  NOT Ankr; the old "via Ankr" subtitle was wrong. Refresh re-fetches
+ *  balances, locks AND history from the store, so the spinner means new
+ *  on-chain data, not a timer. */
 import { useState } from 'react';
 import { Pressable, RefreshControl, ScrollView, StyleSheet, Text, View, useWindowDimensions } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
@@ -12,15 +18,19 @@ import { fmtNum, shortAddress } from '../../lib/format';
 import { EmptyState } from '../../components/ui';
 
 export default function History() {
-  const { history, historyError, refreshAll } = useApp();
-  const [showSpam, setShowSpam] = useState(false);
+  const { history, allHistory, historyError, showDust, setShowDust, refreshAll } = useApp();
   const [refreshing, setRefreshing] = useState(false);
   const { width } = useWindowDimensions();
   const insets = useSafeAreaInsets();
   const isWide = width >= 768;
 
-  const list = history.filter((t) => !t.isSpam || showSpam);
-  const spamCount = history.filter((t) => t.isSpam).length;
+  // The store already hides spam in `history` unless showDust is on —
+  // the old screen kept its own local toggle over the already-filtered
+  // list, so the spam count was always 0 and the toggle never appeared.
+  // The count comes from the unfiltered list and the toggle drives the
+  // store, so it actually reveals the hidden transfers.
+  const list = history;
+  const spamCount = allHistory.filter((t) => t.isSpam).length;
 
   // Real refresh: re-fetches balances, locks AND history from the store
   // (refreshAll), so the spinner means new on-chain data, not a timer.
@@ -53,7 +63,7 @@ export default function History() {
           <Text style={styles.title} numberOfLines={1} adjustsFontSizeToFit minimumFontScale={0.85}>
             Transaction History
           </Text>
-          <Text style={styles.sub}>via Ankr</Text>
+          <Text style={styles.sub}>Live on-chain data</Text>
         </View>
         <Pressable onPress={() => void onRefresh()} style={styles.headSide} hitSlop={8} accessibilityLabel="Refresh history">
           <RefreshCw size={18} color={COLORS.text} />
@@ -80,7 +90,7 @@ export default function History() {
                       ? 'Unlocked'
                       : 'Target hit — auto-sold';
           const party = t.counterparty ? `${received ? 'From' : 'To'} ${shortAddress(t.counterparty, 4)}` : (t.note ?? '');
-          const date = new Date(t.at).toLocaleDateString('en-GB', { day: '2-digit', month: '2-digit', year: 'numeric' });
+          const date = t.at > 0 ? new Date(t.at).toLocaleDateString('en-GB', { day: '2-digit', month: '2-digit', year: 'numeric' }) : '—';
           return (
             <View key={t.id} style={styles.row}>
               <View style={[styles.icon, received ? styles.iconIn : styles.iconOut]}>
@@ -108,9 +118,9 @@ export default function History() {
       )}
 
       {spamCount > 0 && (
-        <Pressable onPress={() => setShowSpam((s) => !s)}>
+        <Pressable onPress={() => setShowDust(!showDust)}>
           <Text style={styles.spamToggle}>
-            {showSpam ? 'Hide spam transfers' : `Show spam (${spamCount} hidden)`}
+            {showDust ? 'Hide spam transfers' : `Show spam (${spamCount} hidden)`}
           </Text>
         </Pressable>
       )}

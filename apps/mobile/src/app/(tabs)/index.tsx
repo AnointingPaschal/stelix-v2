@@ -10,10 +10,10 @@
  *  address — before "Import Token" can be tapped. A missing logo shows
  *  the letter fallback plus a "Logo not found" note; an unreadable
  *  contract shows a visible inline error, never a silent failure. */
-import { useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { Pressable, RefreshControl, ScrollView, StyleSheet, Text, TextInput, View, useWindowDimensions } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
-import { router } from 'expo-router';
+import { router, useFocusEffect } from 'expo-router';
 import {
   ArrowDownLeft,
   ArrowUpRight,
@@ -31,7 +31,8 @@ import {
 import * as Clipboard from 'expo-clipboard';
 import { COLORS } from '../../theme';
 import { useApp } from '../../store/AppContext';
-import { fmtNum, fmtPrice, fmtUsd, shortAddress } from '../../lib/format';
+import { fmtNum, fmtPct, fmtPrice, fmtUsd, shortAddress } from '../../lib/format';
+import { loadWatchlist, resolveWatchlistEntries, type WatchlistEntry } from '../../lib/watchlist';
 import { addImportedToken, resolveTokenMetadata, visibleTokens } from '../../lib/balances';
 import { createImportInputController } from '../../lib/importToken';
 import { fetchDexScreenerToken } from '../../lib/prices';
@@ -79,6 +80,24 @@ export default function Home() {
   const [importing, setImporting] = useState(false);
   const [importPreview, setImportPreview] = useState<ImportPreview | null>(null);
   const [previewLoading, setPreviewLoading] = useState(false);
+  // Watchlist (starred on Token Detail): resolved on every focus, so a
+  // star added on the detail page shows here when the user comes back.
+  // The old star wrote to storage and no screen ever listed it.
+  const [watchEntries, setWatchEntries] = useState<WatchlistEntry[]>([]);
+  useFocusEffect(
+    useCallback(() => {
+      let cancelled = false;
+      void (async () => {
+        const keys = await loadWatchlist();
+        if (cancelled) return;
+        const entries = await resolveWatchlistEntries(keys, tokens);
+        if (!cancelled) setWatchEntries(entries);
+      })();
+      return () => {
+        cancelled = true;
+      };
+    }, [tokens]),
+  );
   // Sequence guard: a preview fetch that resolves after the user typed a
   // different address (or closed the sheet) is discarded, never shown.
   const previewSeq = useRef(0);
@@ -342,6 +361,45 @@ export default function Home() {
           </Text>
         </Pressable>
       )}
+
+      {watchEntries.length > 0 ? (
+        <>
+          <SectionTitle title="Watchlist" />
+          {watchEntries.map((w) => (
+            <Pressable
+              key={w.key}
+              style={styles.watchRow}
+              onPress={() =>
+                router.push(tokenDetailRoute({ symbol: w.symbol, address: w.address, chainId: w.chainId }))
+              }
+            >
+              <TokenLogo chainId={w.chainId} address={w.address} symbol={w.symbol} size={38} fallbackTone="light" />
+              <View style={styles.watchMid}>
+                <Text style={styles.watchName} numberOfLines={1}>
+                  {w.symbol || shortAddress(w.address, 4)}
+                </Text>
+                <Text style={styles.watchSub} numberOfLines={1}>
+                  {w.held ? `Held · ${fmtNum(w.balance, 4)}` : w.name || w.chainId}
+                </Text>
+              </View>
+              <View style={styles.watchRight}>
+                <Text style={styles.watchPrice} numberOfLines={1}>
+                  {w.priceUsd === null ? '—' : fmtPrice(w.priceUsd)}
+                </Text>
+                <Text
+                  style={[
+                    styles.watchChange,
+                    { color: w.change24h === null ? COLORS.textMuted : w.change24h >= 0 ? COLORS.mintDark : COLORS.red },
+                  ]}
+                  numberOfLines={1}
+                >
+                  {w.change24h === null ? '' : fmtPct(w.change24h)}
+                </Text>
+              </View>
+            </Pressable>
+          ))}
+        </>
+      ) : null}
       <RiskNote />
 
       <NetworkSheet visible={netOpen} onClose={() => setNetOpen(false)} />
@@ -373,10 +431,11 @@ export default function Home() {
           <View style={styles.walletAdd}>
             <Text style={styles.walletAddText}>+</Text>
           </View>
-          <Text style={styles.walletName}>Add / Import Wallet</Text>
+          <Text style={styles.walletName}>Switch Wallet</Text>
           <ChevronRight size={16} color={COLORS.textMuted} />
         </Pressable>
         <Text style={styles.sheetHint}>Tap the wallet to copy its address.</Text>
+        <Text style={styles.sheetHint}>Switching wallets imports a new one and replaces the current wallet on this device — back up its seed phrase first.</Text>
       </BottomSheet>
 
       <BottomSheet
@@ -594,4 +653,18 @@ const styles = StyleSheet.create({
     marginTop: 8,
     padding: 10,
   },
+  watchChange: { fontSize: 12, fontWeight: '700', marginTop: 2, textAlign: 'right' },
+  watchMid: { flex: 1, minWidth: 0 },
+  watchName: { color: COLORS.text, fontSize: 14, fontWeight: '700' },
+  watchPrice: { color: COLORS.text, fontSize: 13, fontWeight: '700', textAlign: 'right' },
+  watchRight: { alignItems: 'flex-end', flexShrink: 1, minWidth: 0 },
+  watchRow: {
+    alignItems: 'center',
+    borderBottomColor: COLORS.border,
+    borderBottomWidth: 1,
+    flexDirection: 'row',
+    gap: 12,
+    paddingVertical: 10,
+  },
+  watchSub: { color: COLORS.textMuted, fontSize: 12, marginTop: 2 },
 });

@@ -13,14 +13,23 @@ import { useApp } from '../store/AppContext';
 import { Btn, Card, ScreenHeader, centeredContent } from '../components/ui';
 
 export default function Receive() {
-  const { address, chain } = useApp();
+  const { address, solanaAddress, chain } = useApp();
   const insets = useSafeAreaInsets();
 
   const [copied, setCopied] = useState(false);
 
+  // The address shown must belong to the active chain: the EVM address
+  // is meaningless on Solana, and the old code QR'd the 0x address on
+  // every chain — funds sent to it on Solana would be lost. Wallets
+  // imported from a raw private key have no Solana address (no mnemonic
+  // to derive one from); that is stated, not papered over.
+  const isSolana = chain.kind === 'solana';
+  const displayAddress = isSolana ? solanaAddress : address;
+  const noSolanaAddress = isSolana && !solanaAddress;
+
   async function copy() {
-    if (!address) return;
-    await Clipboard.setStringAsync(address);
+    if (!displayAddress) return;
+    await Clipboard.setStringAsync(displayAddress);
     setCopied(true);
     setTimeout(() => setCopied(false), 2000);
   }
@@ -34,21 +43,25 @@ export default function Receive() {
         <Text style={styles.chainText}>{chain.name}</Text>
       </View>
 
-      {address ? (
+      {displayAddress ? (
         <Card style={styles.qrCard}>
-          <QRCode value={address} size={200} color={COLORS.navy} backgroundColor="#fff" />
+          <QRCode value={displayAddress} size={200} color={COLORS.navy} backgroundColor="#fff" />
         </Card>
       ) : (
         <Card style={styles.qrCard}>
-          <Text style={styles.noAddr}>No wallet address yet — create or import a wallet first.</Text>
+          <Text style={styles.noAddr}>
+            {noSolanaAddress
+              ? 'No Solana address for this wallet — it was imported from a raw private key, so no Solana address could be derived. Import the seed phrase to receive on Solana.'
+              : 'No wallet address yet — create or import a wallet first.'}
+          </Text>
         </Card>
       )}
 
       <Text style={styles.label}>Your Public Address</Text>
       <View style={styles.addrBox}>
-        <Text style={styles.addr} selectable>{address || '—'}</Text>
+        <Text style={styles.addr} selectable>{displayAddress || '—'}</Text>
       </View>
-      <Btn label={copied ? 'Copied' : 'Copy Address'} onPress={copy} disabled={!address} />
+      <Btn label={copied ? 'Copied' : 'Copy Address'} onPress={copy} disabled={!displayAddress} />
 
       <Card style={styles.warn}>
         <Text style={styles.warnTitle}>Send only {chain.name} assets to this address</Text>

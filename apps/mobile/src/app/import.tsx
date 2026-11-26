@@ -6,13 +6,13 @@
  *  Errors are shown INLINE on the page. Never use Alert.alert here:
  *  on react-native-web Alert.alert is an empty no-op, so a failure used
  *  to look like a silent dead button (2026-11-26 bug). */
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { ScrollView, StyleSheet, Text, TextInput, View } from 'react-native';
 import { router } from 'expo-router';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { COLORS } from '../theme';
 import { Btn, RiskNote, centeredContent } from '../components/ui';
-import { importWallet, isValidMnemonic } from '../lib/wallet';
+import { hasWallet, importWallet, isValidMnemonic } from '../lib/wallet';
 import { useApp } from '../store/AppContext';
 
 type Method = 'seed' | 'key';
@@ -28,6 +28,14 @@ export default function ImportWallet() {
   const [confirm, setConfirm] = useState('');
   const [error, setError] = useState('');
   const [busy, setBusy] = useState(false);
+  // Importing REPLACES the wallet stored on this device — there is no
+  // multi-wallet support. The old screen never said so: a user tapping
+  // "Add / Import Wallet" from Home could silently lose access to
+  // their current wallet (recoverable only via its seed phrase).
+  const [hasExistingWallet, setHasExistingWallet] = useState(false);
+  useEffect(() => {
+    void hasWallet().then(setHasExistingWallet);
+  }, []);
 
   async function handleImport() {
     setError('');
@@ -71,6 +79,12 @@ export default function ImportWallet() {
         Only import a phrase you wrote down yourself. Never import a phrase sent to you by “support”, a website, or
         a stranger — it is a scam and your funds will be stolen.
       </Text>
+      {hasExistingWallet ? (
+        <Text style={styles.warn}>
+          A wallet already exists on this device. Importing replaces it — make sure you have saved the current
+          wallet&apos;s seed phrase first, or you will lose access to it.
+        </Text>
+      ) : null}
 
       <View style={styles.toggle}>
         <Btn label="Seed Phrase" variant={method === 'seed' ? 'primary' : 'ghost'} onPress={() => setMethod('seed')} style={styles.toggleBtn} />

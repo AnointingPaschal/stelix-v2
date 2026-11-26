@@ -32,7 +32,12 @@ export default function Send() {
   const insets = useSafeAreaInsets();
 
   const spendable = tokens.filter((t) => !t.isSpam);
-  const [symbol, setSymbol] = useState(chain.nativeSymbol);
+  // Selection is keyed by chain + contract address, not by symbol:
+  // two different tokens can share a symbol (e.g. USDC on two chains,
+  // or an imported token shadowing a catalogue one), and the old
+  // symbol-keyed picker silently picked the first match.
+  const tokenKey = (t: { chainId: string; address: string }) => `${t.chainId}:${t.address}`;
+  const [selectedKey, setSelectedKey] = useState('');
   const [to, setTo] = useState('');
   const [amount, setAmount] = useState('');
   const [pickerOpen, setPickerOpen] = useState(false);
@@ -51,9 +56,13 @@ export default function Send() {
   const [sent, setSent] = useState<SendResult | null>(null);
   const [signModal, setSignModal] = useState<SignTxRequest | null>(null);
 
-  const token = spendable.find((t) => t.symbol === symbol) ?? spendable[0];
+  const token = spendable.find((t) => tokenKey(t) === selectedKey) ?? spendable[0];
+  // Spendable = balance minus what the vault holds. The old check used
+  // the full balance (locked was always 0), so its "locked funds"
+  // error message was wrong in both directions.
+  const spendableBalance = token ? Math.max(0, token.balance - token.locked) : 0;
   const amt = parseFloat(amount) || 0;
-  const valid = !!token && amt > 0 && amt <= token.balance && isValidEvmAddress(to);
+  const valid = !!token && amt > 0 && amt <= spendableBalance && isValidEvmAddress(to);
 
   async function paste() {
     const text = await Clipboard.getStringAsync();
@@ -75,9 +84,11 @@ export default function Send() {
       setFormError('Enter an amount to send.');
       return;
     }
-    if (amt > token.balance) {
+    if (amt > spendableBalance) {
       setFormError(
-        `Locked funds cannot be sent — you only have ${fmtNum(token.balance)} ${token.symbol} spendable. ${fmtNum(token.locked)} ${token.symbol} is locked in the vault and cannot be selected.`,
+        token.locked > 0
+          ? `You only have ${fmtNum(spendableBalance)} ${token.symbol} spendable — ${fmtNum(token.locked)} ${token.symbol} is locked in the vault and cannot be sent.`
+          : `Insufficient balance — you have ${fmtNum(spendableBalance)} ${token.symbol}.`,
       );
       return;
     }
@@ -219,8 +230,8 @@ export default function Send() {
 
       <View style={styles.amountHead}>
         <Text style={styles.label}>Amount</Text>
-        <Text style={styles.bal}>Bal: {fmtNum(token?.balance ?? 0, 6)} {token?.symbol ?? ''}</Text>
-        <Pressable style={styles.maxBtn} onPress={() => token && setAmount(String(token.balance))}>
+        <Text style={styles.bal}>Bal: {fmtNum(spendableBalance, 6)} {token?.symbol ?? ''}</Text>
+        <Pressable style={styles.maxBtn} onPress={() => token && setAmount(String(spendableBalance))}>
           <Text style={styles.maxText}>MAX</Text>
         </Pressable>
       </View>
@@ -287,10 +298,10 @@ export default function Send() {
       <BottomSheet visible={pickerOpen} onClose={() => setPickerOpen(false)} title="Select Asset">
         {spendable.map((t) => (
           <Pressable
-            key={t.symbol}
+            key={tokenKey(t)}
             style={styles.pickRow}
             onPress={() => {
-              setSymbol(t.symbol);
+              setSelectedKey(tokenKey(t));
               setPickerOpen(false);
             }}
           >

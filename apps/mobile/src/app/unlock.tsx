@@ -19,13 +19,18 @@ import { Fingerprint, Lock } from 'lucide-react-native';
 import { COLORS } from '../theme';
 import { Btn, centeredContent } from '../components/ui';
 import { unlockWallet, wipeWallet } from '../lib/wallet';
+import { kvDelete, kvGet, kvSet, wipeLocalData } from '../lib/storage';
 import { useApp } from '../store/AppContext';
 
 const LOCKOUT_AFTER_FAILS = 5;
 const LOCKOUT_MS = 30_000;
+/** Lockout state lives in durable kv storage (AsyncStorage on native,
+ *  localStorage on web) — the old in-memory counter reset on every app
+ *  restart, so the 5-failure lockout could be dodged by relaunching. */
+const LOCKOUT_KEY = 'stelix_unlock_lockout_v1';
 
 export default function Unlock() {
-  const { setUnlocked } = useApp();
+  const { setUnlocked, settings, resetState } = useApp();
   const insets = useSafeAreaInsets();
   const [password, setPassword] = useState('');
   const [error, setError] = useState('');
@@ -34,6 +39,50 @@ export default function Unlock() {
   const [now, setNow] = useState(Date.now());
   const [busy, setBusy] = useState(false);
   const [confirmReset, setConfirmReset] = useState(false);
+  // Biometrics are only offered when the Settings toggle is on AND the
+  // device actually has enrolled biometrics. The old screen always
+  // showed the button — even with biometrics off or on a device without
+  // any enrolled fingerprint/face — and its success path never verified
+  // anything about the wallet.
+  const [bioAvailable, setBioAvailable] = useState(false);
+
+  // Restore a lockout that was in force when the app closed.
+  useEffect(() => {
+    void kvGet(LOCKOUT_KEY).then((raw) => {
+      if (!raw) return;
+      try {
+        const p = JSON.parse(raw) as { fails?: number; lockedUntil?: number };
+        if (typeof p.fails === 'number') setFails(p.fails);
+        if (typeof p.lockedUntil === 'number' && p.lockedUntil > Date.now()) {
+          setLockedUntil(p.lockedUntil);
+        }
+      } catch {
+        // Corrupt lockout state: start clean.
+      }
+    });
+  }, []);
+
+  useEffect(() => {
+    // No synchronous setState here: when biometrics are off, the render
+    // below gates the button on settings.biometrics anyway, so a stale
+    // true from an earlier session never shows the button.
+    if (!settings.biometrics) return;
+    let cancelled = false;
+    void (async () => {
+      try {
+        const [hw, enrolled] = await Promise.all([
+          LocalAuthentication.hasHardwareAsync(),
+          LocalAuthentication.isEnrolledAsync(),
+        ]);
+        if (!cancelled) setBioAvailable(hw && enrolled);
+      } catch {
+        if (!cancelled) setBioAvailable(false);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [settings.biometrics]);
 
   const lockedOut = now < lockedUntil;
   const lockoutSecs = lockedOut ? Math.ceil((lockedUntil - now) / 1000) : 0;
@@ -45,14 +94,21 @@ export default function Unlock() {
     return () => clearInterval(t);
   }, [lockedOut]);
 
+  function persistLockout(nextFails: number, nextLockedUntil: number) {
+    void kvSet(LOCKOUT_KEY, JSON.stringify({ fails: nextFails, lockedUntil: nextLockedUntil }));
+  }
+
   function registerFail(message: string) {
     const next = fails + 1;
     setFails(next);
     if (next >= LOCKOUT_AFTER_FAILS) {
-      setLockedUntil(Date.now() + LOCKOUT_MS);
+      const until = Date.now() + LOCKOUT_MS;
+      setLockedUntil(until);
       setFails(0);
+      persistLockout(0, until);
       setError(`Too many failed attempts — unlocking is locked for 30 seconds.`);
     } else {
+      persistLockout(next, 0);
       setError(message);
     }
   }
@@ -86,6 +142,9 @@ export default function Unlock() {
         setError('No wallet on this device — create or import a wallet first.');
         return;
       }
+      // A successful unlock clears the stored failure count.
+      void kvDelete(LOCKOUT_KEY);
+      setFails(0);
       setUnlocked(true);
       router.replace('/(tabs)');
     } catch {
@@ -97,6 +156,12 @@ export default function Unlock() {
 
   async function factoryReset() {
     await wipeWallet();
+    // The old reset wiped the wallet keys but left imported tokens,
+    // the address book, watchlist and settings behind — and the app
+    // context still believed a wallet was onboarded, so the splash
+    // routed back to Unlock with no wallet at all.
+    await wipeLocalData();
+    resetState();
     router.replace('/onboarding');
   }
 
@@ -132,10 +197,12 @@ export default function Unlock() {
       ) : null}
 
       <View style={styles.spacer} />
-      <Pressable style={styles.bio} onPress={unlockWithBiometrics}>
-        <Fingerprint size={28} color={COLORS.navy} />
-        <Text style={styles.bioText}>Tap to unlock with Biometrics</Text>
-      </Pressable>
+      {bioAvailable ? (
+        <Pressable style={styles.bio} onPress={unlockWithBiometrics}>
+          <Fingerprint size={28} color={COLORS.navy} />
+          <Text style={styles.bioText}>Tap to unlock with Biometrics</Text>
+        </Pressable>
+      ) : null}
       <Btn label={lockedOut ? `Locked — ${lockoutSecs}s` : 'Unlock Wallet'} onPress={unlockWithPassword} loading={busy} disabled={lockedOut} />
       {confirmReset ? (
         <View style={styles.resetConfirm}>
@@ -191,7 +258,7 @@ const styles = StyleSheet.create({
   resetConfirm: { gap: 4, marginTop: 16 },
   resetHint: { color: COLORS.textMuted, fontSize: 12, lineHeight: 17, marginBottom: 8, textAlign: 'center' },
   resetText: { color: COLORS.red, fontSize: 14, fontWeight: '700' },
-  root: { backgroundColor: COLORS.bg, flex: 1, padding: 16, paddingTop: 48 },
+  root: { backgroundColor: COLORS.bg, flex: 1, padding: 16 },
   spacer: { flex: 1 },
   sub: { color: COLORS.textMuted, fontSize: 14, lineHeight: 20, marginTop: 6 },
   title: { color: COLORS.text, fontSize: 24, fontWeight: '800', marginTop: 16 },

@@ -144,8 +144,11 @@ export default function LockDetail() {
   async function onVaultSigned(res: SignTxResult) {
     if (!signModal) return;
     setLastTx(res.hash);
-    await refreshLocks();
+    // Local update FIRST, then the chain refresh: the old order
+    // (refresh, then update) meant a failed refresh wiped the locks
+    // list and the update silently did nothing.
     signModal.onDone(res.hash);
+    await refreshLocks();
   }
 
   function claim() {
