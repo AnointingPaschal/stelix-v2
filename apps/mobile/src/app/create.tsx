@@ -13,7 +13,6 @@ import { router } from 'expo-router';
 import { Check } from 'lucide-react-native';
 import { COLORS } from '../theme';
 import { Btn, Card, RiskNote } from '../components/ui';
-import { createWallet } from '../lib/wallet';
 import { useApp } from '../store/AppContext';
 
 export default function CreateWallet() {
@@ -39,6 +38,10 @@ export default function CreateWallet() {
     }
     setBusy(true);
     try {
+      // Lazy-load the wallet module (ethers) only when keys are actually
+      // generated — importing it at the top level made /create (and the
+      // first-load bundle) slow to render.
+      const { createWallet } = await import('../lib/wallet');
       const { mnemonic: phrase, address } = await createWallet(password, name);
       setMnemonic(phrase.split(' '));
       setAddress(address);
