@@ -1,0 +1,18 @@
+# Stelix 2.0 Admin — Cloudflare Pages + Workers + D1
+# Deploy (NOT done in this local build): `npx wrangler pages deploy dist --project-name stelix-admin`
+# Create D1 first: `npx wrangler d1 create stelix-admin-db` then paste the database_id below.
+name = "stelix-admin"
+compatibility_date = "2026-11-26"
+pages_build_output_dir = "dist"
+
+[[d1_databases]]
+binding = "DB"
+database_name = "stelix-admin-db"
+database_id = "REPLACE_WITH_D1_DATABASE_ID"
+
+[vars]
+ENVIRONMENT = "production"
+CONFIG_VERSION = "1"
+
+# Secrets (set via `wrangler secret put <NAME>` — never commit values):
+# ADMIN_SESSION_SECRET, DEPLOYER_PRIVATE_KEY_TESTNET (testnet only), EXPLORER_API_KEY
