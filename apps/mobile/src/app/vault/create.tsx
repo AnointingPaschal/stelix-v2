@@ -1,7 +1,12 @@
-/** Screen 13 — Create Lock (4 steps): token+amount, date+target, exit plan, review+confirm. */
+/** Screen 13 — Create Lock (4 steps): token+amount, date+target, exit plan,
+ *  review+confirm. Compact v1 sizes. Accepts prefill params from the token
+ *  detail's Create Discipline card (symbol, amount, days, target,
+ *  customPrice, ladder, trailing, breakMode). No invented fees — the Stelix
+ *  fee comes from VAULT_DEFAULTS and the network fee is shown by the wallet
+ *  before signing. */
 import { useMemo, useState } from 'react';
 import { Alert, ScrollView, StyleSheet, Text, TextInput, View } from 'react-native';
-import { router } from 'expo-router';
+import { router, useLocalSearchParams } from 'expo-router';
 import { COLORS } from '../../theme';
 import { useApp } from '../../store/AppContext';
 import { getChain, VAULT_DEFAULTS } from '../../lib/chains';
@@ -14,7 +19,7 @@ import {
   type BullLock,
   type LadderStage,
 } from '../../lib/vault';
-import { Btn, Card, Chip, DemoBadge, RiskNote, SectionTitle } from '../../components/ui';
+import { Btn, Card, RiskNote, SectionTitle } from '../../components/ui';
 
 const DURATIONS = [
   { label: '1 week', days: 7 },
@@ -32,29 +37,43 @@ const TARGETS: { label: string; multiple: number | null }[] = [
 ];
 
 export default function CreateLock() {
-  const { tokens, chain, addLock, addTx } = useApp();
+  const params = useLocalSearchParams<{
+    symbol?: string;
+    amount?: string;
+    days?: string;
+    target?: string;
+    customPrice?: string;
+    ladder?: string;
+    trailing?: string;
+    breakMode?: string;
+  }>();
+  const { tokens, chain, addLock, addTx, vaultNote } = useApp();
   const [step, setStep] = useState(1);
-  const [symbol, setSymbol] = useState('WKC');
-  const [amount, setAmount] = useState('');
-  const [days, setDays] = useState(365);
-  const [target, setTarget] = useState<number | null>(3);
-  const [customPrice, setCustomPrice] = useState('');
-  const [ladderOn, setLadderOn] = useState(true);
+  const [symbol, setSymbol] = useState(params.symbol ?? tokens[0]?.symbol ?? '');
+  const [amount, setAmount] = useState(params.amount ?? '');
+  const [days, setDays] = useState(params.days ? parseInt(params.days, 10) : 365);
+  const [target, setTarget] = useState<number | null>(params.target ? parseInt(params.target, 10) : 3);
+  const [customPrice, setCustomPrice] = useState(params.customPrice ?? '');
+  const [ladderOn, setLadderOn] = useState(params.ladder !== '0');
   const [ladder, setLadder] = useState<LadderStage[]>([
     { multiple: 2, percent: 25, status: 'pending' },
     { multiple: 3, percent: 25, status: 'pending' },
     { multiple: 5, percent: 25, status: 'pending' },
     { multiple: 10, percent: 25, status: 'pending' },
   ]);
-  const [trailing, setTrailing] = useState<number | null>(1500);
+  const [trailing, setTrailing] = useState<number | null>(params.trailing ? parseInt(params.trailing, 10) : 1500);
   const [autoSell, setAutoSell] = useState(true);
-  const [breakMode, setBreakMode] = useState<BreakMode>('penalty');
+  const [breakMode, setBreakMode] = useState<BreakMode>(
+    params.breakMode === 'immutable' || params.breakMode === 'penalty' || params.breakMode === 'guardian'
+      ? params.breakMode
+      : 'penalty',
+  );
   const [pin, setPin] = useState('');
   const [created, setCreated] = useState<BullLock | null>(null);
 
   const token = tokens.find((t) => t.symbol === symbol) ?? tokens[0];
   const amt = parseFloat(amount) || 0;
-  const entryPrice = token.price;
+  const entryPrice = token?.price ?? 0;
   const targetPrice = target === null ? null : customPrice ? parseFloat(customPrice) || null : entryPrice * target;
   const unlockTime = Date.now() + days * 86_400_000;
   const exitLabel = getChain(chain.id).exitStablecoinLabel;
@@ -64,8 +83,8 @@ export default function CreateLock() {
     () => ({
       id: `LCK-${Date.now()}`,
       chainId: chain.id,
-      tokenSymbol: token.symbol,
-      tokenAddress: token.address,
+      tokenSymbol: token?.symbol ?? symbol,
+      tokenAddress: token?.address ?? '',
       amount: amt,
       amountRemaining: amt,
       entryPrice,
@@ -83,13 +102,13 @@ export default function CreateLock() {
       status: 'active',
       createdAt: Date.now(),
     }),
-    [amt, chain.id, token, entryPrice, unlockTime, targetPrice, target, ladderOn, ladder, trailing, breakMode, autoSell],
+    [amt, chain.id, token, symbol, entryPrice, unlockTime, targetPrice, target, ladderOn, ladder, trailing, breakMode, autoSell],
   );
 
   function next() {
     if (step === 1) {
-      if (amt <= 0 || amt > token.balance) {
-        Alert.alert('Check the amount', `Enter an amount up to your spendable ${fmtNum(token.balance)} ${token.symbol}. Locked funds cannot be locked twice.`);
+      if (!token || amt <= 0 || amt > token.balance) {
+        Alert.alert('Check the amount', `Enter an amount up to your spendable ${fmtNum(token?.balance ?? 0)} ${token?.symbol ?? ''}. Locked funds cannot be locked twice.`);
         return;
       }
     }
@@ -105,17 +124,25 @@ export default function CreateLock() {
       Alert.alert('Discipline PIN required', 'Enter your 6-digit Discipline PIN to confirm this lock.');
       return;
     }
-    const lock: BullLock = { ...preview, txHash: `0x${'demo'.padEnd(62, 'a')}` };
+    const lock: BullLock = { ...preview };
     addLock(lock);
+    // Local record only: the vault is not deployed on this chain yet, so
+    // no on-chain lock was created and there is no tx hash. Status is
+    // pending, never confirmed for a transaction never submitted.
     addTx({
-      id: `tx-${Date.now()}`,
+      id: `local-${Date.now()}`,
+      hash: '',
       kind: 'lock',
-      token: token.symbol,
+      token: token?.symbol ?? symbol,
       amount: amt,
+      amountRaw: String(amt),
       usd: amt * entryPrice,
-      note: `Locked ${fmtNum(amt)} ${token.symbol} until ${new Date(unlockTime).toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' })}${target ? ` or ${target}x` : ''}`,
+      note: `Lock planned locally until ${new Date(unlockTime).toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' })}${target ? ` or ${target}x` : ''} — no on-chain lock yet (vault not deployed)`,
       at: Date.now(),
-      status: 'confirmed',
+      status: 'pending',
+      isSpam: false,
+      chainId: chain.id,
+      blockNumber: null,
     });
     setCreated(lock);
   }
@@ -124,11 +151,12 @@ export default function CreateLock() {
     return (
       <ScrollView style={styles.root} contentContainerStyle={styles.inner}>
         <Card style={styles.done}>
-          <Text style={styles.doneTitle}>Lock created (DEMO)</Text>
+          <Text style={styles.doneTitle}>{vaultNote ? 'Lock planned (local only)' : 'Lock created'}</Text>
           <Text style={styles.doneBody}>Lock ID {created.id}</Text>
           <Text style={styles.doneBody}>Receipt: {fmtNum(created.amount)} {created.tokenSymbol} · {fmtUsd(created.amount * created.entryPrice)}</Text>
           <Text style={styles.doneBody}>Unlock: {new Date(created.unlockTime).toLocaleDateString('en-GB', { day: 'numeric', month: 'long', year: 'numeric' })}</Text>
           <Text style={styles.doneBody}>Reminders on: 7 days, 1 day and 1 hour before maturity; at 50% / 80% / 100% of target.</Text>
+          {vaultNote ? <Text style={styles.doneBody}>{vaultNote} — this lock is saved locally only; no on-chain lock was created.</Text> : null}
         </Card>
         <Btn label="View Lock" onPress={() => router.replace(`/vault/${created.id}`)} />
         <Btn label="Back to Vault" variant="ghost" onPress={() => router.replace('/(tabs)/vault')} />
@@ -138,10 +166,7 @@ export default function CreateLock() {
 
   return (
     <ScrollView style={styles.root} contentContainerStyle={styles.inner}>
-      <View style={styles.head}>
-        <Text style={styles.title}>Create Lock</Text>
-        <DemoBadge />
-      </View>
+      <Text style={styles.title}>Create Lock</Text>
       <Text style={styles.steps}>Step {step} of 4 · {['Token & amount', 'Date & target', 'Exit plan', 'Review & confirm'][step - 1]}</Text>
       <View style={styles.progress}>
         {[1, 2, 3, 4].map((s) => (
@@ -157,17 +182,20 @@ export default function CreateLock() {
               <Btn key={t.symbol} label={t.symbol} variant={symbol === t.symbol ? 'primary' : 'ghost'} onPress={() => setSymbol(t.symbol)} style={styles.pill} />
             ))}
           </View>
+          {tokens.filter((t) => !t.isSpam).length === 0 && <Text style={styles.hint}>No tokens yet — receive funds first.</Text>}
           <SectionTitle title="Amount to lock" />
           <TextInput style={styles.amountInput} keyboardType="decimal-pad" placeholder="0.0" value={amount} onChangeText={setAmount} />
           <View style={styles.pctRow}>
             {[25, 50, 75, 100].map((p) => (
-              <Btn key={p} label={`${p}%`} variant="ghost" onPress={() => setAmount(String((token.balance * p) / 100))} style={styles.pctBtn} />
+              <Btn key={p} label={`${p}%`} variant="ghost" onPress={() => token && setAmount(String((token.balance * p) / 100))} style={styles.pctBtn} />
             ))}
           </View>
-          <Text style={styles.hint}>
-            Spendable: {fmtNum(token.balance)} {token.symbol} ({fmtUsd(token.balance * token.price)}) · after lock:{' '}
-            {fmtUsd(Math.max(0, token.balance - amt) * token.price)}
-          </Text>
+          {token && (
+            <Text style={styles.hint}>
+              Spendable: {fmtNum(token.balance)} {token.symbol} ({fmtUsd(token.balance * (token.price ?? 0))}) · after lock:{' '}
+              {fmtUsd(Math.max(0, token.balance - amt) * (token.price ?? 0))}
+            </Text>
+          )}
         </>
       )}
 
@@ -198,9 +226,7 @@ export default function CreateLock() {
               <Card style={styles.targetCard}>
                 <Text style={styles.targetText}>Entry {fmtPrice(entryPrice)}</Text>
                 <Text style={styles.targetText}>Target {targetPrice ? fmtPrice(targetPrice) : '—'}</Text>
-                <Text style={styles.targetText}>
-                  Est. value at target: {fmtUsd(amt * (targetPrice ?? entryPrice))}
-                </Text>
+                <Text style={styles.targetText}>Est. value at target: {fmtUsd(amt * (targetPrice ?? entryPrice))}</Text>
               </Card>
             </>
           )}
@@ -269,9 +295,9 @@ export default function CreateLock() {
         <>
           <Card dark>
             <Text style={styles.reviewTitle}>Review your lock</Text>
-            <ReviewRow label="Token" value={`${fmtNum(amt)} ${token.symbol} (${fmtUsd(amt * entryPrice)})`} />
+            <ReviewRow label="Token" value={`${fmtNum(amt)} ${token?.symbol ?? symbol} (${fmtUsd(amt * entryPrice)})`} />
             <ReviewRow label="Chain" value={`${chain.name}${chain.testnet ? ' (testnet)' : ''}`} />
-            <ReviewRow label="Vault contract" value="Not deployed yet — admin Contract Studio (testnet first)" />
+            <ReviewRow label="Vault contract" value={getChain(chain.id).vaultContract ?? 'Not deployed yet — admin Contract Studio (testnet first)'} />
             <ReviewRow label="Unlock date" value={new Date(unlockTime).toLocaleDateString('en-GB', { day: 'numeric', month: 'long', year: 'numeric' })} />
             <ReviewRow label="Target" value={targetPrice ? `${target}x · ${fmtPrice(targetPrice)}` : 'None — date lock'} />
             <ReviewRow label="Exit" value={targetPrice ? (autoSell ? exitLabel : 'Unlock to wallet') : 'Unlock to wallet'} />
@@ -280,8 +306,8 @@ export default function CreateLock() {
             <ReviewRow label="Break mode" value={breakMode === 'immutable' ? 'Immutable — no early break' : breakMode === 'penalty' ? 'Penalty break — 5% after 24h cooling-off' : 'Guardian break — approval + 48h delay'} />
             <ReviewRow label="Slippage" value="1.5% (default)" />
             <ReviewRow label="Minimum receive" value={targetPrice ? fmtUsd(minimumReceive(amt * (targetPrice ?? entryPrice), VAULT_DEFAULTS.slippageBps)) : '—'} />
-            <ReviewRow label="Stelix fee" value="0% in this demo (set in admin before mainnet)" />
-            <ReviewRow label="Network fee (est.)" value="≈ $0.42" />
+            <ReviewRow label="Stelix fee" value={`${VAULT_DEFAULTS.autoSellFeeBps / 100}% (set in admin before mainnet)`} />
+            <ReviewRow label="Network fee" value="Shown by the wallet before signing" />
           </Card>
           <Text style={styles.sentence}>{lockSummarySentence(preview, exitLabel)}</Text>
           <Text style={styles.label}>Discipline PIN (6 digits)</Text>
@@ -313,38 +339,37 @@ function ReviewRow({ label, value }: { label: string; value: string }) {
 }
 
 const styles = StyleSheet.create({
-  amountInput: { backgroundColor: COLORS.bgMuted, borderRadius: 12, fontSize: 26, fontWeight: '800', padding: 14 },
+  amountInput: { backgroundColor: COLORS.bgMuted, borderRadius: 12, fontSize: 20, fontWeight: '800', padding: 12 },
   done: { backgroundColor: COLORS.mintSoft },
-  doneBody: { color: COLORS.mintDark, fontSize: 14, lineHeight: 21, marginTop: 4 },
-  doneTitle: { color: COLORS.mintDark, fontSize: 18, fontWeight: '800' },
+  doneBody: { color: COLORS.mintDark, fontSize: 12, lineHeight: 18, marginTop: 4 },
+  doneTitle: { color: COLORS.mintDark, fontSize: 16, fontWeight: '800' },
   dot: { backgroundColor: COLORS.border, borderRadius: 999, flex: 1, height: 6 },
   dotOn: { backgroundColor: COLORS.mint },
-  error: { color: COLORS.red, fontSize: 13, marginTop: 8 },
-  head: { alignItems: 'center', flexDirection: 'row', justifyContent: 'space-between' },
-  hint: { color: COLORS.textMuted, fontSize: 13, lineHeight: 19, marginTop: 10 },
-  inner: { padding: 20 },
-  input: { backgroundColor: COLORS.bgMuted, borderRadius: 12, fontSize: 15, marginTop: 10, padding: 14 },
-  label: { color: COLORS.text, fontSize: 14, fontWeight: '700', marginTop: 16 },
-  ladderInput: { backgroundColor: COLORS.bgMuted, borderRadius: 8, fontSize: 15, padding: 8, textAlign: 'center', width: 64 },
-  ladderLabel: { color: COLORS.text, fontSize: 15, fontWeight: '700', width: 48 },
-  ladderPct: { color: COLORS.textMuted, fontSize: 15 },
+  error: { color: COLORS.red, fontSize: 12, marginTop: 8 },
+  hint: { color: COLORS.textMuted, fontSize: 12, lineHeight: 17, marginTop: 8 },
+  inner: { padding: 12 },
+  input: { backgroundColor: COLORS.bgMuted, borderRadius: 12, fontSize: 14, marginTop: 8, padding: 12 },
+  label: { color: COLORS.text, fontSize: 12, fontWeight: '700', marginTop: 14 },
+  ladderInput: { backgroundColor: COLORS.bgMuted, borderRadius: 8, fontSize: 14, padding: 8, textAlign: 'center', width: 64 },
+  ladderLabel: { color: COLORS.text, fontSize: 14, fontWeight: '700', width: 48 },
+  ladderPct: { color: COLORS.textMuted, fontSize: 14 },
   ladderRow: { alignItems: 'center', flexDirection: 'row', gap: 10, paddingVertical: 6 },
-  nav: { flexDirection: 'row', gap: 10, marginTop: 20 },
+  nav: { flexDirection: 'row', gap: 8, marginTop: 16 },
   navBtn: { flex: 1 },
-  pctBtn: { flex: 1, minHeight: 40 },
-  pctRow: { flexDirection: 'row', gap: 8, marginTop: 12 },
-  pill: { minHeight: 40, paddingHorizontal: 12 },
+  pctBtn: { flex: 1, minHeight: 36 },
+  pctRow: { flexDirection: 'row', gap: 8, marginTop: 10 },
+  pill: { minHeight: 36, paddingHorizontal: 10 },
   pills: { flexDirection: 'row', flexWrap: 'wrap', gap: 8 },
-  progress: { flexDirection: 'row', gap: 6, marginTop: 12 },
-  reviewLabel: { color: COLORS.textOnNavyMuted, fontSize: 13 },
-  reviewRow: { flexDirection: 'row', justifyContent: 'space-between', paddingVertical: 6 },
-  reviewTitle: { color: '#fff', fontSize: 17, fontWeight: '800', marginBottom: 8 },
-  reviewValue: { color: '#fff', fontSize: 13, fontWeight: '700', textAlign: 'right' },
+  progress: { flexDirection: 'row', gap: 6, marginTop: 10 },
+  reviewLabel: { color: COLORS.textOnNavyMuted, fontSize: 12 },
+  reviewRow: { flexDirection: 'row', justifyContent: 'space-between', paddingVertical: 5 },
+  reviewTitle: { color: '#fff', fontSize: 16, fontWeight: '800', marginBottom: 6 },
+  reviewValue: { color: '#fff', fontSize: 12, fontWeight: '700', textAlign: 'right' },
   root: { backgroundColor: COLORS.bg, flex: 1 },
-  sentence: { color: COLORS.text, fontSize: 15, fontWeight: '700', lineHeight: 22, marginTop: 16 },
-  steps: { color: COLORS.textMuted, fontSize: 13, fontWeight: '700', marginTop: 6 },
-  targetCard: { marginTop: 12 },
-  targetText: { color: COLORS.text, fontSize: 14, fontWeight: '700', paddingVertical: 2 },
-  title: { color: COLORS.text, fontSize: 24, fontWeight: '800' },
-  wideBtn: { minHeight: 44, paddingHorizontal: 12 },
+  sentence: { color: COLORS.text, fontSize: 14, fontWeight: '700', lineHeight: 20, marginTop: 14 },
+  steps: { color: COLORS.textMuted, fontSize: 12, fontWeight: '700', marginTop: 4 },
+  targetCard: { marginTop: 10 },
+  targetText: { color: COLORS.text, fontSize: 12, fontWeight: '700', paddingVertical: 2 },
+  title: { color: COLORS.text, fontSize: 18, fontWeight: '800' },
+  wideBtn: { minHeight: 36, paddingHorizontal: 10 },
 });
