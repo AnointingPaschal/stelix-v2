@@ -7,7 +7,7 @@ import { Alert, Pressable, ScrollView, StyleSheet, Text, TextInput, View } from 
 import { ArrowDownUp, ChevronDown, Settings } from 'lucide-react-native';
 import { COLORS } from '../../theme';
 import { useApp } from '../../store/AppContext';
-import { fmtNum, fmtUsd } from '../../lib/format';
+import { fmtNum, fmtPrice, fmtUsd } from '../../lib/format';
 import { minimumReceive, priceImpactPieces } from '../../lib/vault';
 import { fetchTokenMarketData } from '../../lib/prices';
 import { executeSwap, getSwapQuote, SwapExecutionNotWiredError } from '../../lib/swap';
@@ -54,7 +54,15 @@ export default function Swap() {
     const out = toToken.price > 0 ? usd / toToken.price : 0;
     const impact =
       toLiquidity !== null ? priceImpactPieces(usd, toLiquidity, VAULT_DEFAULTS.maxPriceImpactBps) : null;
-    return { usd, out, minOut: minimumReceive(out, parseFloat(slippage) * 100 || 150), impact };
+    return {
+      usd,
+      out,
+      // Price of 1 "from" token in "to" tokens — shown with fmtPrice so a
+      // tiny rate (e.g. GTAN) renders as subscript, never $0.000000.
+      rate: toToken.price > 0 ? fromToken.price / toToken.price : 0,
+      minOut: minimumReceive(out, parseFloat(slippage) * 100 || 150),
+      impact,
+    };
   }, [amt, fromToken, toToken, slippage, toLiquidity]);
 
   function flip() {
@@ -189,6 +197,10 @@ export default function Swap() {
           {quote && (
             <Card style={styles.quote}>
               <QuoteRow label="Route" value={`${fromToken?.symbol} → ${chain.dex.split(' ')[0]} → ${toToken?.symbol}`} />
+              <QuoteRow
+                label="Rate"
+                value={`1 ${fromToken?.symbol} = ${fmtPrice(quote.rate)} ${toToken?.symbol}`}
+              />
               <QuoteRow
                 label="Price impact"
                 value={
