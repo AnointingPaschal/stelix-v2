@@ -1,6 +1,6 @@
 /**
  * LIVE transaction history — real explorer / RPC data for the actual
- * wallet address. No demo transactions, no sample history.
+ * wallet address. No placeholder transactions, no sample history.
  *
  * Source: Etherscan-family explorer APIs (BscScan / Etherscan / BaseScan /
  * PolygonScan / ArcScan). They need an API key — read ONLY from
@@ -14,6 +14,8 @@
  * isSpam and hidden by default (filterHistory with showDust=false).
  */
 import { getChain, type ChainConfig } from './chains';
+import { fetchSolanaHistory } from './solana';
+import { fetchDexScreenerToken } from './prices';
 
 export type TxKind = 'sent' | 'received' | 'swap' | 'lock' | 'unlock' | 'autosell' | 'other';
 export type TxStatus = 'confirmed' | 'pending' | 'failed';
@@ -136,6 +138,68 @@ export async function fetchHistory(
 ): Promise<HistoryResult> {
   const chain = getChain(chainId);
   const startedAt = Date.now();
+  if (chain.kind === 'solana') {
+    // Solana history comes from the RPC itself (getSignaturesForAddress +
+    // getParsedTransaction) — no explorer API key needed. An EVM address
+    // is meaningless here; the caller passes the derived Solana address.
+    try {
+      const solTxs = await fetchSolanaHistory(address);
+      const symbolCache = new Map<string, string>();
+      const txs: TxRecord[] = [];
+      for (const st of solTxs) {
+        if (st.solChange !== 0) {
+          const sent = st.solChange < 0;
+          txs.push({
+            id: st.signature,
+            hash: st.signature,
+            kind: sent ? 'sent' : 'received',
+            token: chain.nativeSymbol,
+            amount: Math.abs(st.solChange),
+            amountRaw: String(Math.round(Math.abs(st.solChange) * 1e9)),
+            usd: null,
+            at: st.blockTime !== null ? st.blockTime * 1000 : st.slot,
+            status: st.failed ? 'failed' : 'confirmed',
+            isSpam: false,
+            chainId: chain.id,
+            blockNumber: st.slot,
+          });
+        }
+        for (const tc of st.tokenChanges) {
+          let symbol = symbolCache.get(tc.mint);
+          if (!symbol) {
+            const ds = await fetchDexScreenerToken(chain.id, tc.mint);
+            symbol = ds?.symbol ?? `${tc.mint.slice(0, 4)}…${tc.mint.slice(-4)}`;
+            symbolCache.set(tc.mint, symbol);
+          }
+          txs.push({
+            id: `${st.signature}:${tc.mint}`,
+            hash: st.signature,
+            kind: tc.change < 0 ? 'sent' : 'received',
+            token: symbol,
+            amount: Math.abs(tc.change),
+            amountRaw: String(Math.round(Math.abs(tc.change) * 10 ** tc.decimals)),
+            usd: null,
+            at: st.blockTime !== null ? st.blockTime * 1000 : st.slot,
+            status: st.failed ? 'failed' : 'confirmed',
+            isSpam: false,
+            chainId: chain.id,
+            blockNumber: st.slot,
+          });
+        }
+      }
+      txs.sort((a, b) => b.at - a.at);
+      return { chain, address, txs, status: 'ok', error: null, updatedAt: Date.now() };
+    } catch (e) {
+      return {
+        chain,
+        address,
+        txs: [],
+        status: 'error',
+        error: `Could not read Solana history from ${chain.rpcUrl}: ${e instanceof Error ? e.message : String(e)}`,
+        updatedAt: startedAt,
+      };
+    }
+  }
   const apiKey = getExplorerApiKey();
   if (!apiKey) {
     return {
@@ -145,16 +209,6 @@ export async function fetchHistory(
       status: 'no-key',
       error:
         'No explorer API key configured (EXPO_PUBLIC_EXPLORER_API_KEY). History is empty until a key is set — no sample transactions are shown.',
-      updatedAt: startedAt,
-    };
-  }
-  if (chain.kind === 'solana') {
-    return {
-      chain,
-      address,
-      txs: [],
-      status: 'error',
-      error: 'Solana history is not wired yet — it needs an RPC getSignaturesForAddress client (@solana/web3.js, not installed).',
       updatedAt: startedAt,
     };
   }
