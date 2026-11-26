@@ -1,0 +1,23 @@
+# Stelix 2.0 Keeper — Cloudflare Worker on cron (spec Part G).
+# Deploy (NOT done in this local build): `npx wrangler deploy`
+name = "stelix-keeper"
+main = "src/index.ts"
+compatibility_date = "2026-11-26"
+
+[triggers]
+crons = ["*/5 * * * *"]
+
+[[d1_databases]]
+binding = "DB"
+database_name = "stelix-admin-db"
+database_id = "REPLACE_WITH_D1_DATABASE_ID"
+
+[vars]
+TWAP_WINDOW_MINUTES = "30"
+MAX_PRICE_IMPACT_BPS = "500"
+DEFAULT_SLIPPAGE_BPS = "150"
+MAX_RETRIES = "3"
+
+# Secrets (set via `wrangler secret put <NAME>` — never commit values):
+# KEEPER_PRIVATE_KEY (keeper wallet; can ONLY call executeTrigger per contract),
+# RPC_URL_ARC, RPC_URL_BNB, CHAINLINK / DEX API keys, NOTIFY_WEBHOOK_URL
