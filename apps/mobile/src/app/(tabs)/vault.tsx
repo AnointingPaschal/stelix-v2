@@ -1,92 +1,136 @@
-/** Screen 12 — Vault Hub: total locked value, target progress, lock list, Create Lock. */
-import { ScrollView, StyleSheet, Text, View } from 'react-native';
+/** Screen 12 — Vault (v1): centred title + refresh, navy Total Locked
+ *  Value card with Tokens / Matured / Active mini-stats and a white
+ *  Refresh Positions button, Lock / Wait / Unlock explainer cards, then
+ *  Active Locks grouped by token. Empty state: "No locks yet". */
+import { useState } from 'react';
+import { Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
 import { router } from 'expo-router';
-import { Lock, Plus } from 'lucide-react-native';
+import { Clock, Lock, RefreshCw, Unlock } from 'lucide-react-native';
 import { COLORS } from '../../theme';
 import { useApp } from '../../store/AppContext';
-import { fmtUsd } from '../../lib/format';
-import { Btn, Card, DemoBadge, ProgressBar, RiskNote, SectionTitle } from '../../components/ui';
+import { fmtNum, fmtUsd } from '../../lib/format';
+import { Btn, Card, EmptyState, RiskNote, SectionTitle } from '../../components/ui';
 import { LockCard } from '../../components/TokenRow';
-import { demoToken } from '../../lib/demoData';
 
 export default function VaultHub() {
-  const { locks, tokens } = useApp();
-  const priceOf = (symbol: string) => demoToken(symbol).price;
+  const { locks, tokens, refreshLocks, vaultNote } = useApp();
+  const [refreshing, setRefreshing] = useState(false);
+  // Live price from the store (null = no live price — contributes $0, never
+  // a demo price).
+  const priceOf = (symbol: string) => tokens.find((t) => t.symbol === symbol)?.price ?? null;
   const active = locks.filter((l) => l.status === 'active' || l.status === 'partially-sold');
-  const matured = locks.filter((l) => l.status === 'matured');
+  const matured = locks.filter((l) => l.status === 'matured' || (l.status !== 'completed' && l.status !== 'broken' && Date.now() >= l.unlockTime));
   const done = locks.filter((l) => l.status === 'completed' || l.status === 'broken');
-  const totalLocked = locks
-    .filter((l) => l.status === 'active' || l.status === 'partially-sold' || l.status === 'matured')
-    .reduce((s, l) => s + l.amountRemaining * priceOf(l.tokenSymbol), 0);
-  const closest = [...active].sort((a, b) => a.unlockTime - b.unlockTime)[0];
+  const totalLocked = [...active, ...matured].reduce((s, l) => s + l.amountRemaining * (priceOf(l.tokenSymbol) ?? 0), 0);
+  const tokenCount = new Set(locks.map((l) => l.tokenSymbol)).size;
+
+  // Group active + matured locks by token, as in v1 ("Active Locks (2 tokens)").
+  const grouped = new Map<string, typeof locks>();
+  [...active, ...matured].forEach((l) => {
+    const g = grouped.get(l.tokenSymbol) ?? [];
+    g.push(l);
+    grouped.set(l.tokenSymbol, g);
+  });
+
+  async function refresh() {
+    setRefreshing(true);
+    try {
+      await refreshLocks();
+    } finally {
+      setRefreshing(false);
+    }
+  }
 
   return (
     <ScrollView style={styles.root} contentContainerStyle={styles.inner}>
       <View style={styles.head}>
+        <View style={styles.headSide} />
         <Text style={styles.title}>Vault</Text>
-        <DemoBadge />
+        <Pressable onPress={refresh} style={styles.headSide} hitSlop={8}>
+          <RefreshCw size={18} color={COLORS.text} />
+        </Pressable>
       </View>
 
-      <Card dark>
-        <Text style={styles.label}>Total Locked Value</Text>
-        <Text style={styles.total}>{fmtUsd(totalLocked)}</Text>
-        <Text style={styles.meta}>
-          {active.length} active · {matured.length} matured / claimable · {done.length} completed
-        </Text>
-        {closest && (
-          <>
-            <ProgressBar value={closest.targetPrice ? Math.min(1, priceOf(closest.tokenSymbol) / closest.targetPrice) : 0} />
-            <Text style={styles.closest}>
-              Closest: {closest.tokenSymbol} — {closest.targetMultiple ? `${closest.targetMultiple}x target` : 'date lock'} ·{' '}
-              {new Date(closest.unlockTime).toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' })}
-            </Text>
-          </>
-        )}
+      <Card dark style={styles.totalCard}>
+        <View style={styles.totalHead}>
+          <View style={styles.totalIcon}>
+            <Lock size={18} color="#fff" />
+          </View>
+          <View>
+            <Text style={styles.totalLabel}>Total Locked Value</Text>
+            <Text style={styles.total}>{fmtUsd(totalLocked)}</Text>
+          </View>
+        </View>
+        <View style={styles.divider} />
+        <View style={styles.miniStats}>
+          <View style={styles.miniStat}>
+            <Text style={styles.miniLabel}>Tokens</Text>
+            <Text style={styles.miniValue}>{tokenCount}</Text>
+          </View>
+          <View style={styles.miniStat}>
+            <Text style={styles.miniLabel}>Matured</Text>
+            <Text style={styles.miniValue}>{matured.length}</Text>
+          </View>
+          <View style={styles.miniStat}>
+            <Text style={styles.miniLabel}>Active</Text>
+            <Text style={styles.miniValue}>{active.length}</Text>
+          </View>
+        </View>
+        <Btn
+          label={refreshing ? 'Refreshing…' : 'Refresh Positions'}
+          variant="secondary"
+          onPress={refresh}
+          loading={refreshing}
+          style={styles.refreshBtn}
+        />
       </Card>
 
       <View style={styles.steps}>
-        <Step n="1" t="Lock" d="Choose token, amount, date and price target." />
-        <Step n="2" t="Hold" d="Funds leave your spendable balance until the plan is met." />
-        <Step n="3" t="Exit" d="Date reached: unlock. Target reached: auto-sell to stablecoin." />
+        <Step icon={<Lock size={16} color={COLORS.text} />} t="Lock" d="Choose token & duration" />
+        <Step icon={<Clock size={16} color={COLORS.text} />} t="Wait" d="Contract holds funds on-chain" />
+        <Step icon={<Unlock size={16} color={COLORS.text} />} t="Unlock" d="Withdraw when matured" />
       </View>
 
-      <Btn label="Create Lock" onPress={() => router.push('/vault/create')} variant="mint" />
-      <View style={styles.spacer} />
-
-      <SectionTitle title="Active Locks" />
-      {active.length === 0 && <Text style={styles.empty}>No active locks yet. Create your first Bull Lock.</Text>}
-      {active.map((l) => (
-        <LockCard key={l.id} lock={l} currentPrice={priceOf(l.tokenSymbol)} onPress={() => router.push(`/vault/${l.id}`)} />
-      ))}
-
-      {matured.length > 0 && (
-        <>
-          <SectionTitle title="Matured — Claimable" />
-          {matured.map((l) => (
-            <LockCard key={l.id} lock={l} currentPrice={priceOf(l.tokenSymbol)} onPress={() => router.push(`/vault/${l.id}`)} />
-          ))}
-        </>
+      <SectionTitle title={`Active Locks (${tokenCount} token${tokenCount === 1 ? '' : 's'})`} />
+      {grouped.size === 0 ? (
+        <EmptyState
+          title="No locks yet"
+          body="Create your first lock from a token — pick a date, a price target, or both."
+          actionLabel="Create Lock"
+          onAction={() => router.push('/vault/create')}
+        />
+      ) : (
+        [...grouped.entries()].map(([symbol, ls]) => (
+          <View key={symbol}>
+            {ls.map((l) => (
+              <LockCard key={l.id} lock={l} currentPrice={priceOf(l.tokenSymbol) ?? l.entryPrice} onPress={() => router.push(`/vault/${l.id}`)} />
+            ))}
+            <Text style={styles.groupNote}>
+              {symbol} · {ls.length} lock{ls.length > 1 ? 's' : ''} · {fmtNum(ls.reduce((s, l) => s + l.amountRemaining, 0), 4)} total
+            </Text>
+          </View>
+        ))
       )}
 
       {done.length > 0 && (
         <>
           <SectionTitle title="Completed" />
           {done.map((l) => (
-            <LockCard key={l.id} lock={l} currentPrice={priceOf(l.tokenSymbol)} onPress={() => router.push(`/vault/${l.id}`)} />
+            <LockCard key={l.id} lock={l} currentPrice={priceOf(l.tokenSymbol) ?? l.entryPrice} onPress={() => router.push(`/vault/${l.id}`)} />
           ))}
         </>
       )}
+      <Btn label="Create Lock" variant="mint" onPress={() => router.push('/vault/create')} style={styles.createBtn} />
+      {vaultNote ? <Text style={styles.vaultNote}>{vaultNote}</Text> : null}
       <RiskNote />
     </ScrollView>
   );
 }
 
-function Step({ n, t, d }: { n: string; t: string; d: string }) {
+function Step({ icon, t, d }: { icon: React.ReactNode; t: string; d: string }) {
   return (
     <View style={styles.step}>
-      <View style={styles.stepNum}>
-        <Text style={styles.stepNumText}>{n}</Text>
-      </View>
+      {icon}
       <Text style={styles.stepTitle}>{t}</Text>
       <Text style={styles.stepDesc}>{d}</Text>
     </View>
@@ -94,27 +138,41 @@ function Step({ n, t, d }: { n: string; t: string; d: string }) {
 }
 
 const styles = StyleSheet.create({
-  closest: { color: COLORS.textOnNavyMuted, fontSize: 12, marginTop: 8 },
-  empty: { color: COLORS.textMuted, fontSize: 14 },
+  createBtn: { marginTop: 12 },
+  divider: { backgroundColor: COLORS.navySoft, height: 1, marginVertical: 10 },
+  groupNote: { color: COLORS.textMuted, fontSize: 11, marginBottom: 10, marginTop: -4 },
   head: { alignItems: 'center', flexDirection: 'row', justifyContent: 'space-between' },
-  inner: { padding: 20 },
-  label: { color: COLORS.textOnNavyMuted, fontSize: 13, fontWeight: '700' },
-  meta: { color: COLORS.textOnNavyMuted, fontSize: 13, marginBottom: 12, marginTop: 6 },
+  headSide: { alignItems: 'center', width: 32 },
+  inner: { padding: 12 },
+  miniLabel: { color: COLORS.textOnNavyMuted, fontSize: 11 },
+  miniStat: { backgroundColor: COLORS.navySoft, borderRadius: 12, flex: 1, padding: 10 },
+  miniStats: { flexDirection: 'row', gap: 8 },
+  miniValue: { color: '#fff', fontSize: 16, fontWeight: '800', marginTop: 2 },
+  refreshBtn: { backgroundColor: '#fff', marginTop: 12 },
   root: { backgroundColor: COLORS.bg, flex: 1 },
-  spacer: { height: 8 },
-  step: { flex: 1 },
-  stepDesc: { color: COLORS.textMuted, fontSize: 11, lineHeight: 15, marginTop: 4 },
-  stepNum: {
-    alignItems: 'center',
-    backgroundColor: COLORS.navy,
-    borderRadius: 999,
-    height: 28,
-    justifyContent: 'center',
-    width: 28,
+  step: {
+    borderColor: COLORS.border,
+    borderRadius: 16,
+    borderWidth: 1,
+    flex: 1,
+    gap: 4,
+    padding: 10,
   },
-  stepNumText: { color: '#fff', fontSize: 13, fontWeight: '800' },
-  stepTitle: { color: COLORS.text, fontSize: 14, fontWeight: '800', marginTop: 8 },
-  steps: { flexDirection: 'row', gap: 12, marginVertical: 16 },
-  title: { color: COLORS.text, fontSize: 24, fontWeight: '800' },
-  total: { color: '#fff', fontSize: 32, fontWeight: '800', marginTop: 4 },
+  stepDesc: { color: COLORS.textMuted, fontSize: 11, lineHeight: 15 },
+  stepTitle: { color: COLORS.text, fontSize: 14, fontWeight: '800' },
+  steps: { flexDirection: 'row', gap: 8, marginVertical: 12 },
+  title: { color: COLORS.text, fontSize: 18, fontWeight: '800' },
+  total: { color: '#fff', fontSize: 28, fontWeight: '800', marginTop: 2 },
+  totalCard: { marginTop: 12, padding: 14 },
+  vaultNote: { color: COLORS.textMuted, fontSize: 12, lineHeight: 17, marginTop: 10, textAlign: 'center' },
+  totalHead: { alignItems: 'center', flexDirection: 'row', gap: 12 },
+  totalIcon: {
+    alignItems: 'center',
+    backgroundColor: COLORS.navySoft,
+    borderRadius: 12,
+    height: 40,
+    justifyContent: 'center',
+    width: 40,
+  },
+  totalLabel: { color: COLORS.textOnNavyMuted, fontSize: 12, fontWeight: '700' },
 });
