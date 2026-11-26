@@ -2,6 +2,7 @@
  * Unit tests for the Bull Lock engine (src/lib/vault.ts).
  * Run: npm test
  */
+import { ethers } from 'ethers';
 import {
   BullLock,
   computeTwap,
@@ -21,10 +22,17 @@ import {
   validateLadder,
   disciplineScore,
   createLockOnChain,
+  claimMaturedOnChain,
+  claimTriggeredStageOnChain,
+  requestBreakOnChain,
+  executeBreakOnChain,
+  executeTriggerOnChain,
+  parseOnChainLockId,
   getUserLocksOnChain,
   toOnChainCreateLockParams,
   VAULT_NOT_DEPLOYED_MESSAGE,
 } from '../vault';
+import { VAULT_ADDRESSES } from '../chains';
 
 const DAY = 86_400_000;
 const NOW = Date.now();
@@ -344,5 +352,132 @@ describe('on-chain vault — not deployed yet', () => {
     expect(ok.ladderStages).toHaveLength(2);
     expect(ok.ladderStages[0].sellBps).toBe(2500);
     expect(ok.ladderStages[1].sellBps).toBe(7500);
+  });
+});
+
+describe('on-chain vault — all calls refuse while nothing is deployed', () => {
+  const fakeSigner = {} as never;
+
+  it.each([
+    ['claimMatured', () => claimMaturedOnChain(fakeSigner, 'bnb', 1)],
+    ['claimTriggeredStage', () => claimTriggeredStageOnChain(fakeSigner, 'bnb', 1, 0)],
+    ['requestBreak', () => requestBreakOnChain(fakeSigner, 'bnb', 1)],
+    ['executeBreak', () => executeBreakOnChain(fakeSigner, 'bnb', 1)],
+    ['executeTrigger', () => executeTriggerOnChain(fakeSigner, 'bnb', 1)],
+  ])('%s throws the not-deployed message (no tx sent)', async (_name, fn) => {
+    await expect(fn()).rejects.toThrow(/Not deployed on this chain yet/);
+  });
+
+  it('parseOnChainLockId parses on-chain ids and rejects local ones', () => {
+    expect(parseOnChainLockId('onchain-bnb-42')).toEqual({ chainId: 'bnb', lockId: 42 });
+    expect(parseOnChainLockId('onchain-arc-7')).toEqual({ chainId: 'arc', lockId: 7 });
+    expect(parseOnChainLockId('LCK-123')).toBeNull();
+    expect(parseOnChainLockId('')).toBeNull();
+  });
+});
+
+describe('on-chain vault — wiring against a mock registered address', () => {
+  // No vault is deployed yet (VAULT_ADDRESSES is all null in the real
+  // registry). These tests register a MOCK address in the in-memory
+  // registry for the duration of the test only, to prove the wiring
+  // (approve -> createLock, claim, break, trigger) calls the contract
+  // correctly. The mock address is never written to chains.ts.
+  const MOCK_VAULT = '0x7777777777777777777777777777777777777777';
+  const MOCK_TOKEN = '0x8888888888888888888888888888888888888888';
+  const MOCK_STABLE = '0x9999999999999999999999999999999999999999';
+  const FAKE_HASH = `0x${'ef'.repeat(32)}`;
+
+  beforeEach(() => {
+    VAULT_ADDRESSES['bnb'] = MOCK_VAULT;
+  });
+  afterEach(() => {
+    VAULT_ADDRESSES['bnb'] = null;
+  });
+
+  function makeFakeSigner() {
+    const sent: { to: string; data: string }[] = [];
+    const signer = {
+      getAddress: async () => '0x1111111111111111111111111111111111111111',
+      provider: {
+        call: async () => '0x',
+        getTransactionReceipt: async (hash: string) => ({
+          hash,
+          blockNumber: 789,
+          blockHash: `0x${'00'.repeat(32)}`,
+          index: 0,
+          from: '0x1111111111111111111111111111111111111111',
+          to: MOCK_VAULT,
+          contractAddress: null,
+          gasUsed: 100_000n,
+          cumulativeGasUsed: 100_000n,
+          gasPrice: 1_000_000_000n,
+          status: 1,
+          logs: [],
+          type: 2,
+        }),
+      },
+      call: async () => '0x',
+      sendTransaction: async (tx: { to: string; data: string }) => {
+        sent.push(tx);
+        return {
+          hash: FAKE_HASH,
+          wait: async () => ({ hash: FAKE_HASH, blockNumber: 789, logs: [] }),
+        };
+      },
+    };
+    return { signer: signer as never, sent };
+  }
+
+  const params = {
+    chainId: 'bnb',
+    tokenAddress: MOCK_TOKEN,
+    tokenDecimals: 18,
+    stablecoinAddress: MOCK_STABLE,
+    amount: 100,
+    unlockTime: NOW + 30 * 86_400_000,
+    entryPriceUsd: 0.02,
+    ladder: [{ multiple: 2, percent: 100 }],
+    trailingStopBps: null,
+    breakMode: 'penalty' as const,
+    penaltyBps: 500,
+    autoSell: true,
+    slippageBps: 150,
+    minReceiveUsd: 0,
+  };
+
+  it('createLockOnChain approves the vault then calls createLock', async () => {
+    const { signer, sent } = makeFakeSigner();
+    const res = await createLockOnChain(signer, params);
+    expect(res.txHash).toBe(FAKE_HASH);
+    expect(res.lockId).toBeNull(); // no Locked event in the fake receipt
+    expect(sent).toHaveLength(2);
+    expect(sent[0].to).toBe(MOCK_TOKEN); // approve
+    const approveIface = new ethers.Interface(['function approve(address spender, uint256 amount) returns (bool)']);
+    expect(approveIface.decodeFunctionData('approve', sent[0].data).spender).toBe(MOCK_VAULT);
+    expect(sent[1].to).toBe(MOCK_VAULT); // createLock
+    const vaultIface = new ethers.Interface([
+      'function createLock((address token, uint256 amount, uint256 unlockTime, uint256 entryPrice, (uint256 targetPrice, uint16 sellBps, bool sold)[] ladderStages, uint16 trailingStopBps, uint8 breakMode, uint16 penaltyBps, bool autoSell, address stablecoin, uint16 slippageBps, uint256 minReceivePerStage) params) returns (uint256 lockId)',
+    ]);
+    const decoded = vaultIface.decodeFunctionData('createLock', sent[1].data);
+    expect(decoded.params.token).toBe(MOCK_TOKEN);
+    expect(decoded.params.amount).toBe(ethers.parseUnits('100', 18));
+    expect(decoded.params.stablecoin).toBe(MOCK_STABLE);
+  });
+
+  it('claim / break / trigger calls hit the mock vault address', async () => {
+    const { signer, sent } = makeFakeSigner();
+    const claimHash = await claimMaturedOnChain(signer, 'bnb', 3);
+    expect(claimHash).toBe(FAKE_HASH);
+    expect(sent[0].to).toBe(MOCK_VAULT);
+    const stageHash = await claimTriggeredStageOnChain(signer, 'bnb', 3, 0);
+    expect(stageHash).toBe(FAKE_HASH);
+    const breakHash = await requestBreakOnChain(signer, 'bnb', 3);
+    expect(breakHash).toBe(FAKE_HASH);
+    const execHash = await executeBreakOnChain(signer, 'bnb', 3);
+    expect(execHash).toBe(FAKE_HASH);
+    const triggerHash = await executeTriggerOnChain(signer, 'bnb', 3);
+    expect(triggerHash).toBe(FAKE_HASH);
+    expect(sent).toHaveLength(5);
+    expect(sent.map((s) => s.to)).toEqual(Array(5).fill(MOCK_VAULT));
   });
 });
