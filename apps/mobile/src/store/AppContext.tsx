@@ -1,7 +1,7 @@
 /**
  * LIVE app state — wallet, balances, locks, history, settings.
  * Backed by SecureStore-encrypted wallet + on-chain reads + live price
- * APIs. NO demo data: a new wallet starts with an empty token list,
+ * APIs. No placeholder data: a new wallet starts with an empty token list,
  * $0.00, no locks and no history until real on-chain data exists.
  * Locks are read from StelixVault via getUserLocksOnChain when deployed;
  * otherwise the list is empty with vaultNote set to the not-deployed
@@ -80,6 +80,10 @@ interface AppState {
   onboarded: boolean;
   unlocked: boolean;
   address: string;
+  /** Solana address derived from the same mnemonic ('' when none — e.g.
+   *  wallets imported from a raw private key). Used for Solana balances
+   *  and history; the EVM address is meaningless on Solana. */
+  solanaAddress: string;
   chain: ChainConfig;
   tokens: TokenBalance[];
   locks: BullLock[];
@@ -89,6 +93,9 @@ interface AppState {
   discipline: DisciplineStats;
   /** Live-data loading / error state (never hidden behind sample data). */
   loading: boolean;
+  /** True once the stored-wallet check has finished (or timed out). Until
+   *  then the root layout shows the splash — never a blank white page. */
+  hydrated: boolean;
   error: string | null;
   balancesError: string | null;
   historyError: string | null;
@@ -109,8 +116,8 @@ interface AppState {
   refreshBalances: () => Promise<void>;
   refreshLocks: () => Promise<void>;
   refreshAll: () => Promise<void>;
-  /** Kept name for the settings screen: resets live state to empty. */
-  resetDemo: () => void;
+  /** Resets live state to empty (used by the settings wipe flow). */
+  resetState: () => void;
 }
 
 const Ctx = createContext<AppState | null>(null);
@@ -119,12 +126,14 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
   const [onboarded, setOnboarded] = useState(false);
   const [unlocked, setUnlocked] = useState(false);
   const [address, setAddress] = useState('');
+  const [solanaAddress, setSolanaAddress] = useState('');
   const [chain, setChainState] = useState<ChainConfig>(DEFAULT_CHAIN);
   const [tokens, setTokens] = useState<TokenBalance[]>([]);
   const [locks, setLocks] = useState<BullLock[]>([]);
   const [allHistory, setAllHistory] = useState<TxRecord[]>([]);
   const [notifications, setNotifications] = useState<AppNotification[]>([]);
   const [loading, setLoading] = useState(false);
+  const [hydrated, setHydrated] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [balancesError, setBalancesError] = useState<string | null>(null);
   const [historyError, setHistoryError] = useState<string | null>(null);
@@ -150,12 +159,16 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     return disciplineFromLocks(locks, lockedUsd, totalUsd);
   }, [locks, tokens]);
 
+  /** Address for the active chain: the derived Solana address on Solana,
+   *  the EVM address everywhere else. */
+  const chainAddress = chain.kind === 'solana' ? solanaAddress : address;
+
   const refreshBalances = useCallback(async () => {
-    if (!address) return;
+    if (!chainAddress) return;
     setLoading(true);
     try {
       const imported = await loadImportedTokens();
-      const res = await fetchBalances(chain.id, address, imported);
+      const res = await fetchBalances(chain.id, chainAddress, imported);
       setTokens(res.tokens);
       setBalancesError(res.error);
       if (res.error) setError(res.error);
@@ -166,7 +179,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     } finally {
       setLoading(false);
     }
-  }, [address, chain.id]);
+  }, [chainAddress, chain.id]);
 
   const refreshLocks = useCallback(async () => {
     if (!address) return;
@@ -189,35 +202,47 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
   }, [address, chain.id, tokens]);
 
   const refreshHistory = useCallback(async () => {
-    if (!address) return;
+    if (!chainAddress) return;
     try {
-      const res = await fetchHistory(chain.id, address);
+      const res = await fetchHistory(chain.id, chainAddress);
       setAllHistory(res.txs);
       setHistoryError(res.error);
     } catch (e) {
       setHistoryError(e instanceof Error ? e.message : String(e));
     }
-  }, [address, chain.id]);
+  }, [chainAddress, chain.id]);
 
   const refreshAll = useCallback(async () => {
     await Promise.all([refreshBalances(), refreshLocks(), refreshHistory()]);
   }, [refreshBalances, refreshLocks, refreshHistory]);
 
   // On launch: if a wallet is stored, surface its address (locked until
-  // the user unlocks with the session password).
+  // the user unlocks with the session password). The SecureStore read is
+  // async — until it resolves the root layout shows the splash, so the
+  // user never sees a blank white page on first load / reload.
   useEffect(() => {
     let cancelled = false;
+    // Safety net: never hold the splash longer than 5s even if storage hangs.
+    const fallback = setTimeout(() => {
+      if (!cancelled) setHydrated(true);
+    }, 5000);
     void (async () => {
-      if (await hasWallet()) {
-        const meta = await getWalletMeta();
-        if (!cancelled && meta) {
-          setAddress(meta.address);
-          setOnboarded(true);
+      try {
+        if (await hasWallet()) {
+          const meta = await getWalletMeta();
+          if (!cancelled && meta) {
+            setAddress(meta.address);
+            setSolanaAddress(meta.solanaAddress ?? '');
+            setOnboarded(true);
+          }
         }
+      } finally {
+        if (!cancelled) setHydrated(true);
       }
     })();
     return () => {
       cancelled = true;
+      clearTimeout(fallback);
     };
   }, []);
 
@@ -247,7 +272,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     (p: Partial<AppSettings>) => setSettings((prev) => ({ ...prev, ...p })),
     [],
   );
-  const resetDemo = useCallback(() => {
+  const resetState = useCallback(() => {
     setTokens([]);
     setLocks([]);
     setAllHistory([]);
@@ -255,6 +280,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     setUnlocked(false);
     setOnboarded(false);
     setAddress('');
+    setSolanaAddress('');
     setError(null);
     setBalancesError(null);
     setHistoryError(null);
@@ -262,18 +288,18 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
 
   const value = useMemo<AppState>(
     () => ({
-      onboarded, unlocked, address, chain,
+      onboarded, unlocked, address, solanaAddress, chain,
       tokens, locks, history, notifications, settings,
       discipline,
-      loading, error, balancesError, historyError, vaultNote, showDust,
+      loading, hydrated, error, balancesError, historyError, vaultNote, showDust,
       setOnboarded, setUnlocked, setAddress, setChain,
       addLock, updateLock, addTx, markNotificationsRead, updateSettings,
-      setShowDust, refreshBalances, refreshLocks, refreshAll, resetDemo,
+      setShowDust, refreshBalances, refreshLocks, refreshAll, resetState,
     }),
-    [onboarded, unlocked, address, chain, tokens, locks, history, notifications, settings,
-     discipline, loading, error, balancesError, historyError, vaultNote, showDust,
+    [onboarded, unlocked, address, solanaAddress, chain, tokens, locks, history, notifications, settings,
+     discipline, loading, hydrated, error, balancesError, historyError, vaultNote, showDust,
      setChain, addLock, updateLock, addTx, markNotificationsRead, updateSettings,
-     refreshBalances, refreshLocks, refreshAll, resetDemo],
+     refreshBalances, refreshLocks, refreshAll, resetState],
   );
 
   return <Ctx.Provider value={value}>{children}</Ctx.Provider>;
