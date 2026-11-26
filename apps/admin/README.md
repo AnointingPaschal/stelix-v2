@@ -1,35 +1,59 @@
 # Stelix 2.0 — Admin Portal
 
-React Vite + TypeScript admin portal for Stelix 2.0, hosted on Cloudflare Pages, backed by Workers + D1 (see `wrangler.toml`, `migrations/0001_schema.sql`, `src/worker/index.ts`).
+React Vite + TypeScript admin portal for Stelix 2.0, hosted on Cloudflare Pages, backed by Workers + D1 (see `wrangler.toml`, `migrations/`, `src/worker/index.ts`).
+
+**No sample data.** Every page reads live data — D1 rows and on-chain RPC reads. Empty tables render real empty states ("No locks yet", "No keeper runs yet"), never invented figures. There is no `demo.ts` and no fallback to placeholder data anywhere in `src/`.
 
 ## Design
 Navy `#0B1220` + white, mint-green accent `#2FD6A3`, matching the Stelix mobile app and the real Stelix logo (`public/logo.png`, copied as-is from the supplied PNG — not redrawn). No emoji, clean line icons only (lucide-react).
 
-Mobile-first (redesigned 2026-11-26): under 1024px the sidebar is replaced by a sticky navy top bar + slide-in drawer + bottom nav; content is full-width, single-column, 16px padding, and wide tables become stacked cards. Desktop keeps a proper sidebar (collapsible to icons). Live vs demo data is shown with small Live / Demo pills, not a banner.
+Mobile-first (redesigned 2026-11-26): under 1024px the sidebar is replaced by a sticky navy top bar + slide-in drawer + bottom nav; content is full-width, single-column, 16px padding, and wide tables become stacked cards. Desktop keeps a proper sidebar (collapsible to icons). Live data is shown with small Live pills.
 
-## Pages (spec Part E)
-Login (Cloudflare Access gate + admin credentials/passkey, no public registration) · Dashboard (TVL per chain, active locks, auto-sells, keeper health, alerts) · Contract Studio (edit StelixVault source, compile with pinned solc `0.8.24`, testnet deploy, verify, register, gated mainnet deploy) · Chain Manager (Arc default, then BNB, Base, Ethereum, Polygon, Solana; statuses testnet/live/paused/hidden) · Token/DEX Registry · Keeper Monitor (runs, triggers, swaps executed/retried/failed, balances, run-now/pause) · Fees and Limits · Announcements · App Config and Releases (signed config, feature flags, min version) · Support Lookup (wallet/lock ID/tx hash, public on-chain state only — never ask for a seed phrase or private key) · Audit Log and Settings.
+## Pages
+Login (owner-only, server-side PBKDF2 login) · Dashboard (live TVL from on-chain vault balances, active locks, auto-sells, keeper health from the last real keeper run) · Contract Studio (edit StelixVault source, compile with pinned solc `0.8.24`, testnet deploy preparation, explorer verification, registration in Chain Manager, gated mainnet deploy) · Contract Audit (automated static audit of the exact source + independent-audit record + mainnet-gate status) · Chain Manager (Arc default, then BNB, Base, Ethereum, Polygon, Solana; statuses testnet/live/paused/hidden; add/edit chains) · Token/DEX Registry (live DexScreener search, add/remove in D1) · Keeper Monitor (real runs from D1, balances from RPC, Run Now / Pause) · Fees and Limits (versioned fee config in D1 with history) · Announcements (publish to D1, served live to the mobile app banner feed) · App Config and Releases (HMAC-signed config, feature flags, min version) · Support Lookup (wallet/lock ID/tx hash resolved from D1 + on-chain RPC, public state only — never ask for a seed phrase or private key) · Audit Log and Settings (audit log + backup export).
 
 ## Contract
-Starter `StelixVault` source lives in `src/contracts/StelixVault.sol` and is loaded into Contract Studio. It is a **starter** — full unit/fork tests and an independent audit are required before mainnet (spec Part F). Non-upgradeable by design; no admin withdrawal function; keeper can only call `executeTrigger()` and funds only ever go to the lock owner.
+`StelixVault` source lives in `src/contracts/StelixVault.sol` (exact mirror of `contracts/src/StelixVault.sol`, plus `src/contracts/interfaces/`). It is compiled for real by `scripts/compile.mjs` with pinned solc `0.8.24` (optimizer on, 200 runs, via IR) — see `src/contracts/StelixVault.artifact.json` (bytecode hash, deployed size, source hashes). Contract Studio only registers an address after the Worker verifies on-chain code (`eth_getCode`) and explorer source status, and after the submitted source hash matches the compiled artifact. Non-upgradeable by design; no admin withdrawal function; keeper can only call `executeTrigger()` and funds only ever go to the lock owner.
 
-## Demo data
-Until the Cloudflare deploy, pages show clearly labelled **DEMO** data via `src/lib/api.ts` stubs. Production reads D1 through the Workers API in `src/worker/index.ts`.
+## Contract Audit module
+`src/lib/auditCheck.ts` is a thorough built-in static checker (Slither is not installed in this VM) that runs on the exact StelixVault source: tx.origin, selfdestruct/delegatecall/callcode, admin drain functions, reentrancy guards on fund-moving functions, unchecked low-level calls, unchecked ERC-20 transfers (including multi-line `require(...)` forms), fee cap, slippage cap, single price-feed trust, pragma pinning, zero-address checks, approve-reset pattern, unbounded ladder loops, access control, checks-effects-interactions order, owner-powers inventory. Runs are stored in D1 (`audit_runs`) with timestamp, compiler, source hash and findings; each finding has severity, file/line, description, recommendation and fix status. **An automated audit is NOT a substitute for an independent human audit** — the page says so, and no independent audit is claimed: `external_audits` is empty until a real report is recorded with evidence. The mainnet gate passes only on a passing automated audit (zero open critical/high) OR a recorded passing independent audit — plus a verified testnet deployment and a smoke-test attestation, enforced server-side in the Worker.
 
 ## Run locally
 ```bash
 npm install
-npm run build        # tsc --noEmit && vite build
-npm run dev          # http://localhost:5173
+npm run compile:contract   # real solc 0.8.24 compile -> src/contracts/StelixVault.artifact.json
+npm test                   # vitest: audit checker + validation + Worker endpoints (fake D1)
+npm run typecheck:worker   # tsc for src/worker + src/lib
+npm run build              # tsc --noEmit && vite build && esbuild worker -> dist/_worker.js
+npm run dev                # http://localhost:5173
 ```
 
-## Deploy (LIVE since 2026-11-26)
-Production: https://stelix-admin.pages.dev/ — Cloudflare Pages project `stelix-admin` (branch `main`), D1 database `stelix-admin-db` (`598cd9fd-a29b-4286-b99d-f51c534d0308`), migrations `0001_schema.sql` + `0002_seed.sql` applied (chains seeded: Arc default/testnet, BNB/Base/Ethereum/Polygon/Solana hidden).
+## Deploy (coordinator only — do not deploy from a workstream agent)
+Production: https://stelix-admin.pages.dev/ — Cloudflare Pages project `stelix-admin`, D1 database `stelix-admin-db` (`598cd9fd-a29b-4286-b99d-f51c534d0308`).
 ```bash
-npm run build        # tsc + vite + esbuild src/worker/index.ts -> dist/_worker.js (Pages advanced mode)
-npx wrangler pages deploy --project-name stelix-admin --branch main
-npx wrangler d1 execute stelix-admin-db --remote --file=migrations/0001_schema.sql
-npx wrangler d1 execute stelix-admin-db --remote --file=migrations/0002_seed.sql
+npx wrangler d1 execute stelix-admin-db --remote --file=migrations/0003_live.sql   # new tables (locks, auto_sells, fee_versions, keeper_state, compile_jobs, audit_runs, external_audits, gate_attestations)
+npm run build
+npx wrangler pages deploy dist --project-name stelix-admin
 ```
-Auth: owner-only server-side login (no Cloudflare Access — Access is not enabled on the account; the Access API returns `access.api.error.not_enabled`). Admin email `ozoemenapaschal09@gmail.com`, PBKDF2-SHA256 password hash and HMAC session secret are Pages secrets (`ADMIN_PASSWORD_HASH`, `ADMIN_SESSION_SECRET` — set via `wrangler pages secret put`, never committed). 5 failed attempts lock an IP for 15 minutes; every login is written to `audit_log`.
-Live endpoints: `GET /api/chains`, `GET /api/keeper/runs`, `GET /api/admin/audit` (session required); `GET /api/health`, `GET /api/config` (public). Dashboard, tokens, fees, announcements and config pages still show labelled DEMO data until wired.
+Secrets (set via `wrangler pages secret put <NAME> --project-name stelix-admin`, never committed):
+- `ADMIN_PASSWORD_HASH` (pbkdf2-sha256$iterations$salt$key), `ADMIN_SESSION_SECRET` — login (already set).
+- `CONFIG_SIGNING_SECRET` — **new, required** before any signed config can be published; the publish endpoint refuses (503) without it.
+- `KEEPER_WORKER_URL`, `KEEPER_RUN_KEY` — **new, optional**; until the keeper Worker is live and these are set, Run Now honestly reports "keeper not live yet" and records nothing.
+- `EXPLORER_API_KEY` — optional; without it, explorer source verification still works for most Etherscan-compatible APIs but may be rate-limited.
+- No deployer private key is ever stored in the admin. Testnet deploys are broadcast by the Foundry flow (`contracts/script/`) with a testnet-only key; the admin only registers verified addresses.
+
+Auth: owner-only server-side login. Admin email `ozoemenapaschal09@gmail.com`. 5 failed attempts lock an IP for 15 minutes; every login is written to `audit_log`.
+
+## Live endpoints (all under `src/worker/index.ts`, session required unless noted)
+- `GET /api/health`, `GET /api/config` (public, signed), `GET /api/announcements` (public, active banner feed)
+- `GET /api/admin/dashboard` — TVL (on-chain), locks, auto-sells, keeper health
+- `GET /api/chains` · `POST /api/admin/chains` · `POST /api/admin/chains/:id`
+- `GET/POST/DELETE /api/admin/tokens` · `GET /api/admin/tokens/search` (DexScreener, live)
+- `GET/POST /api/admin/fees` · `GET /api/admin/fees/history`
+- `GET/POST/DELETE /api/admin/announcements`
+- `GET/POST /api/admin/config`
+- `GET /api/admin/locks` · `GET /api/support` (wallet / lock ID / tx hash)
+- `GET /api/keeper/runs` · `GET /api/admin/keeper/status` · `POST /api/admin/keeper/run-now` · `POST /api/admin/keeper/pause`
+- `POST /api/admin/compile` · `GET /api/admin/compile/latest` · `POST /api/admin/deploy/prepare|verify|register` · `GET /api/admin/deployments` · `POST /api/admin/deploy/gate/attest`
+- `POST /api/admin/audit/run` · `GET/PATCH /api/admin/audit/runs[/:id]` · `GET/POST/DELETE /api/admin/audit/external` · `GET /api/admin/audit/gate`
+- `GET /api/admin/audit` (log) · `GET /api/admin/backup`
