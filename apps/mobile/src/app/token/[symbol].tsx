@@ -23,9 +23,11 @@ import { COLORS } from '../../theme';
 import { useApp } from '../../store/AppContext';
 import {
   COINGECKO_IDS_BY_SYMBOL,
+  candlesMatchPrice,
   computeSafetyScore,
-  fetchCandlesForTf,
+  fetchCandlesForTfWithMeta,
   fetchCoinGeckoPrice,
+  fetchDexScreenerPairs,
   fetchDexScreenerToken,
   fetchGoPlusSecurity,
   fetchTokenMarketData,
@@ -34,6 +36,7 @@ import {
   type Candle,
   type GoPlusSecurity,
   type PriceSource,
+  type SafetyScore,
   type TokenMarketData,
 } from '../../lib/prices';
 import { bucketMsFor, lastMacd, mergeLivePrice, type ChartTimeframe } from '../../lib/chart';
@@ -105,12 +108,33 @@ export default function TokenDetail() {
 
   // --- Live market data (DexScreener, GeckoTerminal fallback) ---------------
   const [market, setMarket] = useState<TokenMarketData | null>(null);
+  // True once the first market fetch has resolved (even with no data) —
+  // the Safety Score stays hidden until this AND GoPlus have resolved.
+  const [marketDone, setMarketDone] = useState(false);
+  // True once the candidate-pair list has resolved — the candle fetcher
+  // must wait for this, or it fires once with no candidates and again
+  // when they arrive, blanking the chart twice on every mount.
+  const [pairsReady, setPairsReady] = useState(false);
   useEffect(() => {
     let cancelled = false;
     setMarket(null);
-    if (!marketAddress) return;
-    void fetchTokenMarketData(chainId, marketAddress).then((d) => {
-      if (!cancelled) setMarket(d);
+    setMarketDone(false);
+    setPairsReady(false);
+    if (!marketAddress) {
+      setMarketDone(true);
+      setPairsReady(true);
+      return;
+    }
+    void Promise.all([
+      fetchTokenMarketData(chainId, marketAddress),
+      fetchDexScreenerPairs(chainId, marketAddress),
+    ]).then(([d, pairs]) => {
+      if (!cancelled) {
+        setMarket(d);
+        setCandidatePairs(pairs);
+        setMarketDone(true);
+        setPairsReady(true);
+      }
     });
     return () => {
       cancelled = true;
@@ -119,12 +143,22 @@ export default function TokenDetail() {
 
   // --- GoPlus security (honeypot / mint / holders) — EVM contracts only ---
   const [security, setSecurity] = useState<GoPlusSecurity | null>(null);
+  // True once the GoPlus fetch has resolved (or does not apply: native
+  // assets have no contract address, so there is nothing to wait for).
+  const [securityResolved, setSecurityResolved] = useState(false);
   useEffect(() => {
     let cancelled = false;
     setSecurity(null);
-    if (!address) return;
+    setSecurityResolved(false);
+    if (!address) {
+      setSecurityResolved(true);
+      return;
+    }
     void fetchGoPlusSecurity(chainId, address).then((s) => {
-      if (!cancelled) setSecurity(s);
+      if (!cancelled) {
+        setSecurity(s);
+        setSecurityResolved(true);
+      }
     });
     return () => {
       cancelled = true;
@@ -135,23 +169,68 @@ export default function TokenDetail() {
   const [tf, setTf] = useState<ChartTimeframe>('15m');
   const [candles, setCandles] = useState<Candle[]>([]);
   const [candlesStale, setCandlesStale] = useState(false);
+  const [candlesLoading, setCandlesLoading] = useState(true);
+  /** A refetch for a new series is in flight while old candles are still
+   *  on screen — the chart shows a small "Updating…" badge, never a blank. */
+  const [candlesUpdating, setCandlesUpdating] = useState(false);
+  const [candleMeta, setCandleMeta] = useState<{ baseAddress: string | null; quoteAddress: string | null; baseMatches: boolean }>({
+    baseAddress: null,
+    quoteAddress: null,
+    baseMatches: false,
+  });
   const pairAddress = market?.pairAddress ?? null;
+  // All DexScreener pairs for this token, highest liquidity first — the
+  // candle fetcher tries each until one has this token as its Gecko base.
+  const [candidatePairs, setCandidatePairs] = useState<string[]>([]);
+  // Ref mirrors so fetch effects never read a stale closure: the previous
+  // series stays on screen while the next one loads.
+  const candlesRef = useRef<Candle[]>([]);
+  useEffect(() => {
+    candlesRef.current = candles;
+  }, [candles]);
+  const candidatePairsRef = useRef<string[]>([]);
+  useEffect(() => {
+    candidatePairsRef.current = candidatePairs;
+  }, [candidatePairs]);
 
+  // CHART STABILITY — root cause of the disappear/reappear bug:
+  // the old effect ran `setCandles([])` + `setCandlesLoading(true)` on
+  // EVERY run, and it ran 2–3 times per mount (pairAddress null, then
+  // set, then candidatePairs set) plus once per timeframe tap. Every tap
+  // therefore blanked the chart to the skeleton/empty state and the
+  // fade-in made it "come back". This effect NEVER clears the series:
+  // the previous timeframe's candles stay visible while the next one
+  // loads, and an empty result keeps the old series on screen (stale
+  // flag only). The skeleton shows only when no candles ever existed.
   useEffect(() => {
     let cancelled = false;
-    setCandles([]);
-    setCandlesStale(false);
-    if (!pairAddress) return;
-    void fetchCandlesForTf(chainId, pairAddress, tf, 120).then((c) => {
+    if (!pairsReady) return; // market/pairs still loading — keep the skeleton
+    if (!pairAddress) {
+      setCandlesLoading(false); // no pair exists at all: honest empty state
+      return;
+    }
+    if (candlesRef.current.length === 0) setCandlesLoading(true);
+    else setCandlesUpdating(true);
+    void fetchCandlesForTfWithMeta(chainId, pairAddress, tf, 120, marketAddress, {
+      candidatePairs: candidatePairsRef.current,
+      coingeckoId,
+    }).then((r) => {
       if (!cancelled) {
-        setCandles(c);
-        setCandlesStale(c.length === 0);
+        if (r.candles.length > 0) {
+          setCandles(r.candles);
+          setCandlesStale(false);
+        } else {
+          setCandlesStale(candlesRef.current.length === 0);
+        }
+        setCandleMeta({ baseAddress: r.baseAddress, quoteAddress: r.quoteAddress, baseMatches: r.baseMatches });
+        setCandlesLoading(false);
+        setCandlesUpdating(false);
       }
     });
     return () => {
       cancelled = true;
     };
-  }, [pairAddress, chainId, tf]);
+  }, [pairAddress, chainId, tf, marketAddress, pairsReady, coingeckoId]);
 
   // --- Live poll: latest price every 8s merges into the last candle --------
   useEffect(() => {
@@ -182,7 +261,16 @@ export default function TokenDetail() {
         setTick({ price, change24h, source, updatedAt: Date.now() });
         setLiveState('live');
         // Update the live candle in place — no refresh, no invented history.
-        setCandles((prev) => mergeLivePrice(prev, price as number, bucketMs));
+        // Never merge a live price into a wrong-scale series: only merge
+        // when the last close is already within 20% of the live price.
+        // And when the price did not move, keep the SAME array reference
+        // so the chart does not re-render every 8 seconds.
+        setCandles((prev) => {
+          if (!candlesMatchPrice(prev, price as number)) return prev;
+          const last = prev[prev.length - 1];
+          if (last && last.close === price) return prev;
+          return mergeLivePrice(prev, price as number, bucketMs);
+        });
       } else {
         setLiveState((prev) => (prev === 'live' ? 'stale' : 'unavailable'));
       }
@@ -190,10 +278,30 @@ export default function TokenDetail() {
     void poll();
     const t = setInterval(() => void poll(), LIVE_POLL_MS);
     // Full candle refetch every minute, so missed buckets still arrive.
+    // Replace the series only when it actually changed (new last bucket
+    // or a different last close) — a wholesale replace every minute
+    // re-renders the whole chart and reads as a flicker.
     const refresh = setInterval(() => {
       if (!pairAddress || cancelled) return;
-      void fetchCandlesForTf(chainId, pairAddress, tf, 120).then((c) => {
-        if (!cancelled && c.length > 0) setCandles(c);
+      void fetchCandlesForTfWithMeta(chainId, pairAddress, tf, 120, marketAddress, {
+        candidatePairs: candidatePairsRef.current,
+        coingeckoId,
+      }).then((r) => {
+        if (!cancelled && r.candles.length > 0) {
+          setCandles((prev) => {
+            const next = r.candles;
+            if (
+              prev.length === next.length &&
+              prev.length > 0 &&
+              prev[prev.length - 1].time === next[next.length - 1].time &&
+              prev[prev.length - 1].close === next[next.length - 1].close
+            ) {
+              return prev;
+            }
+            return next;
+          });
+          setCandleMeta({ baseAddress: r.baseAddress, quoteAddress: r.quoteAddress, baseMatches: r.baseMatches });
+        }
       });
     }, CANDLE_REFRESH_MS);
     return () => {
@@ -212,6 +320,20 @@ export default function TokenDetail() {
   const change24h = tick?.change24h ?? market?.change24h ?? null;
   const change1h = market?.change1h ?? null;
   const change7d = market?.change7d ?? null; // DexScreener latest API does not return 7d change
+  // Price-scale guard: the rendered series must price THIS token in USD
+  // (Gecko OHLCV is the USD price of the pool's base token, and the
+  // CoinGecko fallback is USD too), so its last close must be within 20%
+  // of the header price. Either a >20% gap on a rendered series, or no
+  // usable series at all (baseMatches=false — e.g. every pool's base was
+  // another token), means the chart would be on the wrong scale: show the
+  // mismatch state instead of a $1 chart under a $553 header.
+  const chartScaleMismatch =
+    price !== null &&
+    pairAddress !== null &&
+    !candlesLoading &&
+    ((candles.length > 0 && !candlesMatchPrice(candles, price)) ||
+      (candles.length === 0 && !candleMeta.baseMatches));
+  const lastCandleClose = candles.length > 0 ? candles[candles.length - 1].close : null;
   const safety = useMemo(
     () =>
       market
@@ -224,6 +346,19 @@ export default function TokenDetail() {
         : null,
     [market, security],
   );
+  // The Safety Score renders exactly once, only after BOTH market data
+  // and GoPlus have resolved (or do not apply) — and it only changes
+  // afterwards when its underlying inputs actually change. That stops the
+  // transient 72 → 83 flip while the feeds were still arriving.
+  const safetyReady = marketDone && securityResolved;
+  const [shownSafety, setShownSafety] = useState<SafetyScore | null>(null);
+  useEffect(() => {
+    if (!safetyReady) return;
+    setShownSafety((prev) => {
+      if (JSON.stringify(prev) === JSON.stringify(safety)) return prev;
+      return safety;
+    });
+  }, [safetyReady, safety]);
   const balance = storeToken?.balance ?? 0;
   const locked = storeToken?.locked ?? 0;
   const name = storeToken?.name ?? market?.name ?? sym;
@@ -387,32 +522,48 @@ export default function TokenDetail() {
           <TogglePill label="RSI" on={showRsi} onPress={() => setShowRsi((v) => !v)} color={COLORS.mint} />
         </View>
         <View style={styles.indValues}>
-          <Text style={styles.indValue}>EMA7 {indicators.ema7 === null ? '—' : fmtPrice(indicators.ema7)}</Text>
-          <Text style={styles.indValue}>EMA25 {indicators.ema25 === null ? '—' : fmtPrice(indicators.ema25)}</Text>
+          <Text style={styles.indValue}>EMA7 {candlesLoading && candles.length === 0 ? 'Loading…' : indicators.ema7 === null ? '—' : fmtPrice(indicators.ema7)}</Text>
+          <Text style={styles.indValue}>EMA25 {candlesLoading && candles.length === 0 ? 'Loading…' : indicators.ema25 === null ? '—' : fmtPrice(indicators.ema25)}</Text>
           {showMacd ? (
             <Text style={styles.indValue}>
-              MACD {macd.macd === null ? '—' : fmtPrice(macd.macd)} · Sig {macd.signal === null ? '—' : fmtPrice(macd.signal)}
+              MACD {candlesLoading && candles.length === 0 ? 'Loading…' : macd.macd === null ? '—' : fmtPrice(macd.macd)} · Sig {candlesLoading && candles.length === 0 ? 'Loading…' : macd.signal === null ? '—' : fmtPrice(macd.signal)}
             </Text>
           ) : null}
         </View>
 
-        <PriceChart
-          candles={candles}
-          chartType={chartType}
-          showEma7={showEma}
-          showEma25={showEma}
-          showBollinger={showBb}
-          showVolume={showVol}
-          showMacd={showMacd}
-          seriesKey={`${chainId}:${pairAddress ?? 'none'}:${tf}`}
-          height={showMacd ? 250 : 210}
-        />
+        {chartScaleMismatch ? (
+          <View style={styles.mismatch}>
+            <Text style={styles.mismatchTitle}>Chart price does not match the live price — showing last known</Text>
+            <Text style={styles.mismatchBody}>
+              Live price {priceText(price)} · last candle {lastCandleClose === null ? '—' : fmtPrice(lastCandleClose)}. The pair feed is
+              pricing this token on a different scale, so the chart is hidden rather than shown wrong.
+            </Text>
+          </View>
+        ) : (
+          <PriceChart
+            candles={candles}
+            chartType={chartType}
+            showEma7={showEma}
+            showEma25={showEma}
+            showBollinger={showBb}
+            showVolume={showVol}
+            showMacd={showMacd}
+            seriesKey={`${chainId}:${pairAddress ?? 'none'}:${tf}`}
+            height={showMacd ? 250 : 210}
+            loading={candlesLoading}
+            updating={candlesUpdating}
+          />
+        )}
 
         {showRsi ? (
           <View style={styles.rsiRow}>
             <Text style={styles.rsiLabel}>RSI(14)</Text>
             <Text style={styles.rsiValue}>
-              {rsi === null ? '—' : `${rsi.toFixed(0)} — ${rsi > 70 ? 'Overbought' : rsi < 30 ? 'Oversold' : 'Neutral'}`}
+              {candlesLoading && candles.length === 0
+                ? 'Loading…'
+                : rsi === null
+                  ? '—'
+                  : `${rsi.toFixed(0)} — ${rsi > 70 ? 'Overbought' : rsi < 30 ? 'Oversold' : 'Neutral'}`}
             </Text>
           </View>
         ) : null}
@@ -421,14 +572,25 @@ export default function TokenDetail() {
           <Chip label={pctText(change24h)} tone={change24h === null ? 'muted' : up ? 'mint' : 'red'} />
         </View>
         <Text style={[styles.liveNote, liveState !== 'live' && styles.liveNoteWarn]}>{liveLabel}</Text>
-        {candlesStale ? (
+        {candlesStale && !candlesLoading && !chartScaleMismatch ? (
           <Text style={styles.liveNote}>No candles from the pair feed yet — the chart will appear once candles arrive.</Text>
         ) : null}
       </Card>
 
       <SectionTitle title="Safety Score" />
       <Card>
-        <SafetyScoreCard safety={safety} holderCount={security?.holderCount ?? null} />
+        {!safetyReady ? (
+          <View style={styles.safetySkeleton}>
+            <View style={[styles.skelCircle]} />
+            <View style={styles.safetySkelLines}>
+              <View style={[styles.skelBar, { width: '60%' }]} />
+              <View style={[styles.skelBar, { width: '85%' }]} />
+              <Text style={styles.safetySkelText}>Loading safety score…</Text>
+            </View>
+          </View>
+        ) : (
+          <SafetyScoreCard safety={shownSafety} holderCount={security?.holderCount ?? null} />
+        )}
       </Card>
 
       <Card dark style={styles.disciplineCard}>
@@ -562,7 +724,7 @@ export default function TokenDetail() {
             <DataRow label="Liquidity" value={market?.liquidityUsd === null || market?.liquidityUsd === undefined ? '—' : fmtUsd(market.liquidityUsd, 0)} />
             <DataRow label="Volume 24h" value={market?.volume24h === null || market?.volume24h === undefined ? '—' : fmtUsd(market.volume24h, 0)} />
             <DataRow label="Volume 1h" value="—" />
-            <DataRow label="RSI (14)" value={rsi === null ? '—' : `${rsi.toFixed(0)}`} />
+            <DataRow label="RSI (14)" value={candlesLoading && candles.length === 0 ? 'Loading…' : rsi === null ? '—' : `${rsi.toFixed(0)}`} />
           </Card>
 
           <SectionTitle title="Trading Activity (24h)" />
@@ -715,6 +877,14 @@ const styles = StyleSheet.create({
   liveNoteWarn: { color: COLORS.amber },
   missing: { backgroundColor: COLORS.bg, flex: 1, gap: 12, justifyContent: 'center', padding: 16 },
   missingBody: { color: COLORS.textMuted, fontSize: 12, lineHeight: 17 },
+  mismatch: {
+    backgroundColor: COLORS.amberSoft,
+    borderRadius: 12,
+    marginTop: 8,
+    padding: 12,
+  },
+  mismatchBody: { color: '#92400E', fontSize: 12, lineHeight: 17, marginTop: 4 },
+  mismatchTitle: { color: '#92400E', fontSize: 13, fontWeight: '800' },
   pill: {
     alignItems: 'center',
     borderColor: COLORS.border,
@@ -737,10 +907,15 @@ const styles = StyleSheet.create({
   rsiLabel: { color: COLORS.textMuted, fontSize: 12, fontWeight: '700' },
   rsiRow: { alignItems: 'center', borderTopColor: COLORS.border, borderTopWidth: 1, flexDirection: 'row', justifyContent: 'space-between', marginTop: 8, paddingTop: 8 },
   rsiValue: { color: COLORS.text, fontSize: 12, fontWeight: '700' },
+  safetySkelLines: { flex: 1, gap: 8 },
+  safetySkelText: { color: COLORS.textMuted, fontSize: 11 },
+  safetySkeleton: { alignItems: 'center', flexDirection: 'row', gap: 14 },
   segBtn: { borderRadius: 999, paddingHorizontal: 10, paddingVertical: 5 },
   segBtnOn: { backgroundColor: COLORS.navy },
   segText: { color: COLORS.textMuted, fontSize: 12, fontWeight: '700' },
   segTextOn: { color: '#fff' },
+  skelBar: { backgroundColor: COLORS.bgMuted, borderRadius: 6, height: 12 },
+  skelCircle: { backgroundColor: COLORS.bgMuted, borderRadius: 999, height: 84, width: 84 },
   statCard: {
     borderColor: COLORS.border,
     borderRadius: 12,
