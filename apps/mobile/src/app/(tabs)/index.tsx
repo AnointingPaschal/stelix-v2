@@ -2,8 +2,15 @@
  *  right, navy portfolio card, 5 actions in a white card, My Assets list
  *  with Import, bottom tabs Home/Swap/Discover/History/Settings.
  *  Plus v2-only, in v1 style: Spendable vs Locked split inside the card.
- *  All figures come from the store — a new wallet shows $0.00 / 0 tokens. */
-import { useState } from 'react';
+ *  All figures come from the store — a new wallet shows $0.00 / 0 tokens.
+ *
+ *  Import Token sheet: pasting a contract address fetches the token FIRST
+ *  (on-chain symbol/name/decimals + real logo + live price) and shows a
+ *  preview card — large logo, name, symbol, decimals, chain, contract
+ *  address — before "Import Token" can be tapped. A missing logo shows
+ *  the letter fallback plus a "Logo not found" note; an unreadable
+ *  contract shows a visible inline error, never a silent failure. */
+import { useEffect, useRef, useState } from 'react';
 import { Pressable, RefreshControl, ScrollView, StyleSheet, Text, TextInput, View } from 'react-native';
 import { router } from 'expo-router';
 import {
@@ -11,6 +18,7 @@ import {
   ArrowUpRight,
   ChevronDown,
   ChevronRight,
+  Copy,
   Eye,
   EyeOff,
   History,
@@ -21,8 +29,10 @@ import {
 import * as Clipboard from 'expo-clipboard';
 import { COLORS } from '../../theme';
 import { useApp } from '../../store/AppContext';
-import { fmtNum, fmtUsd, shortAddress } from '../../lib/format';
+import { fmtNum, fmtPrice, fmtUsd, shortAddress } from '../../lib/format';
 import { addImportedToken, resolveTokenMetadata } from '../../lib/balances';
+import { fetchDexScreenerToken } from '../../lib/prices';
+import { resolveTokenLogo } from '../../lib/tokenLogos';
 import {
   BottomSheet,
   Btn,
@@ -35,6 +45,15 @@ import {
   SectionTitle,
 } from '../../components/ui';
 import { TokenRow } from '../../components/TokenRow';
+import { TokenLogo } from '../../components/TokenLogo';
+
+interface ImportPreview {
+  symbol: string;
+  name: string;
+  decimals: number;
+  logoUrl: string | null;
+  priceUsd: number | null;
+}
 
 export default function Home() {
   const { address, chain, tokens, locks, refreshAll, refreshBalances } = useApp();
@@ -47,6 +66,63 @@ export default function Home() {
   const [importAddr, setImportAddr] = useState('');
   const [importMsg, setImportMsg] = useState('');
   const [importing, setImporting] = useState(false);
+  const [importPreview, setImportPreview] = useState<ImportPreview | null>(null);
+  const [previewLoading, setPreviewLoading] = useState(false);
+  const previewTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  useEffect(() => {
+    return () => {
+      if (previewTimer.current) clearTimeout(previewTimer.current);
+    };
+  }, []);
+
+  /** Fetch the token BEFORE it can be imported: on-chain metadata + real
+   *  logo + live price. Shows a preview card; errors are inline. */
+  async function fetchImportPreview(a: string) {
+    setPreviewLoading(true);
+    setImportMsg('');
+    setImportPreview(null);
+    try {
+      const [meta, logo, market] = await Promise.all([
+        resolveTokenMetadata(chain, a),
+        resolveTokenLogo(chain.id, a).catch(() => ({ url: null as string | null, source: 'none' as const })),
+        fetchDexScreenerToken(chain.id, a).catch(() => null),
+      ]);
+      setImportPreview({
+        symbol: meta.symbol,
+        name: meta.name,
+        decimals: meta.decimals,
+        logoUrl: logo.url,
+        priceUsd: market?.priceUsd ?? null,
+      });
+    } catch (e) {
+      setImportMsg(
+        `Could not read that contract on ${chain.name} — it may not be a token contract. ${e instanceof Error ? e.message : ''}`,
+      );
+    } finally {
+      setPreviewLoading(false);
+    }
+  }
+
+  function onImportAddrChange(v: string) {
+    setImportAddr(v);
+    setImportMsg('');
+    setImportPreview(null);
+    if (previewTimer.current) clearTimeout(previewTimer.current);
+    const a = v.trim();
+    if (/^0x[0-9a-fA-F]{40}$/.test(a)) {
+      // Small debounce so a paste fires once, not per keystroke.
+      previewTimer.current = setTimeout(() => void fetchImportPreview(a), 400);
+    }
+  }
+
+  function resetImportSheet() {
+    setImportAddr('');
+    setImportMsg('');
+    setImportPreview(null);
+    setPreviewLoading(false);
+    setImporting(false);
+  }
 
   const visible = tokens.filter((t) => !t.isSpam || showSpam);
   const priceOf = (t: { price: number | null }) => t.price ?? 0;
@@ -73,16 +149,27 @@ export default function Home() {
       setImportMsg('Enter a valid contract address (0x followed by 40 hex characters).');
       return;
     }
+    // The Import button is only enabled once a preview has loaded, so the
+    // user has seen the real logo + name + symbol before anything is added.
+    if (!importPreview) {
+      setImportMsg('Still fetching the token — wait for the preview, then tap Import Token.');
+      return;
+    }
     setImporting(true);
     setImportMsg('');
     try {
-      // Resolve symbol/name/decimals live from the chain, save to the
-      // imported-token list, then re-read balances.
-      const meta = await resolveTokenMetadata(chain, a);
-      await addImportedToken({ chainId: chain.id, address: a, ...meta });
+      await addImportedToken({
+        chainId: chain.id,
+        address: a,
+        symbol: importPreview.symbol,
+        name: importPreview.name,
+        decimals: importPreview.decimals,
+        logoUrl: importPreview.logoUrl,
+      });
       await refreshBalances();
-      setImportMsg(`Imported ${meta.symbol} (${meta.name}).`);
+      setImportMsg(`Imported ${importPreview.symbol} (${importPreview.name}).`);
       setImportAddr('');
+      setImportPreview(null);
     } catch (e) {
       setImportMsg(`Could not import that token: ${e instanceof Error ? e.message : String(e)}`);
     } finally {
@@ -238,21 +325,62 @@ export default function Home() {
         <Text style={styles.sheetHint}>Tap the wallet to copy its address.</Text>
       </BottomSheet>
 
-      <BottomSheet visible={importOpen} onClose={() => setImportOpen(false)} title="Import Token">
-        <Text style={styles.sheetHint}>Paste the contract address. We will fetch details automatically.</Text>
+      <BottomSheet
+        visible={importOpen}
+        onClose={() => {
+          setImportOpen(false);
+          resetImportSheet();
+        }}
+        title="Import Token"
+      >
+        <Text style={styles.sheetHint}>Paste the contract address. We will fetch the token first so you can confirm it before importing.</Text>
         <TextInput
           style={styles.importInput}
           placeholder="Contract Address (0x…)"
           autoCapitalize="none"
           autoCorrect={false}
           value={importAddr}
-          onChangeText={(v) => {
-            setImportAddr(v);
-            setImportMsg('');
-          }}
+          onChangeText={onImportAddrChange}
         />
+        {previewLoading ? <Text style={styles.previewLoading}>Fetching token details…</Text> : null}
+        {importPreview ? (
+          <View style={styles.previewCard}>
+            <TokenLogo
+              chainId={chain.id}
+              address={importAddr.trim()}
+              symbol={importPreview.symbol}
+              size={64}
+              logoUrl={importPreview.logoUrl}
+            />
+            <View style={styles.previewMid}>
+              <Text style={styles.previewName}>{importPreview.name}</Text>
+              <Text style={styles.previewSub}>
+                {importPreview.symbol} · {importPreview.decimals} decimals · {chain.name}
+              </Text>
+              <Pressable
+                style={styles.previewAddrRow}
+                onPress={() => void Clipboard.setStringAsync(importAddr.trim())}
+                hitSlop={6}
+              >
+                <Text style={styles.previewAddr}>{shortAddress(importAddr.trim())}</Text>
+                <Copy size={12} color={COLORS.textMuted} />
+              </Pressable>
+              <Text style={styles.previewPrice}>
+                {importPreview.priceUsd === null ? 'Price unavailable' : fmtPrice(importPreview.priceUsd)}
+              </Text>
+            </View>
+          </View>
+        ) : null}
+        {importPreview && !importPreview.logoUrl ? (
+          <Text style={styles.logoWarn}>Logo not found — please check the contract address. Name and symbol were read from the contract.</Text>
+        ) : null}
         {importMsg ? <Text style={styles.importErr}>{importMsg}</Text> : null}
-        <Btn label={importing ? 'Importing…' : 'Import Token'} onPress={submitImport} disabled={!importAddr.trim() || importing} style={styles.importSubmit} />
+        <Btn
+          label={importing ? 'Importing…' : 'Import Token'}
+          onPress={submitImport}
+          disabled={!importPreview || importing || previewLoading}
+          style={styles.importSubmit}
+        />
       </BottomSheet>
     </ScrollView>
   );
@@ -313,6 +441,32 @@ const styles = StyleSheet.create({
     padding: 12,
   },
   importSubmit: { marginTop: 12 },
+  logoWarn: {
+    backgroundColor: COLORS.amberSoft,
+    borderRadius: 12,
+    color: '#92400E',
+    fontSize: 12,
+    lineHeight: 17,
+    marginTop: 10,
+    padding: 10,
+  },
+  previewAddr: { color: COLORS.textMuted, fontSize: 12, fontWeight: '700' },
+  previewAddrRow: { alignItems: 'center', flexDirection: 'row', gap: 4, marginTop: 4 },
+  previewCard: {
+    alignItems: 'center',
+    borderColor: COLORS.border,
+    borderRadius: 16,
+    borderWidth: 1,
+    flexDirection: 'row',
+    gap: 12,
+    marginTop: 12,
+    padding: 12,
+  },
+  previewLoading: { color: COLORS.textMuted, fontSize: 12, marginTop: 8 },
+  previewMid: { flex: 1 },
+  previewName: { color: COLORS.text, fontSize: 15, fontWeight: '800' },
+  previewPrice: { color: COLORS.text, fontSize: 13, fontWeight: '800', marginTop: 4 },
+  previewSub: { color: COLORS.textMuted, fontSize: 12, marginTop: 2 },
   inner: { padding: 12 },
   lockNote: { color: COLORS.textOnNavyMuted, fontSize: 11, marginTop: 8 },
   netDot: { backgroundColor: COLORS.mint, borderRadius: 999, height: 8, width: 8 },

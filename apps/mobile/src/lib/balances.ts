@@ -35,6 +35,8 @@ export interface ImportedToken {
   name: string;
   decimals: number;
   coingeckoId?: string;
+  /** Logo URL verified at import time (user saw it in the preview card). */
+  logoUrl?: string | null;
 }
 
 export interface TokenBalance {
@@ -52,6 +54,8 @@ export interface TokenBalance {
   priceSource: 'dexscreener' | 'coingecko' | 'unavailable';
   priceUpdatedAt: number | null;
   coingeckoId?: string;
+  /** Verified logo URL (imported tokens) — null = no logo found anywhere. */
+  logoUrl?: string | null;
   isSpam: boolean; // true only when flagged by the dust/spam filter (see history.ts)
 }
 
@@ -173,6 +177,7 @@ async function fetchErc20Balance(
     priceSource: 'unavailable',
     priceUpdatedAt: null,
     coingeckoId: token.coingeckoId,
+    logoUrl: token.logoUrl ?? null,
     isSpam: false,
   };
 }

@@ -12,6 +12,7 @@ import { useApp } from '../store/AppContext';
 import { fmtNum, fmtUsd } from '../lib/format';
 import { isValidEvmAddress } from '../lib/wallet';
 import { BottomSheet, Btn, RiskNote, ScreenHeader } from '../components/ui';
+import { TokenLogo } from '../components/TokenLogo';
 
 export default function Send() {
   const { tokens, chain } = useApp();
@@ -93,9 +94,13 @@ export default function Send() {
 
       <Text style={styles.label}>Asset</Text>
       <Pressable style={styles.assetCard} onPress={() => setPickerOpen(true)}>
-        <View style={styles.assetAvatar}>
-          <Text style={styles.assetAvatarText}>{(token?.symbol ?? '?').slice(0, 1)}</Text>
-        </View>
+        {token ? (
+          <TokenLogo chainId={token.chainId} address={token.address} symbol={token.symbol} size={36} fallbackTone="light" logoUrl={token.logoUrl} />
+        ) : (
+          <View style={styles.assetAvatar}>
+            <Text style={styles.assetAvatarText}>?</Text>
+          </View>
+        )}
         <View style={styles.assetMid}>
           <Text style={styles.assetName}>{token?.symbol ?? '—'}</Text>
           <Text style={styles.assetSub}>Native Token</Text>
@@ -162,9 +167,7 @@ export default function Send() {
               setPickerOpen(false);
             }}
           >
-            <View style={styles.assetAvatar}>
-              <Text style={styles.assetAvatarText}>{t.symbol.slice(0, 1)}</Text>
-            </View>
+            <TokenLogo chainId={t.chainId} address={t.address} symbol={t.symbol} size={36} fallbackTone="light" logoUrl={t.logoUrl} />
             <View style={styles.assetMid}>
               <Text style={styles.assetName}>{t.symbol}</Text>
               <Text style={styles.assetSub}>{t.name}</Text>

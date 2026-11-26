@@ -14,6 +14,7 @@ import { useApp } from '../../store/AppContext';
 import { fmtPct, fmtPrice, fmtUsd } from '../../lib/format';
 import { fetchTrending, searchTokens, type DiscoverToken } from '../../lib/discover';
 import { EmptyState } from '../../components/ui';
+import { TokenLogo } from '../../components/TokenLogo';
 
 type Tab = 'trending' | 'gainers' | 'top';
 
@@ -167,9 +168,7 @@ export default function Discover() {
             }
           >
             <Text style={styles.rank}>{i + 1}</Text>
-            <View style={styles.avatar}>
-              <Text style={styles.avatarText}>{t.symbol.slice(0, 1)}</Text>
-            </View>
+            <TokenLogo chainId={t.chainId} address={t.address} symbol={t.symbol} size={36} fallbackTone="light" />
             <View style={styles.mid}>
               <Text style={styles.name}>{t.symbol}</Text>
               <Text style={styles.sub} numberOfLines={1}>
@@ -195,17 +194,6 @@ export default function Discover() {
 }
 
 const styles = StyleSheet.create({
-  avatar: {
-    alignItems: 'center',
-    backgroundColor: COLORS.bgMuted,
-    borderColor: COLORS.border,
-    borderRadius: 999,
-    borderWidth: 1,
-    height: 36,
-    justifyContent: 'center',
-    width: 36,
-  },
-  avatarText: { color: COLORS.text, fontSize: 14, fontWeight: '800' },
   blockHead: { alignItems: 'center', flexDirection: 'row', gap: 10, marginTop: 12 },
   blockIcon: {
     alignItems: 'center',

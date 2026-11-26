@@ -13,6 +13,7 @@ import { fetchTokenMarketData } from '../../lib/prices';
 import { executeSwap, getSwapQuote, SwapExecutionNotWiredError } from '../../lib/swap';
 import { VAULT_DEFAULTS } from '../../lib/chains';
 import { BottomSheet, Btn, Card, NetworkSheet, RiskNote } from '../../components/ui';
+import { TokenLogo } from '../../components/TokenLogo';
 
 export default function Swap() {
   const { tokens, chain } = useApp();
@@ -132,9 +133,13 @@ export default function Swap() {
             </View>
             <View style={styles.payRow}>
               <Pressable style={styles.tokenBtn} onPress={() => setPickSide('from')}>
-                <View style={styles.tokenAvatar}>
-                  <Text style={styles.tokenAvatarText}>{(fromToken?.symbol ?? '?').slice(0, 1)}</Text>
-                </View>
+                {fromToken ? (
+                  <TokenLogo chainId={fromToken.chainId} address={fromToken.address} symbol={fromToken.symbol} size={28} fallbackTone="light" logoUrl={fromToken.logoUrl} />
+                ) : (
+                  <View style={styles.tokenAvatar}>
+                    <Text style={styles.tokenAvatarText}>?</Text>
+                  </View>
+                )}
                 <Text style={styles.tokenSymbol}>{fromToken?.symbol ?? '—'}</Text>
                 <ChevronDown size={14} color={COLORS.textMuted} />
               </Pressable>
@@ -167,9 +172,13 @@ export default function Swap() {
             <Text style={styles.cardLabel}>You Receive</Text>
             <View style={styles.payRow}>
               <Pressable style={styles.tokenBtn} onPress={() => setPickSide('to')}>
-                <View style={styles.tokenAvatar}>
-                  <Text style={styles.tokenAvatarText}>{(toToken?.symbol ?? '?').slice(0, 1)}</Text>
-                </View>
+                {toToken ? (
+                  <TokenLogo chainId={toToken.chainId} address={toToken.address} symbol={toToken.symbol} size={28} fallbackTone="light" logoUrl={toToken.logoUrl} />
+                ) : (
+                  <View style={styles.tokenAvatar}>
+                    <Text style={styles.tokenAvatarText}>{to.slice(0, 1)}</Text>
+                  </View>
+                )}
                 <Text style={styles.tokenSymbol}>{toToken?.symbol ?? '—'}</Text>
                 <ChevronDown size={14} color={COLORS.textMuted} />
               </Pressable>
@@ -228,9 +237,7 @@ export default function Swap() {
               setPickSide(null);
             }}
           >
-            <View style={styles.tokenAvatar}>
-              <Text style={styles.tokenAvatarText}>{t.symbol.slice(0, 1)}</Text>
-            </View>
+            <TokenLogo chainId={t.chainId} address={t.address} symbol={t.symbol} size={28} fallbackTone="light" logoUrl={t.logoUrl} />
             <View style={styles.pickMid}>
               <Text style={styles.pickName}>{t.symbol}</Text>
               <Text style={styles.pickSub}>{t.name}</Text>

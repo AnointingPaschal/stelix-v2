@@ -10,6 +10,7 @@ import type { TokenBalance } from '../lib/balances';
 import type { BullLock } from '../lib/vault';
 import { targetProgress } from '../lib/vault';
 import { Chip, ProgressBar } from './ui';
+import { TokenLogo } from './TokenLogo';
 
 export function TokenRow({
   token,
@@ -23,9 +24,7 @@ export function TokenRow({
   const value = token.balance * (token.price ?? 0);
   return (
     <Pressable onPress={onPress} style={({ pressed }) => [styles.row, pressed && { opacity: 0.7 }]}>
-      <View style={styles.avatar}>
-        <Text style={styles.avatarText}>{token.symbol.slice(0, 1)}</Text>
-      </View>
+      <TokenLogo chainId={token.chainId} address={token.address} symbol={token.symbol} size={44} logoUrl={token.logoUrl} />
       <View style={styles.mid}>
         <View style={styles.nameRow}>
           <Text style={styles.name}>{token.symbol}</Text>
@@ -78,9 +77,7 @@ export function LockCard({
   return (
     <Pressable onPress={onPress} style={({ pressed }) => [styles.lockCard, pressed && { opacity: 0.8 }]}>
       <View style={styles.lockTop}>
-        <View style={styles.avatar}>
-          <Text style={styles.avatarText}>{lock.tokenSymbol.slice(0, 1)}</Text>
-        </View>
+        <TokenLogo chainId={lock.chainId} address={lock.tokenAddress} symbol={lock.tokenSymbol} size={44} />
         <View style={styles.mid}>
           <Text style={styles.name}>{lock.tokenSymbol}</Text>
           <Text style={styles.sub}>
@@ -114,15 +111,6 @@ export function LockCard({
 }
 
 const styles = StyleSheet.create({
-  avatar: {
-    alignItems: 'center',
-    backgroundColor: COLORS.navy,
-    borderRadius: 999,
-    height: 44,
-    justifyContent: 'center',
-    width: 44,
-  },
-  avatarText: { color: '#fff', fontSize: 16, fontWeight: '800' },
   balance: { color: COLORS.textMuted, fontSize: 12, marginTop: 2, textAlign: 'right' },
   changePill: {
     borderRadius: 999,

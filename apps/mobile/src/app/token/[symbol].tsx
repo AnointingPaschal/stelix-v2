@@ -28,6 +28,7 @@ import { getChain } from '../../lib/chains';
 import { fmtDate, fmtNum, fmtPct, fmtPrice, fmtUsd } from '../../lib/format';
 import { Btn, Card, Chip, EmptyState, ProgressBar, RiskNote, SectionTitle } from '../../components/ui';
 import { PriceChart } from '../../components/PriceChart';
+import { TokenLogo } from '../../components/TokenLogo';
 
 type Tf = '5m' | '15m' | '1h' | '4h' | '1d';
 const TFS: Tf[] = ['5m', '15m', '1h', '4h', '1d'];
@@ -177,9 +178,7 @@ export default function TokenDetail() {
           <ChevronLeft size={22} color={COLORS.text} />
         </Pressable>
         <View style={styles.headToken}>
-          <View style={styles.avatar}>
-            <Text style={styles.avatarText}>{sym.slice(0, 1)}</Text>
-          </View>
+          <TokenLogo chainId={chainId} address={address} symbol={sym} size={36} logoUrl={storeToken?.logoUrl} />
           <View>
             <Text style={styles.title}>{sym}</Text>
             <Text style={styles.sub}>{name}</Text>
@@ -512,15 +511,6 @@ const styles = StyleSheet.create({
     paddingVertical: 10,
   },
   amountSym: { color: '#fff', fontSize: 14, fontWeight: '700' },
-  avatar: {
-    alignItems: 'center',
-    backgroundColor: COLORS.navy,
-    borderRadius: 999,
-    height: 36,
-    justifyContent: 'center',
-    width: 36,
-  },
-  avatarText: { color: '#fff', fontSize: 14, fontWeight: '800' },
   chartCard: { marginTop: 12 },
   chartFoot: { alignItems: 'center', flexDirection: 'row', gap: 8, marginTop: 8 },
   chartHead: { alignItems: 'center', flexDirection: 'row', gap: 8 },
