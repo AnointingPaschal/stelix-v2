@@ -1,10 +1,12 @@
-/** Token row + lock card shared by Home, Discover and Vault Hub. */
+/** Token row + lock card shared by Home, Discover and Vault Hub.
+ *  v1 layout: navy circle with the token's FIRST letter, symbol 14 bold,
+ *  price + 24h pill underneath, value right-aligned with balance below. */
 import React from 'react';
 import { Pressable, StyleSheet, Text, View } from 'react-native';
-import { Lock } from 'lucide-react-native';
+import { ChevronRight, Lock } from 'lucide-react-native';
 import { COLORS } from '../theme';
-import { fmtNum, fmtPct, fmtPrice, fmtUsd, timeLeft } from '../lib/format';
-import type { DemoToken } from '../lib/demoData';
+import { fmtNum, fmtPrice, fmtUsd, timeLeft } from '../lib/format';
+import type { TokenBalance } from '../lib/balances';
 import type { BullLock } from '../lib/vault';
 import { targetProgress } from '../lib/vault';
 import { Chip, ProgressBar } from './ui';
@@ -13,28 +15,30 @@ export function TokenRow({
   token,
   onPress,
 }: {
-  token: DemoToken;
+  token: TokenBalance;
   onPress: () => void;
 }) {
-  const value = token.balance * token.price;
-  const lockedValue = token.locked * token.price;
-  const up = token.change24h >= 0;
+  // TokenBalance carries no 24h change — the row shows the live price
+  // (or "—" when no live price is available) and never an invented move.
+  const value = token.balance * (token.price ?? 0);
   return (
     <Pressable onPress={onPress} style={({ pressed }) => [styles.row, pressed && { opacity: 0.7 }]}>
       <View style={styles.avatar}>
-        <Text style={styles.avatarText}>{token.symbol.slice(0, 2)}</Text>
+        <Text style={styles.avatarText}>{token.symbol.slice(0, 1)}</Text>
       </View>
       <View style={styles.mid}>
         <View style={styles.nameRow}>
           <Text style={styles.name}>{token.symbol}</Text>
           {token.locked > 0 && <Lock size={12} color={COLORS.mintDark} />}
         </View>
-        <Text style={styles.sub}>{token.name}</Text>
+        <View style={styles.priceRow}>
+          <Text style={styles.price}>{token.price === null ? 'Price unavailable' : fmtPrice(token.price)}</Text>
+        </View>
       </View>
       <View style={styles.right}>
-        <Text style={styles.value}>{fmtUsd(value + lockedValue)}</Text>
-        <Text style={[styles.change, { color: up ? COLORS.mintDark : COLORS.red }]}>
-          {fmtPct(token.change24h)}
+        <Text style={styles.value}>{fmtUsd(value)}</Text>
+        <Text style={styles.balance}>
+          {fmtNum(token.balance, 4)} {token.symbol}
         </Text>
       </View>
     </Pressable>
@@ -52,41 +56,58 @@ export function LockCard({
 }) {
   const value = lock.amountRemaining * currentPrice;
   const progress = lock.targetPrice ? targetProgress(lock, currentPrice) : 0;
-  const statusTone =
+  const matured = Date.now() >= lock.unlockTime;
+  const statusLabel =
     lock.status === 'completed'
-      ? 'mint'
-      : lock.status === 'matured'
-        ? 'amber'
+      ? 'Completed'
+      : lock.status === 'matured' || matured
+        ? 'Matured'
         : lock.status === 'partially-sold'
-          ? 'mint'
+          ? 'Partially sold'
+          : lock.status === 'broken'
+            ? 'Broken'
+            : 'Active';
+  const statusTone =
+    lock.status === 'completed' || lock.status === 'partially-sold'
+      ? 'mint'
+      : matured || lock.status === 'matured'
+        ? 'mint'
+        : lock.status === 'broken'
+          ? 'red'
           : 'navy';
   return (
     <Pressable onPress={onPress} style={({ pressed }) => [styles.lockCard, pressed && { opacity: 0.8 }]}>
       <View style={styles.lockTop}>
         <View style={styles.avatar}>
-          <Text style={styles.avatarText}>{lock.tokenSymbol.slice(0, 2)}</Text>
+          <Text style={styles.avatarText}>{lock.tokenSymbol.slice(0, 1)}</Text>
         </View>
         <View style={styles.mid}>
-          <Text style={styles.name}>
-            {fmtNum(lock.amountRemaining)} {lock.tokenSymbol}
-          </Text>
+          <Text style={styles.name}>{lock.tokenSymbol}</Text>
           <Text style={styles.sub}>
-            {lock.targetMultiple ? `Target ${lock.targetMultiple}x` : 'Date lock'} ·{' '}
-            {lock.status === 'completed' ? 'Completed' : timeLeft(lock.unlockTime - Date.now())}
+            {fmtNum(lock.amountRemaining, 4)} {lock.tokenSymbol} ·{' '}
+            {lock.targetMultiple ? `${lock.targetMultiple}x target` : 'Date lock'}
           </Text>
         </View>
-        <Chip label={lock.status.replace('-', ' ')} tone={statusTone} />
+        <Chip label={statusLabel} tone={statusTone} />
+        <ChevronRight size={16} color={COLORS.textMuted} />
       </View>
       <View style={styles.lockBottom}>
         <Text style={styles.value}>{fmtUsd(value)}</Text>
-        {lock.targetPrice && (
+        <Text style={styles.sub}>
+          {lock.status === 'completed'
+            ? 'Completed'
+            : matured
+              ? 'Matured — claim available'
+              : timeLeft(lock.unlockTime - Date.now())}
+        </Text>
+        {lock.targetPrice ? (
           <View style={styles.progressWrap}>
             <ProgressBar value={progress} />
             <Text style={styles.progressLabel}>
               {fmtPrice(currentPrice)} / {fmtPrice(lock.targetPrice)} · {Math.round(progress * 100)}% to target
             </Text>
           </View>
-        )}
+        ) : null}
       </View>
     </Pressable>
   );
@@ -97,25 +118,35 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     backgroundColor: COLORS.navy,
     borderRadius: 999,
-    height: 40,
+    height: 44,
     justifyContent: 'center',
-    width: 40,
+    width: 44,
   },
-  avatarText: { color: '#fff', fontSize: 13, fontWeight: '800' },
-  change: { fontSize: 13, fontWeight: '700', marginTop: 2, textAlign: 'right' },
-  lockBottom: { marginTop: 12 },
+  avatarText: { color: '#fff', fontSize: 16, fontWeight: '800' },
+  balance: { color: COLORS.textMuted, fontSize: 12, marginTop: 2, textAlign: 'right' },
+  changePill: {
+    borderRadius: 999,
+    fontSize: 11,
+    fontWeight: '700',
+    overflow: 'hidden',
+    paddingHorizontal: 6,
+    paddingVertical: 2,
+  },
+  lockBottom: { marginTop: 10 },
   lockCard: {
     backgroundColor: '#fff',
     borderColor: COLORS.border,
     borderRadius: 16,
     borderWidth: 1,
-    marginBottom: 10,
-    padding: 14,
+    marginBottom: 8,
+    padding: 12,
   },
-  lockTop: { alignItems: 'center', flexDirection: 'row', gap: 12 },
+  lockTop: { alignItems: 'center', flexDirection: 'row', gap: 10 },
   mid: { flex: 1 },
-  name: { color: COLORS.text, fontSize: 15, fontWeight: '700' },
+  name: { color: COLORS.text, fontSize: 14, fontWeight: '700' },
   nameRow: { alignItems: 'center', flexDirection: 'row', gap: 6 },
+  price: { color: COLORS.textMuted, fontSize: 12 },
+  priceRow: { alignItems: 'center', flexDirection: 'row', gap: 6, marginTop: 2 },
   progressLabel: { color: COLORS.textMuted, fontSize: 11, marginTop: 6 },
   progressWrap: { marginTop: 8 },
   right: { alignItems: 'flex-end' },
@@ -128,5 +159,5 @@ const styles = StyleSheet.create({
     paddingVertical: 12,
   },
   sub: { color: COLORS.textMuted, fontSize: 12, marginTop: 2 },
-  value: { color: COLORS.text, fontSize: 15, fontWeight: '700' },
+  value: { color: COLORS.text, fontSize: 14, fontWeight: '700' },
 });
