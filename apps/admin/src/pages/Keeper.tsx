@@ -1,12 +1,46 @@
 import { useEffect, useState } from 'react'
 import { Activity, AlertTriangle, Pause, Play, Wallet } from 'lucide-react'
-import { api } from '../lib/api'
+import { api, type KeeperStatus } from '../lib/api'
 import type { KeeperRun } from '../lib/types'
-import { DemoPill, LiveNote, PageHeader, SectionTitle, StatCard } from '../components/ui'
+import { LiveNote, PageHeader, SectionTitle, StatCard } from '../components/ui'
 
 export default function Keeper() {
   const [runs, setRuns] = useState<KeeperRun[]>([])
-  useEffect(() => { api.getKeeperRuns().then(setRuns) }, [])
+  const [status, setStatus] = useState<KeeperStatus | null>(null)
+  const [error, setError] = useState('')
+  const [notice, setNotice] = useState('')
+  const [busy, setBusy] = useState(false)
+
+  const load = () => {
+    api.getKeeperRuns().then(setRuns).catch((e: Error) => setError(e.message))
+    api.getKeeperStatus().then(setStatus).catch((e: Error) => setError(e.message))
+  }
+  useEffect(load, [])
+
+  const runNow = async () => {
+    setBusy(true); setError(''); setNotice('')
+    try {
+      const r = await api.keeperRunNow()
+      if (r.live) setNotice('Keeper run triggered. Check the runs list for the new entry.')
+      else setNotice(r.message ?? 'Keeper is not live yet.')
+      load()
+    } catch (e) { setError(e instanceof Error ? e.message : 'Run Now failed.') }
+    setBusy(false)
+  }
+
+  const togglePause = async () => {
+    if (!status) return
+    setBusy(true); setError(''); setNotice('')
+    try {
+      const r = await api.keeperPause(!status.paused)
+      setNotice(r.paused ? 'Keeper paused. No triggers will run until you resume it.' : 'Keeper resumed.')
+      load()
+    } catch (e) { setError(e instanceof Error ? e.message : 'Pause failed.') }
+    setBusy(false)
+  }
+
+  const lastRun = status?.lastRun
+
   return (
     <div>
       <PageHeader
@@ -16,22 +50,52 @@ export default function Keeper() {
         pill={<LiveNote />}
         actions={
           <>
-            <button className="btn mint" onClick={() => alert('Demo: POST /api/admin/keeper/run-now in production.')}>
+            <button className="btn mint" onClick={runNow} disabled={busy || status?.paused}>
               <Play />Run now
             </button>
-            <button className="btn ghost" onClick={() => alert('Demo: keeper pause writes to D1 in production.')}>
-              <Pause />Pause keeper
+            <button className="btn ghost" onClick={togglePause} disabled={busy}>
+              <Pause />{status?.paused ? 'Resume keeper' : 'Pause keeper'}
             </button>
           </>
         }
       />
+      {error && <div className="notice alert"><AlertTriangle /><span>{error}</span></div>}
+      {notice && <div className="notice ok"><Activity /><span>{notice}</span></div>}
+      {status && !status.keeperLive && (
+        <div className="notice info">
+          <Activity />
+          <span><b>Keeper worker is not live yet.</b> Run Now will say so honestly and record nothing until the keeper Worker is deployed and KEEPER_WORKER_URL is set. Runs below are the real recorded runs (none yet if the list is empty).</span>
+        </div>
+      )}
+      {status?.paused && (
+        <div className="notice alert">
+          <Pause />
+          <span><b>Keeper is paused.</b> Price targets will not trigger until you resume it. Locks stay locked; owners can still claim matured locks themselves.</span>
+        </div>
+      )}
       <div className="grid grid3">
-        <StatCard icon={<Wallet />} label="Keeper balance — Arc" value="$0.00" pill={<DemoPill />} />
-        <StatCard icon={<Wallet />} label="Keeper balance — BNB" value="$0.00" tone="navy" pill={<DemoPill />} />
-        <StatCard icon={<AlertTriangle />} label="Missed runs" value="0" tone="amber" pill={<DemoPill />} />
+        <StatCard
+          icon={<Wallet />}
+          label="Keeper wallet"
+          value={status?.keeperAddress ? `${status.keeperAddress.slice(0, 10)}…${status.keeperAddress.slice(-6)}` : 'Not set'}
+          smallValue
+          pill={<LiveNote />}
+        />
+        <StatCard
+          icon={<Wallet />}
+          label="Keeper balances"
+          value={status && status.balances.length > 0 ? status.balances.map((b) => `${b.chain}: ${b.balance}`).join(' · ') : 'No balances yet'}
+          smallValue
+          tone="navy"
+          pill={<LiveNote />}
+        />
+        <StatCard icon={<AlertTriangle />} label="Failed runs (24h)" value={String(status?.failedRuns24h ?? 0)} tone="amber" pill={<LiveNote />} />
       </div>
       <div className="card">
         <SectionTitle icon={<Activity />}>Recent runs</SectionTitle>
+        {lastRun && (
+          <p className="muted">Last run: {lastRun.started_at} on {lastRun.chain_id} — {lastRun.locks_checked} locks checked, {lastRun.executed} executed, {lastRun.failed} failed.</p>
+        )}
         {runs.length === 0 ? (
           <p className="empty">No keeper runs yet.</p>
         ) : (
