@@ -19,6 +19,7 @@
  */
 import { ethers } from 'ethers';
 import { getChain, requireVaultAddress, VAULT_NOT_DEPLOYED_MESSAGE } from './chains';
+import { fmtPrice } from './format';
 
 /** Minimal StelixVault ABI — only the functions the app calls.
  *  Matches contracts/src/StelixVault.sol exactly (createLock with a
@@ -528,12 +529,12 @@ export function lockSummarySentence(lock: BullLock, exitLabel: string): string {
     const pct = lock.ladder.length > 0 ? 'the due ladder stage' : '100%';
     return (
       `These funds cannot be spent until ${date}, unless ${lock.targetMultiple}x ` +
-      `($${lock.targetPrice.toFixed(2)}) is reached, when ${pct} will be sold ${exitLabel} automatically.`
+      `(${fmtPrice(lock.targetPrice)}) is reached, when ${pct} will be sold ${exitLabel} automatically.`
     );
   }
   return (
     `These funds cannot be spent until ${date}, unless ${lock.targetMultiple}x ` +
-    `($${lock.targetPrice.toFixed(2)}) is reached, when the funds unlock to your wallet.`
+    `(${fmtPrice(lock.targetPrice)}) is reached, when the funds unlock to your wallet.`
   );
 }
 
