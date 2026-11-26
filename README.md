@@ -22,7 +22,7 @@ stelix-v2/
 
 | Piece | Stack | Status |
 |---|---|---|
-| Mobile app | Expo SDK 58, TS, Expo Router, ethers v6, SecureStore | Built, typechecked, unit-tested, web export verified. **Not yet tested on a phone, no EAS build yet.** |
+| Mobile app | Expo SDK 58, TS, Expo Router, ethers v6, SecureStore | Built, typechecked (0 errors), 64/64 unit tests, web export verified, live at https://stelix-v2-web.pages.dev/. **Not yet tested on a phone, no EAS build yet.** |
 | StelixVault | Solidity 0.8.24, Foundry 1.10.0 | Built, **21/21 Foundry tests pass**. No testnet or mainnet deploy yet. **No audit yet.** |
 | Solana program | Anchor skeleton | Uncompiled skeleton, Jupiter CPI is a TODO stub. |
 | Admin portal | React 18, Vite 5, TS, Cloudflare Pages/Workers/D1 | Built (`vite build` passes). **Not deployed live.** |
@@ -45,8 +45,31 @@ Chain registry is data, not code. Arc is the default chain, then BNB, Base, Ethe
 
 ## Demo vs live — read this first
 
-- **Demo data is labelled DEMO** in the mobile app and admin portal. Balances, locks and prices in the app are sample data (based on the Stelix v1 screenshots) with live price hooks via CoinGecko/DexScreener where possible and graceful offline fallback.
-- **Vault contract addresses are `null` / not deployed yet.** The mobile app will not lock real funds until a StelixVault deployment is registered in the admin Chain Manager.
+- **Demo data is REMOVED.** `src/lib/demoData.ts` was deleted in the
+  2026-11-26 live-data rebuild and the 2026-11-26 integration pass rewired
+  every screen to the live types (`TokenBalance`, `TxRecord`,
+  `LivePrice.price: number | null`). No `$1.36` balance, no `0xcca9…`
+  wallet, no GTAN/PIEVERSE/MBTC/XGIRL sample tokens anywhere in the mobile
+  app. A new wallet starts at $0.00 with 0 tokens, no locks and no history
+  until real on-chain data exists; anything unavailable shows "—" or an
+  empty state with the reason, never a sample number.
+- **Live now:** real 12-word mnemonic wallet (ethers v6, PBKDF2 600k +
+  AES-GCM, SecureStore / encrypted-localStorage fallback); live EVM balances
+  via RPC + ERC-20 `balanceOf`; live prices/market data via CoinGecko,
+  DexScreener and GeckoTerminal (verified 2026-11-26); live DexScreener
+  search for Discover; token import by contract address; Change Password
+  and Export Secrets (password re-entry required); history via Etherscan
+  API v2 when `EXPO_PUBLIC_EXPLORER_API_KEY` is set (empty + "no-key"
+  message without it); swap quotes via 1inch v6 (key-gated) and the
+  PancakeSwap V2 router on BNB.
+- **Still stubbed (labelled in-app, never faked):** send execution and swap
+  execution (quotes/reviews work; no transaction is sent or recorded);
+  vault locks (local plan records only — **vault contract addresses are
+  `null` / not deployed yet**, so `createLockOnChain` refuses with the
+  not-deployed message); multi-wallet (single wallet only); per-chain
+  Solana address (one EVM address only); Solana balances/history
+  (needs `@solana/web3.js`, not installed); GeckoTerminal trending
+  (unverified endpoint — empty + error if it fails).
 - **Keeper on-chain wiring is stubbed** (`fetchActiveLocks`, `fetchPricePoints`, `simulateSwap`, `executeTriggerOnChain` in `apps/keeper/src/`). The decision logic (TWAP, guards, trailing stop, retry) is implemented and tested; the RPC/indexer integration is pending.
 - **Admin Contract Studio contract is the full `contracts/src/StelixVault.sol`** (synced in this repo). It is a starter, not audited.
 - **Arc exit stablecoin:** registry-driven. Confirm USDT availability on Arc at build time, otherwise USDC labelled clearly in-app. No lock is created under a vague promise.
@@ -62,7 +85,7 @@ Node 20+ (tested with Node 24), npm, Foundry (`forge`) for contracts, Wrangler 4
 ```bash
 cd apps/mobile
 npm install
-npm test          # Jest — vault logic, 27 tests
+npm test          # Jest — vault logic + live-data layer, 64 tests (8 suites)
 npx tsc --noEmit
 npx expo export --platform web   # web export check (no EAS build yet)
 npm start         # then scan the QR in Expo Go to test on a phone
@@ -110,9 +133,9 @@ Cron runs every 5 minutes. See `apps/keeper/README.md` for the live-wiring TODOs
 
 | Suite | Command | Result |
 |---|---|---|
-| Mobile vault logic | `npm test` in `apps/mobile` | **27 passed, 27 total** |
-| Mobile typecheck | `npx tsc --noEmit` in `apps/mobile` | Clean, exit 0 |
-| Mobile web export | `npx expo export --platform web` | Exported `dist/` for all 18 screens |
+| Mobile vault logic + live-data layer | `npm test` in `apps/mobile` | **64 passed, 64 total (8 suites)** |
+| Mobile typecheck | `npx tsc --noEmit` in `apps/mobile` | Clean, exit 0 (was 48 errors before the 2026-11-26 integration pass) |
+| Mobile web export + live deploy | `npx expo export --platform web` + Wrangler Pages deploy | Exported `dist/` for all 18 screens; live at https://stelix-v2-web.pages.dev/ (root 200, main JS bundle 200) |
 | Contracts | `forge test -vv` in `contracts` | **21 passed, 0 failed** |
 | Admin typecheck + build | `npx tsc --noEmit && npm run build` in `apps/admin` | Clean, built in ~3s |
 | Keeper tests | `npx vitest run` in `apps/keeper` | **13 passed, 13 total** |
