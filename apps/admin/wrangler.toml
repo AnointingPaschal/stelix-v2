@@ -8,11 +8,12 @@ pages_build_output_dir = "dist"
 [[d1_databases]]
 binding = "DB"
 database_name = "stelix-admin-db"
-database_id = "REPLACE_WITH_D1_DATABASE_ID"
+database_id = "598cd9fd-a29b-4286-b99d-f51c534d0308"
 
 [vars]
 ENVIRONMENT = "production"
 CONFIG_VERSION = "1"
+ADMIN_EMAIL = "ozoemenapaschal09@gmail.com"
 
-# Secrets (set via `wrangler secret put <NAME>` — never commit values):
-# ADMIN_SESSION_SECRET, DEPLOYER_PRIVATE_KEY_TESTNET (testnet only), EXPLORER_API_KEY
+# Secrets (set via `wrangler pages secret put <NAME> --project-name stelix-admin` — never commit values):
+# ADMIN_PASSWORD_HASH (pbkdf2-sha256$iterations$salt$key), ADMIN_SESSION_SECRET, DEPLOYER_PRIVATE_KEY_TESTNET (testnet only), EXPLORER_API_KEY
