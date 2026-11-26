@@ -21,13 +21,13 @@ npm run build        # tsc --noEmit && vite build
 npm run dev          # http://localhost:5173
 ```
 
-## Deploy (NOT done in this local build — pending owner decision)
+## Deploy (LIVE since 2026-11-26)
+Production: https://stelix-admin.pages.dev/ — Cloudflare Pages project `stelix-admin` (branch `main`), D1 database `stelix-admin-db` (`598cd9fd-a29b-4286-b99d-f51c534d0308`), migrations `0001_schema.sql` + `0002_seed.sql` applied (chains seeded: Arc default/testnet, BNB/Base/Ethereum/Polygon/Solana hidden).
 ```bash
-npx wrangler d1 create stelix-admin-db   # paste database_id into wrangler.toml
-npx wrangler d1 execute stelix-admin-db --file=migrations/0001_schema.sql
-npx wrangler pages deploy dist --project-name stelix-admin
+npm run build        # tsc + vite + esbuild src/worker/index.ts -> dist/_worker.js (Pages advanced mode)
+npx wrangler pages deploy --project-name stelix-admin --branch main
+npx wrangler d1 execute stelix-admin-db --remote --file=migrations/0001_schema.sql
+npx wrangler d1 execute stelix-admin-db --remote --file=migrations/0002_seed.sql
 ```
-Secrets via `wrangler secret put <NAME>` — never commit values. See `.dev.vars.example` (placeholders only).
-
-## Pending
-Live Cloudflare deploy, D1 creation, Cloudflare Access setup, real solc compile job (Worker/container), explorer verification wiring, independent contract audit, mainnet deploy.
+Auth: owner-only server-side login (no Cloudflare Access — Access is not enabled on the account; the Access API returns `access.api.error.not_enabled`). Admin email `ozoemenapaschal09@gmail.com`, PBKDF2-SHA256 password hash and HMAC session secret are Pages secrets (`ADMIN_PASSWORD_HASH`, `ADMIN_SESSION_SECRET` — set via `wrangler pages secret put`, never committed). 5 failed attempts lock an IP for 15 minutes; every login is written to `audit_log`.
+Live endpoints: `GET /api/chains`, `GET /api/keeper/runs`, `GET /api/admin/audit` (session required); `GET /api/health`, `GET /api/config` (public). Dashboard, tokens, fees, announcements and config pages still show labelled DEMO data until wired.
