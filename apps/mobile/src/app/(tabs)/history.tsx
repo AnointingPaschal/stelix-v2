@@ -3,7 +3,8 @@
  *  up-circle for Token Sent, amount right-aligned, date below. Spam hidden
  *  by default. Empty state: "No transactions yet". */
 import { useState } from 'react';
-import { Pressable, RefreshControl, ScrollView, StyleSheet, Text, View } from 'react-native';
+import { Pressable, RefreshControl, ScrollView, StyleSheet, Text, View, useWindowDimensions } from 'react-native';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { ArrowDown, ArrowUp, RefreshCw } from 'lucide-react-native';
 import { COLORS } from '../../theme';
 import { useApp } from '../../store/AppContext';
@@ -11,34 +12,55 @@ import { fmtNum, shortAddress } from '../../lib/format';
 import { EmptyState } from '../../components/ui';
 
 export default function History() {
-  const { history } = useApp();
+  const { history, historyError, refreshAll } = useApp();
   const [showSpam, setShowSpam] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
+  const { width } = useWindowDimensions();
+  const insets = useSafeAreaInsets();
+  const isWide = width >= 768;
 
   const list = history.filter((t) => !t.isSpam || showSpam);
   const spamCount = history.filter((t) => t.isSpam).length;
 
-  function onRefresh() {
+  // Real refresh: re-fetches balances, locks AND history from the store
+  // (refreshAll), so the spinner means new on-chain data, not a timer.
+  async function onRefresh() {
+    if (refreshing) return;
     setRefreshing(true);
-    setTimeout(() => setRefreshing(false), 900);
+    try {
+      await refreshAll();
+    } finally {
+      setRefreshing(false);
+    }
   }
 
   return (
     <ScrollView
       style={styles.root}
-      contentContainerStyle={styles.inner}
+      contentContainerStyle={[
+        styles.inner,
+        {
+          paddingTop: 12 + insets.top,
+          paddingBottom: 24 + insets.bottom,
+          ...(isWide ? { maxWidth: 768, width: '100%', alignSelf: 'center' } : null),
+        },
+      ]}
       refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} />}
     >
       <View style={styles.head}>
         <View style={styles.headSide} />
         <View style={styles.headMid}>
-          <Text style={styles.title}>Transaction History</Text>
+          <Text style={styles.title} numberOfLines={1} adjustsFontSizeToFit minimumFontScale={0.85}>
+            Transaction History
+          </Text>
           <Text style={styles.sub}>via Ankr</Text>
         </View>
-        <Pressable onPress={onRefresh} style={styles.headSide} hitSlop={8}>
+        <Pressable onPress={() => void onRefresh()} style={styles.headSide} hitSlop={8} accessibilityLabel="Refresh history">
           <RefreshCw size={18} color={COLORS.text} />
         </Pressable>
       </View>
+
+      {historyError ? <Text style={styles.error}>{historyError}</Text> : null}
 
       {list.length === 0 ? (
         <EmptyState title="No transactions yet" body="Sends, receives, swaps and lock events will appear here." />
@@ -69,7 +91,12 @@ export default function History() {
                 <Text style={styles.party} numberOfLines={1}>{party}</Text>
               </View>
               <View style={styles.right}>
-                <Text style={[styles.amount, { color: received ? COLORS.mintDark : COLORS.text }]}>
+                <Text
+                  style={[styles.amount, { color: received ? COLORS.mintDark : COLORS.text }]}
+                  numberOfLines={1}
+                  adjustsFontSizeToFit
+                  minimumFontScale={0.85}
+                >
                   {received ? '+' : '-'}
                   {fmtNum(t.amount, 4)} {t.token}
                 </Text>
@@ -94,17 +121,18 @@ export default function History() {
 const styles = StyleSheet.create({
   amount: { fontSize: 13, fontWeight: '700', textAlign: 'right' },
   date: { color: COLORS.textMuted, fontSize: 12, marginTop: 2, textAlign: 'right' },
+  error: { color: COLORS.red, fontSize: 12, lineHeight: 17, marginTop: 10 },
   head: { alignItems: 'center', flexDirection: 'row', justifyContent: 'space-between' },
-  headMid: { alignItems: 'center', flex: 1 },
+  headMid: { alignItems: 'center', flex: 1, minWidth: 0 },
   headSide: { alignItems: 'center', width: 32 },
   inner: { padding: 12 },
   kind: { color: COLORS.text, fontSize: 14, fontWeight: '700' },
   icon: { alignItems: 'center', borderRadius: 999, height: 40, justifyContent: 'center', width: 40 },
   iconIn: { backgroundColor: COLORS.mintSoft },
   iconOut: { backgroundColor: COLORS.bgMuted },
-  mid: { flex: 1 },
+  mid: { flex: 1, minWidth: 0 },
   party: { color: COLORS.textMuted, fontSize: 12, marginTop: 2 },
-  right: { alignItems: 'flex-end' },
+  right: { alignItems: 'flex-end', flexShrink: 1, minWidth: 0 },
   root: { backgroundColor: COLORS.bg, flex: 1 },
   row: {
     alignItems: 'center',

@@ -27,16 +27,16 @@ export function TokenRow({
       <TokenLogo chainId={token.chainId} address={token.address} symbol={token.symbol} size={44} logoUrl={token.logoUrl} />
       <View style={styles.mid}>
         <View style={styles.nameRow}>
-          <Text style={styles.name}>{token.symbol}</Text>
+          <Text style={styles.name} numberOfLines={1}>{token.symbol}</Text>
           {token.locked > 0 && <Lock size={12} color={COLORS.mintDark} />}
         </View>
         <View style={styles.priceRow}>
-          <Text style={styles.price}>{token.price === null ? 'Price unavailable' : fmtPrice(token.price)}</Text>
+          <Text style={styles.price} numberOfLines={1}>{token.price === null ? 'Price unavailable' : fmtPrice(token.price)}</Text>
         </View>
       </View>
       <View style={styles.right}>
-        <Text style={styles.value}>{fmtUsd(value)}</Text>
-        <Text style={styles.balance}>
+        <Text style={styles.value} numberOfLines={1}>{fmtUsd(value)}</Text>
+        <Text style={styles.balance} numberOfLines={1}>
           {fmtNum(token.balance, 4)} {token.symbol}
         </Text>
       </View>
@@ -79,8 +79,8 @@ export function LockCard({
       <View style={styles.lockTop}>
         <TokenLogo chainId={lock.chainId} address={lock.tokenAddress} symbol={lock.tokenSymbol} size={44} />
         <View style={styles.mid}>
-          <Text style={styles.name}>{lock.tokenSymbol}</Text>
-          <Text style={styles.sub}>
+          <Text style={styles.name} numberOfLines={1}>{lock.tokenSymbol}</Text>
+          <Text style={styles.sub} numberOfLines={1}>
             {fmtNum(lock.amountRemaining, 4)} {lock.tokenSymbol} ·{' '}
             {lock.targetMultiple ? `${lock.targetMultiple}x target` : 'Date lock'}
           </Text>
@@ -130,14 +130,14 @@ const styles = StyleSheet.create({
     padding: 12,
   },
   lockTop: { alignItems: 'center', flexDirection: 'row', gap: 10 },
-  mid: { flex: 1 },
+  mid: { flex: 1, minWidth: 0 },
   name: { color: COLORS.text, fontSize: 14, fontWeight: '700' },
   nameRow: { alignItems: 'center', flexDirection: 'row', gap: 6 },
   price: { color: COLORS.textMuted, fontSize: 12 },
   priceRow: { alignItems: 'center', flexDirection: 'row', gap: 6, marginTop: 2 },
   progressLabel: { color: COLORS.textMuted, fontSize: 11, marginTop: 6 },
   progressWrap: { marginTop: 8 },
-  right: { alignItems: 'flex-end' },
+  right: { alignItems: 'flex-end', flexShrink: 1, minWidth: 0 },
   row: {
     alignItems: 'center',
     borderBottomColor: COLORS.border,

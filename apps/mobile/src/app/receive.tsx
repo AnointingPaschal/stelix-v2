@@ -9,7 +9,7 @@ import * as Clipboard from 'expo-clipboard';
 import QRCode from 'react-native-qrcode-svg';
 import { COLORS } from '../theme';
 import { useApp } from '../store/AppContext';
-import { Btn, Card, ScreenHeader } from '../components/ui';
+import { Btn, Card, ScreenHeader, centeredContent } from '../components/ui';
 
 export default function Receive() {
   const { address, chain } = useApp();
@@ -23,7 +23,7 @@ export default function Receive() {
   }
 
   return (
-    <ScrollView style={styles.root} contentContainerStyle={styles.inner}>
+    <ScrollView style={styles.root} contentContainerStyle={[styles.inner, centeredContent]}>
       <ScreenHeader title="Receive Assets" onBack={() => router.back()} />
 
       <View style={styles.chainPill}>

@@ -26,7 +26,7 @@
  * cleared from state on close and on success.
  */
 import { useEffect, useState } from 'react';
-import { Linking, Pressable, ScrollView, StyleSheet, Text, TextInput, View } from 'react-native';
+import { Linking, Pressable, StyleSheet, Text, TextInput, View } from 'react-native';
 import * as LocalAuthentication from 'expo-local-authentication';
 import { AlertTriangle, CheckCircle2, ExternalLink, Fingerprint, ShieldCheck } from 'lucide-react-native';
 import { COLORS } from '../theme';
@@ -177,7 +177,9 @@ export function SignTransactionModal({
 
   return (
     <BottomSheet visible={visible} onClose={close} title={request?.title ?? 'Confirm Transaction'}>
-      <ScrollView showsVerticalScrollIndicator={false}>
+      {/* No inner ScrollView: BottomSheet scrolls tall content itself, so
+          the password field and buttons stay reachable on small phones. */}
+      <View>
         {!request ? null : phase === 'success' && result ? (
           <View style={styles.successWrap}>
             <CheckCircle2 size={40} color={COLORS.mintDark} />
@@ -266,7 +268,7 @@ export function SignTransactionModal({
             </View>
           </>
         )}
-      </ScrollView>
+      </View>
     </BottomSheet>
   );
 }

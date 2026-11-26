@@ -11,7 +11,8 @@
  *  the letter fallback plus a "Logo not found" note; an unreadable
  *  contract shows a visible inline error, never a silent failure. */
 import { useEffect, useRef, useState } from 'react';
-import { Pressable, RefreshControl, ScrollView, StyleSheet, Text, TextInput, View } from 'react-native';
+import { Pressable, RefreshControl, ScrollView, StyleSheet, Text, TextInput, View, useWindowDimensions } from 'react-native';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { router } from 'expo-router';
 import {
   ArrowDownLeft,
@@ -60,6 +61,12 @@ interface ImportPreview {
 
 export default function Home() {
   const { address, chain, tokens, locks, refreshAll, refreshBalances } = useApp();
+  const { width } = useWindowDimensions();
+  const insets = useSafeAreaInsets();
+  // 320–430px phones keep the compact v1 layout; 768px+ centres the
+  // column at 768px so the page never stretches edge-to-edge on web.
+  const isWide = width >= 768;
+  const isNarrow = width < 360;
   const [refreshing, setRefreshing] = useState(false);
   const [showSpam, setShowSpam] = useState(false);
   const [hidden, setHidden] = useState(false);
@@ -214,7 +221,14 @@ export default function Home() {
   return (
     <ScrollView
       style={styles.root}
-      contentContainerStyle={styles.inner}
+      contentContainerStyle={[
+        styles.inner,
+        {
+          paddingTop: 12 + insets.top,
+          paddingBottom: 24 + insets.bottom,
+          ...(isWide ? { maxWidth: 768, width: '100%', alignSelf: 'center' } : null),
+        },
+      ]}
       refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} />}
     >
       <View style={styles.topRow}>
@@ -222,12 +236,14 @@ export default function Home() {
           <View style={styles.addrAvatar}>
             <User size={14} color="#fff" />
           </View>
-          <Text style={styles.addrText}>{address ? shortAddress(address) : 'No wallet yet'}</Text>
+          <Text style={styles.addrText} numberOfLines={1}>
+            {address ? shortAddress(address, isNarrow ? 4 : 6) : 'No wallet yet'}
+          </Text>
           <ChevronDown size={14} color={COLORS.textMuted} />
         </Pressable>
         <Pressable style={styles.netPill} onPress={() => setNetOpen(true)}>
           <View style={styles.netDot} />
-          <Text style={styles.netText}>{chain.name}</Text>
+          <Text style={styles.netText} numberOfLines={1}>{chain.name}</Text>
           <ChevronDown size={14} color={COLORS.textMuted} />
         </Pressable>
       </View>
@@ -240,7 +256,7 @@ export default function Home() {
               {hidden ? <EyeOff size={16} color={COLORS.textOnNavyMuted} /> : <Eye size={16} color={COLORS.textOnNavyMuted} />}
             </Pressable>
           </View>
-          <Text style={styles.balance}>{bal(total)}</Text>
+          <Text style={styles.balance} numberOfLines={1} adjustsFontSizeToFit minimumFontScale={0.8}>{bal(total)}</Text>
           <View style={styles.pillsRow}>
             <Chip label={chain.nativeSymbol} tone="navy" />
             {chain.testnet ? <Chip label="Testnet" tone="amber" /> : null}
@@ -249,28 +265,28 @@ export default function Home() {
           <View style={styles.stats}>
             <View style={styles.stat}>
               <Text style={styles.statLabel}>{chain.nativeSymbol}</Text>
-              <Text style={styles.statValue}>{native ? fmtNum(native.balance, 4) : '0'}</Text>
-              <Text style={styles.statSub}>{bal(native ? native.balance * priceOf(native) : 0)}</Text>
+              <Text style={styles.statValue} numberOfLines={1} adjustsFontSizeToFit minimumFontScale={0.8}>{native ? fmtNum(native.balance, 4) : '0'}</Text>
+              <Text style={styles.statSub} numberOfLines={1}>{bal(native ? native.balance * priceOf(native) : 0)}</Text>
             </View>
             <View style={styles.stat}>
               <Text style={styles.statLabel}>Assets</Text>
-              <Text style={styles.statValue}>{assetCount}</Text>
-              <Text style={styles.statSub}>tokens</Text>
+              <Text style={styles.statValue} numberOfLines={1} adjustsFontSizeToFit minimumFontScale={0.8}>{assetCount}</Text>
+              <Text style={styles.statSub} numberOfLines={1}>tokens</Text>
             </View>
             <View style={styles.stat}>
               <Text style={styles.statLabel}>Network</Text>
-              <Text style={styles.statValue}>{chain.id === 'bnb' ? 'BSC' : chain.name}</Text>
-              <Text style={styles.statSub}>{chain.testnet ? 'Testnet' : 'Mainnet'}</Text>
+              <Text style={styles.statValue} numberOfLines={1} adjustsFontSizeToFit minimumFontScale={0.8}>{chain.id === 'bnb' ? 'BSC' : chain.name}</Text>
+              <Text style={styles.statSub} numberOfLines={1}>{chain.testnet ? 'Testnet' : 'Mainnet'}</Text>
             </View>
           </View>
           <View style={styles.split}>
             <View style={styles.splitCol}>
               <Text style={styles.splitLabel}>Spendable</Text>
-              <Text style={styles.splitValue}>{bal(spendable)}</Text>
+              <Text style={styles.splitValue} numberOfLines={1} adjustsFontSizeToFit minimumFontScale={0.8}>{bal(spendable)}</Text>
             </View>
             <View style={styles.splitCol}>
               <Text style={styles.splitLabel}>Locked</Text>
-              <Text style={[styles.splitValue, { color: COLORS.mint }]}>{bal(locked)}</Text>
+              <Text style={[styles.splitValue, { color: COLORS.mint }]} numberOfLines={1} adjustsFontSizeToFit minimumFontScale={0.8}>{bal(locked)}</Text>
             </View>
             <Text style={styles.splitPct}>{Math.round(lockedRatio * 100)}% locked</Text>
           </View>
@@ -393,8 +409,8 @@ export default function Home() {
               logoUrl={importPreview.logoUrl}
             />
             <View style={styles.previewMid}>
-              <Text style={styles.previewName}>{importPreview.name}</Text>
-              <Text style={styles.previewSub}>
+              <Text style={styles.previewName} numberOfLines={1}>{importPreview.name}</Text>
+              <Text style={styles.previewSub} numberOfLines={1}>
                 {importPreview.symbol} · {importPreview.decimals} decimals · {chain.name}
               </Text>
               <Pressable
@@ -431,13 +447,15 @@ function Action({ icon, label, onPress }: { icon: React.ReactNode; label: string
   return (
     <Pressable style={styles.action} onPress={onPress}>
       <View style={styles.actionIcon}>{icon}</View>
-      <Text style={styles.actionLabel}>{label}</Text>
+      <Text style={styles.actionLabel} numberOfLines={1} adjustsFontSizeToFit minimumFontScale={0.8}>
+        {label}
+      </Text>
     </Pressable>
   );
 }
 
 const styles = StyleSheet.create({
-  action: { alignItems: 'center', flex: 1, gap: 6 },
+  action: { alignItems: 'center', flex: 1, gap: 6, minWidth: 0 },
   actionDiv: { backgroundColor: COLORS.border, height: 40, width: 1 },
   actionIcon: {
     alignItems: 'center',
@@ -464,11 +482,13 @@ const styles = StyleSheet.create({
     borderRadius: 999,
     borderWidth: 1,
     flexDirection: 'row',
+    flexShrink: 1,
     gap: 6,
+    minWidth: 0,
     paddingHorizontal: 10,
     paddingVertical: 6,
   },
-  addrText: { color: COLORS.text, fontSize: 12, fontWeight: '700' },
+  addrText: { color: COLORS.text, flexShrink: 1, fontSize: 12, fontWeight: '700' },
   balance: { color: '#fff', fontSize: 30, fontWeight: '800', marginTop: 2 },
   divider: { backgroundColor: COLORS.navySoft, height: 1, marginVertical: 10 },
   importBtn: { minHeight: 32, paddingHorizontal: 12 },
@@ -505,7 +525,7 @@ const styles = StyleSheet.create({
     padding: 12,
   },
   previewLoading: { color: COLORS.textMuted, fontSize: 12, marginTop: 8 },
-  previewMid: { flex: 1 },
+  previewMid: { flex: 1, minWidth: 0 },
   previewName: { color: COLORS.text, fontSize: 15, fontWeight: '800' },
   previewPrice: { color: COLORS.text, fontSize: 13, fontWeight: '800', marginTop: 4 },
   previewSub: { color: COLORS.textMuted, fontSize: 12, marginTop: 2 },
@@ -518,11 +538,13 @@ const styles = StyleSheet.create({
     borderRadius: 999,
     borderWidth: 1,
     flexDirection: 'row',
+    flexShrink: 1,
     gap: 6,
+    minWidth: 0,
     paddingHorizontal: 10,
     paddingVertical: 6,
   },
-  netText: { color: COLORS.text, fontSize: 12, fontWeight: '700' },
+  netText: { color: COLORS.text, flexShrink: 1, fontSize: 12, fontWeight: '700' },
   pillsRow: { flexDirection: 'row', gap: 6, marginTop: 8 },
   portHead: { alignItems: 'center', flexDirection: 'row', justifyContent: 'space-between' },
   portLabel: { color: COLORS.textOnNavyMuted, fontSize: 12, fontWeight: '700' },
@@ -531,16 +553,16 @@ const styles = StyleSheet.create({
   sheetHint: { color: COLORS.textMuted, fontSize: 12, lineHeight: 17, marginTop: 8 },
   spamToggle: { color: COLORS.textMuted, fontSize: 12, fontWeight: '700', marginTop: 12, textAlign: 'center' },
   split: { alignItems: 'center', flexDirection: 'row', gap: 12, marginBottom: 8, marginTop: 10 },
-  splitCol: { flex: 1 },
+  splitCol: { flex: 1, minWidth: 0 },
   splitLabel: { color: COLORS.textOnNavyMuted, fontSize: 11 },
   splitPct: { color: COLORS.textOnNavyMuted, fontSize: 11, fontWeight: '700' },
   splitValue: { color: '#fff', fontSize: 14, fontWeight: '800', marginTop: 2 },
-  stat: { flex: 1 },
+  stat: { flex: 1, minWidth: 0 },
   statLabel: { color: COLORS.textOnNavyMuted, fontSize: 11 },
   statSub: { color: COLORS.textOnNavyMuted, fontSize: 11, marginTop: 2 },
   statValue: { color: '#fff', fontSize: 14, fontWeight: '800', marginTop: 2 },
   stats: { flexDirection: 'row', gap: 8 },
-  topRow: { alignItems: 'center', flexDirection: 'row', justifyContent: 'space-between', marginBottom: 12 },
+  topRow: { alignItems: 'center', flexDirection: 'row', gap: 8, justifyContent: 'space-between', marginBottom: 12 },
   walletAdd: {
     alignItems: 'center',
     borderColor: COLORS.border,

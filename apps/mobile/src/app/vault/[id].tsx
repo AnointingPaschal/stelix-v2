@@ -6,8 +6,9 @@
  *  ONLY in the shared SignTransactionModal — there is no password field
  *  on this page. */
 import { useEffect, useState } from 'react';
-import { Alert, ScrollView, StyleSheet, Text, View } from 'react-native';
+import { ScrollView, StyleSheet, Text, View } from 'react-native';
 import { router, useLocalSearchParams } from 'expo-router';
+import * as Clipboard from 'expo-clipboard';
 import { COLORS } from '../../theme';
 import { useApp } from '../../store/AppContext';
 import { fetchCandles, fetchTokenMarketData, type Candle } from '../../lib/prices';
@@ -25,7 +26,7 @@ import {
   requestBreakOnChain,
   targetProgress,
 } from '../../lib/vault';
-import { Btn, Card, Chip, ProgressBar, RiskNote, SectionTitle } from '../../components/ui';
+import { Btn, Card, Chip, ProgressBar, RiskNote, SectionTitle, centeredContent } from '../../components/ui';
 import { PriceChart } from '../../components/PriceChart';
 import {
   SignTransactionModal,
@@ -45,6 +46,7 @@ export default function LockDetail() {
   const lock = locks.find((l) => l.id === id);
   const [notice, setNotice] = useState('');
   const [lastTx, setLastTx] = useState<string | null>(null);
+  const [copiedReceipt, setCopiedReceipt] = useState(false);
   const [signModal, setSignModal] = useState<PendingVaultSign | null>(null);
   const onChain = lock ? parseOnChainLockId(lock.id) : null;
   const [, setTick] = useState(0);
@@ -74,7 +76,7 @@ export default function LockDetail() {
 
   if (!lock) {
     return (
-      <View style={styles.missing}>
+      <View style={[styles.missing, centeredContent]}>
         <Text style={styles.title}>Lock not found</Text>
         <Text style={styles.missingBody}>This lock is no longer in your vault.</Text>
         <Btn label="Back to Vault" onPress={() => router.replace('/(tabs)/vault')} />
@@ -268,7 +270,7 @@ export default function LockDetail() {
   }
 
   return (
-    <ScrollView style={styles.root} contentContainerStyle={styles.inner}>
+    <ScrollView style={styles.root} contentContainerStyle={[styles.inner, centeredContent]}>
       <Text style={styles.title}>{lock.id}</Text>
       <Text style={styles.sub}>
         {fmtNum(lock.amountRemaining)} {lock.tokenSymbol} · {chain.name} · {lock.status.replace('-', ' ')}
@@ -375,8 +377,23 @@ export default function LockDetail() {
             style={styles.actionBtn}
           />
         )}
-        <Btn label="Share Receipt" variant="ghost" onPress={() => Alert.alert('Receipt', `${lock.id} · ${fmtNum(lock.amount)} ${lock.tokenSymbol} · ${chain.name}`)} style={styles.actionBtn} />
+        <Btn
+          label={copiedReceipt ? 'Receipt Copied' : 'Share Receipt'}
+          variant="ghost"
+          onPress={() => {
+            // Copies the receipt text — the old Alert.alert was a no-op
+            // on web, so the button looked dead.
+            void Clipboard.setStringAsync(
+              `Stelix lock ${lock.id} · ${fmtNum(lock.amount)} ${lock.tokenSymbol} · ${chain.name} · unlocks ${new Date(lock.unlockTime).toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' })}${lock.txHash ? ` · tx ${lock.txHash}` : ''}`,
+            ).then(() => {
+              setCopiedReceipt(true);
+              setTimeout(() => setCopiedReceipt(false), 2000);
+            });
+          }}
+          style={styles.actionBtn}
+        />
       </View>
+      {copiedReceipt ? <Text style={styles.sentLine}>Receipt copied — paste it anywhere to share.</Text> : null}
       <RiskNote />
 
       <SignTransactionModal
@@ -401,8 +418,8 @@ function Term({ label, value }: { label: string; value: string }) {
 }
 
 const styles = StyleSheet.create({
-  actionBtn: { flex: 1 },
-  actions: { flexDirection: 'row', gap: 8, marginTop: 16 },
+  actionBtn: { flexBasis: 140, flexGrow: 1 },
+  actions: { flexDirection: 'row', flexWrap: 'wrap', gap: 8, marginTop: 16 },
   breach: { color: COLORS.red, fontWeight: '700' },
   countdown: { color: COLORS.mint, fontSize: 14, fontWeight: '800', marginTop: 6 },
   date: { color: COLORS.textOnNavyMuted, fontSize: 12, marginTop: 4 },
@@ -420,11 +437,11 @@ const styles = StyleSheet.create({
   stageText: { color: COLORS.text, flex: 1, fontSize: 12, fontWeight: '700' },
   stageUsd: { color: COLORS.textMuted, fontSize: 12 },
   sub: { color: COLORS.textMuted, fontSize: 12, marginTop: 4 },
-  targetRow: { flexDirection: 'row', justifyContent: 'space-between', marginBottom: 8 },
+  targetRow: { flexDirection: 'row', flexWrap: 'wrap', gap: 8, justifyContent: 'space-between', marginBottom: 8 },
   targetText: { color: COLORS.text, fontSize: 12, fontWeight: '700' },
-  termLabel: { color: COLORS.textMuted, fontSize: 12 },
+  termLabel: { color: COLORS.textMuted, flexShrink: 0, fontSize: 12 },
   termRow: { flexDirection: 'row', justifyContent: 'space-between', paddingVertical: 5 },
-  termValue: { color: COLORS.text, fontSize: 12, fontWeight: '700', textAlign: 'right' },
+  termValue: { color: COLORS.text, flexShrink: 1, fontSize: 12, fontWeight: '700', marginLeft: 12, textAlign: 'right' },
   title: { color: COLORS.text, fontSize: 18, fontWeight: '800' },
   value: { color: '#fff', fontSize: 28, fontWeight: '800', marginTop: 2 },
   valueCard: { marginTop: 12, padding: 14 },

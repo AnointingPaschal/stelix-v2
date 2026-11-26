@@ -9,7 +9,7 @@ import { Clock, Lock, RefreshCw, Unlock } from 'lucide-react-native';
 import { COLORS } from '../../theme';
 import { useApp } from '../../store/AppContext';
 import { fmtNum, fmtUsd } from '../../lib/format';
-import { Btn, Card, EmptyState, RiskNote, SectionTitle } from '../../components/ui';
+import { Btn, Card, EmptyState, RiskNote, SectionTitle, centeredContent } from '../../components/ui';
 import { LockCard } from '../../components/TokenRow';
 
 export default function VaultHub() {
@@ -42,7 +42,7 @@ export default function VaultHub() {
   }
 
   return (
-    <ScrollView style={styles.root} contentContainerStyle={styles.inner}>
+    <ScrollView style={styles.root} contentContainerStyle={[styles.inner, centeredContent]}>
       <View style={styles.head}>
         <View style={styles.headSide} />
         <Text style={styles.title}>Vault</Text>

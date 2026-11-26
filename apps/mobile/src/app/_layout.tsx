@@ -1,6 +1,7 @@
 import { Image, StyleSheet, Text, View } from 'react-native';
 import { Stack } from 'expo-router';
 import { StatusBar } from 'expo-status-bar';
+import { SafeAreaProvider } from 'react-native-safe-area-context';
 import { AppProvider, useApp } from '../store/AppContext';
 import { COLORS } from '../theme';
 
@@ -53,10 +54,12 @@ function RootNavigator() {
 
 export default function RootLayout() {
   return (
-    <AppProvider>
-      <StatusBar style="dark" />
-      <RootNavigator />
-    </AppProvider>
+    <SafeAreaProvider>
+      <AppProvider>
+        <StatusBar style="dark" />
+        <RootNavigator />
+      </AppProvider>
+    </SafeAreaProvider>
   );
 }
 

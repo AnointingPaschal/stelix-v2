@@ -1,16 +1,23 @@
 /** Screen 18 — Discipline Report: score, streak, locked ratio, monthly
  *  summary. Compact v1 sizes (score 28px). Empty state when no locks exist
- *  yet. No guaranteed-profit wording. */
-import { Alert, ScrollView, StyleSheet, Text, View } from 'react-native';
+ *  yet. No guaranteed-profit wording.
+ *
+ *  "Share My Discipline Card" copies the card text to the clipboard and
+ *  confirms inline — the old Alert.alert was a no-op on web, so the
+ *  button looked dead. */
+import { useState } from 'react';
+import { ScrollView, StyleSheet, Text, View } from 'react-native';
 import { router } from 'expo-router';
+import * as Clipboard from 'expo-clipboard';
 import { COLORS } from '../theme';
 import { useApp } from '../store/AppContext';
 import { fmtUsd } from '../lib/format';
 import { disciplineScore } from '../lib/vault';
-import { Btn, Card, EmptyState, ProgressBar, RiskNote, SectionTitle } from '../components/ui';
+import { Btn, Card, EmptyState, ProgressBar, RiskNote, SectionTitle, centeredContent } from '../components/ui';
 
 export default function Discipline() {
   const { discipline, locks } = useApp();
+  const [copied, setCopied] = useState(false);
   const score = disciplineScore({
     lockedRatio: discipline.lockedRatio,
     streakDays: discipline.streakDays,
@@ -20,7 +27,7 @@ export default function Discipline() {
   const active = locks.filter((l) => l.status === 'active' || l.status === 'partially-sold').length;
 
   return (
-    <ScrollView style={styles.root} contentContainerStyle={styles.inner}>
+    <ScrollView style={styles.root} contentContainerStyle={[styles.inner, centeredContent]}>
       <Text style={styles.title}>Discipline Report</Text>
 
       <Card dark style={styles.scoreCard}>
@@ -55,16 +62,19 @@ export default function Discipline() {
       ) : null}
 
       <Btn
-        label="Share My Discipline Card"
+        label={copied ? 'Card Copied' : 'Share My Discipline Card'}
         variant="mint"
-        onPress={() =>
-          Alert.alert(
-            'Share card',
-            `Discipline Score ${score}/100 · ${discipline.streakDays}-day streak · ${Math.round(discipline.lockedRatio * 100)}% locked · ${fmtUsd(discipline.totalAutoSoldUsd)} auto-sold to stablecoin.`,
-          )
-        }
+        onPress={() => {
+          void Clipboard.setStringAsync(
+            `Stelix Discipline Score ${score}/100 · ${discipline.streakDays}-day streak · ${Math.round(discipline.lockedRatio * 100)}% locked · ${fmtUsd(discipline.totalAutoSoldUsd)} auto-sold to stablecoin.`,
+          ).then(() => {
+            setCopied(true);
+            setTimeout(() => setCopied(false), 2000);
+          });
+        }}
         style={styles.shareBtn}
       />
+      {copied ? <Text style={styles.copied}>Card text copied — paste it anywhere to share.</Text> : null}
       <RiskNote text="Your score rewards holding to plan. Breaking a lock early lowers it. Stelix never guarantees profit — it enforces the plan you set." />
     </ScrollView>
   );
@@ -80,6 +90,7 @@ function Stat({ label, value }: { label: string; value: string }) {
 }
 
 const styles = StyleSheet.create({
+  copied: { color: COLORS.mintDark, fontSize: 12, fontWeight: '700', marginTop: 8, textAlign: 'center' },
   inner: { padding: 12 },
   label: { color: COLORS.textOnNavyMuted, fontSize: 12, fontWeight: '700' },
   root: { backgroundColor: COLORS.bg, flex: 1 },

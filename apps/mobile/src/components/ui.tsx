@@ -5,15 +5,42 @@ import {
   ActivityIndicator,
   Modal,
   Pressable,
+  ScrollView,
   StyleSheet,
   Text,
+  useWindowDimensions,
   View,
   type StyleProp,
   type ViewStyle,
 } from 'react-native';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Check, ChevronLeft, X } from 'lucide-react-native';
 import { COLORS, FONT, RADIUS, SHADOW } from '../theme';
 import { CHAINS, useApp } from '../store/AppContext';
+
+/** Responsive breakpoints (Group B): phones 320–430px, tablets ≥768px,
+ *  web/desktop ≥1024px. Screens centre their content in a max-width
+ *  column on wide screens instead of stretching full-width. */
+export function useResponsive() {
+  const { width, height } = useWindowDimensions();
+  return {
+    width,
+    height,
+    /** Very small phones (320px class) — tightest rows must wrap. */
+    isSmallPhone: width < 360,
+    isTablet: width >= 768,
+    isDesktop: width >= 1024,
+  };
+}
+
+/** Max-width centred column for screen content: full-width on phones,
+ *  capped and centred on tablet/desktop. Merge into a ScrollView's
+ *  contentContainerStyle or a root View's style. */
+export const centeredContent: ViewStyle = {
+  alignSelf: 'center',
+  maxWidth: 720,
+  width: '100%',
+};
 
 export function Card({
   children,
@@ -213,18 +240,26 @@ export function BottomSheet({
   title: string;
   children: React.ReactNode;
 }) {
+  const insets = useSafeAreaInsets();
   return (
     <Modal visible={visible} transparent animationType="slide" onRequestClose={onClose}>
       <View style={styles.sheetBackdrop}>
         <Pressable style={StyleSheet.absoluteFill} onPress={onClose} accessibilityLabel="Close sheet" />
-        <View style={styles.sheet}>
+        <View style={[styles.sheet, { paddingBottom: 24 + insets.bottom }]}>
           <View style={styles.sheetHead}>
             <Text style={styles.sheetTitle}>{title}</Text>
             <Pressable onPress={onClose} hitSlop={8}>
               <X size={18} color={COLORS.textMuted} />
             </Pressable>
           </View>
-          {children}
+          <ScrollView
+            style={styles.sheetScroll}
+            contentContainerStyle={styles.sheetContent}
+            showsVerticalScrollIndicator={false}
+            keyboardShouldPersistTaps="handled"
+          >
+            {children}
+          </ScrollView>
         </View>
       </View>
     </Modal>
@@ -369,14 +404,19 @@ const styles = StyleSheet.create({
   },
   sectionTitle: { color: COLORS.text, fontSize: FONT.title, fontWeight: '800' },
   sheet: {
+    alignSelf: 'center',
     backgroundColor: COLORS.bg,
     borderTopLeftRadius: 20,
     borderTopRightRadius: 20,
-    maxHeight: '80%',
+    maxHeight: '85%',
+    maxWidth: 560,
     padding: 16,
     paddingBottom: 24,
+    width: '100%',
   },
-  sheetBackdrop: { backgroundColor: 'rgba(11,18,32,0.45)', flex: 1, justifyContent: 'flex-end' },
+  sheetBackdrop: { alignItems: 'center', backgroundColor: 'rgba(11,18,32,0.45)', flex: 1, justifyContent: 'flex-end' },
+  sheetContent: { paddingBottom: 4 },
+  sheetScroll: { flexShrink: 1 },
   sheetHead: { alignItems: 'center', flexDirection: 'row', justifyContent: 'space-between' },
   sheetTitle: { color: COLORS.text, fontSize: FONT.title, fontWeight: '800' },
   skeleton: { backgroundColor: COLORS.bgMuted, borderRadius: 8 },

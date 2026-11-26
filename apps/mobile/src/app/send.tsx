@@ -6,7 +6,7 @@
  *  shown and recorded in History only after the transaction is mined.
  *  EVM chains only; Solana sends are refused honestly (no Solana send
  *  path is wired yet). */
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { Pressable, ScrollView, StyleSheet, Text, TextInput, View } from 'react-native';
 import { router } from 'expo-router';
 import { ChevronDown, Clipboard as ClipboardIcon } from 'lucide-react-native';
@@ -16,8 +16,9 @@ import { useApp } from '../store/AppContext';
 import { fmtNum, fmtUsd } from '../lib/format';
 import { isValidEvmAddress } from '../lib/wallet';
 import { getSignerForChain } from '../lib/signer';
+import { displaySavedAddress, loadAddressBook, type SavedAddress } from '../lib/addressBook';
 import { estimateSendFee, sendToken, type SendEstimate, type SendResult } from '../lib/send';
-import { BottomSheet, Btn, RiskNote, ScreenHeader } from '../components/ui';
+import { BottomSheet, Btn, OptionSheet, RiskNote, ScreenHeader, centeredContent } from '../components/ui';
 import { TokenLogo } from '../components/TokenLogo';
 import {
   SignTransactionModal,
@@ -32,6 +33,14 @@ export default function Send() {
   const [to, setTo] = useState('');
   const [amount, setAmount] = useState('');
   const [pickerOpen, setPickerOpen] = useState(false);
+  const [savedOpen, setSavedOpen] = useState(false);
+  const [savedContacts, setSavedContacts] = useState<SavedAddress[]>([]);
+
+  // Saved recipients (Settings → Address Book) — loaded when the
+  // picker opens, so the list is always current.
+  useEffect(() => {
+    if (savedOpen) void loadAddressBook().then(setSavedContacts);
+  }, [savedOpen]);
   const [fee, setFee] = useState<SendEstimate | null>(null);
   const [feeError, setFeeError] = useState('');
   const [estimating, setEstimating] = useState(false);
@@ -145,7 +154,7 @@ export default function Send() {
 
   if (spendable.length === 0) {
     return (
-      <View style={styles.root}>
+      <View style={[styles.root, centeredContent]}>
         <ScreenHeader title="Transfer Assets" onBack={() => router.back()} />
         <View style={styles.inner}>
           <Text style={styles.emptyTitle}>Nothing to send yet</Text>
@@ -157,7 +166,7 @@ export default function Send() {
   }
 
   return (
-    <ScrollView style={styles.root} contentContainerStyle={styles.inner}>
+    <ScrollView style={styles.root} contentContainerStyle={[styles.inner, centeredContent]}>
       <ScreenHeader title="Transfer Assets" onBack={() => router.back()} />
 
       <View style={styles.chainPill}>
@@ -183,7 +192,12 @@ export default function Send() {
         <ChevronDown size={16} color={COLORS.textMuted} />
       </Pressable>
 
-      <Text style={styles.label}>Recipient Address</Text>
+      <View style={styles.recipientHead}>
+        <Text style={[styles.label, styles.labelNoTop]}>Recipient Address</Text>
+        <Pressable style={styles.savedBtn} onPress={() => setSavedOpen(true)}>
+          <Text style={styles.savedText}>Saved</Text>
+        </Pressable>
+      </View>
       <View style={styles.addrWrap}>
         <TextInput
           style={styles.addrInput}
@@ -255,6 +269,18 @@ export default function Send() {
         onSigned={(res) => void onSendSigned(res)}
       />
 
+      <OptionSheet
+        visible={savedOpen}
+        onClose={() => setSavedOpen(false)}
+        title="Saved Recipients"
+        options={savedContacts.map((c) => ({
+          key: c.address,
+          label: c.label,
+          sub: `${displaySavedAddress(c.address)} · ${c.kind === 'evm' ? 'EVM' : 'Solana'}`,
+        }))}
+        onSelect={(key) => setTo(key)}
+      />
+
       <BottomSheet visible={pickerOpen} onClose={() => setPickerOpen(false)} title="Select Asset">
         {spendable.map((t) => (
           <Pressable
@@ -300,7 +326,7 @@ const styles = StyleSheet.create({
     paddingHorizontal: 12,
     paddingVertical: 10,
   },
-  amountHead: { alignItems: 'center', flexDirection: 'row', gap: 8, marginTop: 14 },
+  amountHead: { alignItems: 'center', flexDirection: 'row', flexWrap: 'wrap', gap: 8, marginTop: 14 },
   amountInput: { flex: 1, fontSize: 20, fontWeight: '800' },
   amountSym: { color: COLORS.text, fontSize: 14, fontWeight: '700' },
   assetAvatar: {
@@ -349,11 +375,15 @@ const styles = StyleSheet.create({
   sentLine: { color: COLORS.mintDark, fontSize: 12, fontWeight: '700', lineHeight: 17, marginTop: 8 },
   inner: { padding: 12 },
   label: { color: COLORS.textMuted, fontSize: 11, fontWeight: '700', letterSpacing: 1, marginTop: 14 },
+  labelNoTop: { marginTop: 0 },
   maxBtn: { backgroundColor: COLORS.navy, borderRadius: 8, paddingHorizontal: 8, paddingVertical: 4 },
   maxText: { color: '#fff', fontSize: 11, fontWeight: '800' },
   netDot: { backgroundColor: COLORS.mint, borderRadius: 999, height: 8, width: 8 },
   pickBal: { color: COLORS.text, fontSize: 12, fontWeight: '700' },
   pickRow: { alignItems: 'center', borderBottomColor: COLORS.border, borderBottomWidth: 1, flexDirection: 'row', gap: 10, paddingVertical: 10 },
+  recipientHead: { alignItems: 'center', flexDirection: 'row', justifyContent: 'space-between', marginTop: 14 },
   root: { backgroundColor: COLORS.bg, flex: 1 },
+  savedBtn: { backgroundColor: COLORS.bgMuted, borderRadius: 8, paddingHorizontal: 10, paddingVertical: 5 },
+  savedText: { color: COLORS.navy, fontSize: 12, fontWeight: '800' },
   spacer: { flex: 1, minHeight: 24 },
 });

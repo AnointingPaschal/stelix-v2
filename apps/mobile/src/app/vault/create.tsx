@@ -24,7 +24,7 @@ import {
   type BullLock,
   type LadderStage,
 } from '../../lib/vault';
-import { Btn, Card, RiskNote, SectionTitle } from '../../components/ui';
+import { Btn, Card, RiskNote, SectionTitle, centeredContent } from '../../components/ui';
 import {
   SignTransactionModal,
   type SignTxRequest,
@@ -240,7 +240,7 @@ export default function CreateLock() {
 
   if (created) {
     return (
-      <ScrollView style={styles.root} contentContainerStyle={styles.inner}>
+      <ScrollView style={styles.root} contentContainerStyle={[styles.inner, centeredContent]}>
         <Card style={styles.done}>
           <Text style={styles.doneTitle}>Lock created on-chain</Text>
           <Text style={styles.doneBody}>Lock ID {created.id}</Text>
@@ -256,7 +256,7 @@ export default function CreateLock() {
   }
 
   return (
-    <ScrollView style={styles.root} contentContainerStyle={styles.inner}>
+    <ScrollView style={styles.root} contentContainerStyle={[styles.inner, centeredContent]}>
       <Text style={styles.title}>Create Lock</Text>
       <Text style={styles.steps}>Step {step} of 4 · {['Token & amount', 'Date & target', 'Exit plan', 'Review & confirm'][step - 1]}</Text>
       <View style={styles.progress}>
@@ -463,10 +463,10 @@ const styles = StyleSheet.create({
   pill: { minHeight: 36, paddingHorizontal: 10 },
   pills: { flexDirection: 'row', flexWrap: 'wrap', gap: 8 },
   progress: { flexDirection: 'row', gap: 6, marginTop: 10 },
-  reviewLabel: { color: COLORS.textOnNavyMuted, fontSize: 12 },
+  reviewLabel: { color: COLORS.textOnNavyMuted, flexShrink: 0, fontSize: 12 },
   reviewRow: { flexDirection: 'row', justifyContent: 'space-between', paddingVertical: 5 },
   reviewTitle: { color: '#fff', fontSize: 16, fontWeight: '800', marginBottom: 6 },
-  reviewValue: { color: '#fff', fontSize: 12, fontWeight: '700', textAlign: 'right' },
+  reviewValue: { color: '#fff', flexShrink: 1, fontSize: 12, fontWeight: '700', marginLeft: 12, textAlign: 'right' },
   root: { backgroundColor: COLORS.bg, flex: 1 },
   sentence: { color: COLORS.text, fontSize: 14, fontWeight: '700', lineHeight: 20, marginTop: 14 },
   steps: { color: COLORS.textMuted, fontSize: 12, fontWeight: '700', marginTop: 4 },

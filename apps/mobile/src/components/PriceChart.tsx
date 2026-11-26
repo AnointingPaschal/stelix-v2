@@ -265,7 +265,7 @@ export function PriceChart({
           {updating ? <Text style={styles.updating}>Updating…</Text> : null}
         </View>
         {inspect ? (
-          <Text style={styles.readoutValues}>
+          <Text style={styles.readoutValues} numberOfLines={1} adjustsFontSizeToFit minimumFontScale={0.85}>
             O {fmtPrice(inspect.open)} · H {fmtPrice(inspect.high)} · L {fmtPrice(inspect.low)} · C{' '}
             {fmtPrice(inspect.close)} · Vol {inspect.volume >= 1000 ? `${(inspect.volume / 1000).toFixed(1)}k` : inspect.volume.toFixed(0)}
           </Text>
@@ -418,7 +418,7 @@ export function PriceChart({
             <Text style={[styles.ctlText, styles.liveText]}>Latest</Text>
           </Pressable>
         ) : null}
-        <Text style={styles.hint}>Tap a candle · pinch to zoom · drag to pan</Text>
+        <Text style={styles.hint} numberOfLines={2}>Tap a candle · pinch to zoom · drag to pan</Text>
       </View>
     </View>
   );
@@ -439,7 +439,7 @@ const styles = StyleSheet.create({
   empty: { alignItems: 'center', gap: 4, justifyContent: 'center' },
   emptySub: { color: COLORS.textMuted, fontSize: 11 },
   emptyText: { color: COLORS.textMuted, fontSize: 12, fontWeight: '700' },
-  hint: { color: COLORS.textMuted, fontSize: 11, marginLeft: 'auto' },
+  hint: { color: COLORS.textMuted, flexShrink: 1, fontSize: 11, marginLeft: 'auto', textAlign: 'right' },
   liveBtn: { backgroundColor: COLORS.mintSoft, borderColor: COLORS.mintSoft },
   liveText: { color: COLORS.mintDark },
   skelBar: { backgroundColor: COLORS.bgMuted, borderRadius: 6, height: 12, marginBottom: 8 },

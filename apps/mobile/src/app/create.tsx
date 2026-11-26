@@ -12,7 +12,7 @@ import { Pressable, ScrollView, StyleSheet, Text, TextInput, View } from 'react-
 import { router } from 'expo-router';
 import { Check } from 'lucide-react-native';
 import { COLORS } from '../theme';
-import { Btn, Card, RiskNote } from '../components/ui';
+import { Btn, Card, RiskNote, centeredContent } from '../components/ui';
 import { useApp } from '../store/AppContext';
 
 export default function CreateWallet() {
@@ -64,7 +64,7 @@ export default function CreateWallet() {
   }
 
   return (
-    <ScrollView style={styles.root} contentContainerStyle={styles.inner}>
+    <ScrollView style={styles.root} contentContainerStyle={[styles.inner, centeredContent]}>
       <Text style={styles.title}>Secure Your Vault</Text>
       {step === 0 && (
         <>

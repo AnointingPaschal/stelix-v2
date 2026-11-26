@@ -18,7 +18,8 @@
  * No auto-refresh polling (GeckoTerminal free tier is 30 calls/min) —
  * the user refreshes manually. */
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { Pressable, ScrollView, StyleSheet, Text, TextInput, View } from 'react-native';
+import { Pressable, ScrollView, StyleSheet, Text, TextInput, View, useWindowDimensions } from 'react-native';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { router } from 'expo-router';
 import { Flame, Landmark, RefreshCw, Search, SlidersHorizontal, Sparkles, TrendingUp, X } from 'lucide-react-native';
 import { COLORS } from '../../theme';
@@ -101,6 +102,9 @@ export default function Discover() {
   const [newOnly, setNewOnly] = useState(false);
   const [dexFilter, setDexFilter] = useState<string | null>(null);
   const reqId = useRef(0);
+  const { width } = useWindowDimensions();
+  const insets = useSafeAreaInsets();
+  const isWide = width >= 768;
 
   const load = useCallback(async (tabV: DiscoverTab, chainV: string, q: string) => {
     const id = ++reqId.current;
@@ -198,10 +202,20 @@ export default function Discover() {
   };
 
   return (
-    <ScrollView style={styles.root} contentContainerStyle={styles.inner}>
+    <ScrollView
+      style={styles.root}
+      contentContainerStyle={[
+        styles.inner,
+        {
+          paddingTop: 12 + insets.top,
+          paddingBottom: 24 + insets.bottom,
+          ...(isWide ? { maxWidth: 768, width: '100%', alignSelf: 'center' } : null),
+        },
+      ]}
+    >
       <View style={styles.head}>
         <View style={styles.headSide} />
-        <Text style={styles.title}>Discover</Text>
+        <Text style={styles.title} numberOfLines={1} adjustsFontSizeToFit minimumFontScale={0.85}>Discover</Text>
         <Pressable
           onPress={() => void load(tab, chainFilter, debouncedQuery)}
           style={styles.headSide}
@@ -217,7 +231,14 @@ export default function Discover() {
           <Pressable key={t.key} style={styles.tab} onPress={() => changeTab(t.key)}>
             <View style={styles.tabLabel}>
               {t.icon}
-              <Text style={[styles.tabText, tab === t.key && styles.tabTextOn]}>{t.label}</Text>
+              <Text
+                style={[styles.tabText, tab === t.key && styles.tabTextOn]}
+                numberOfLines={1}
+                adjustsFontSizeToFit
+                minimumFontScale={0.8}
+              >
+                {t.label}
+              </Text>
             </View>
             {tab === t.key ? <View style={styles.tabUnderline} /> : <View style={styles.tabUnderlineOff} />}
           </Pressable>
@@ -420,7 +441,7 @@ export default function Discover() {
                 <Text style={styles.name} numberOfLines={1}>
                   {t.symbol}
                 </Text>
-                <Text style={[styles.cell, styles.cellRight]}>{t.priceUsd === null ? '—' : fmtPrice(t.priceUsd)}</Text>
+                <Text style={[styles.cell, styles.cellRight]} numberOfLines={1}>{t.priceUsd === null ? '—' : fmtPrice(t.priceUsd)}</Text>
               </View>
               <View style={styles.line}>
                 <Text style={styles.sub} numberOfLines={1}>
@@ -436,6 +457,7 @@ export default function Discover() {
                         t.change24h === null ? COLORS.textMuted : t.change24h >= 0 ? COLORS.mintDark : COLORS.red,
                     },
                   ]}
+                  numberOfLines={1}
                 >
                   {t.change24h === null ? '—' : fmtPct(t.change24h)}
                 </Text>
@@ -464,10 +486,10 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
     width: 32,
   },
-  blockMid: { flex: 1 },
+  blockMid: { flex: 1, minWidth: 0 },
   blockSub: { color: COLORS.textMuted, fontSize: 12, marginTop: 2 },
   blockTitle: { color: COLORS.text, fontSize: 16, fontWeight: '800' },
-  cell: { color: COLORS.text, fontSize: 12, fontWeight: '700' },
+  cell: { color: COLORS.text, flexShrink: 0, fontSize: 12, fontWeight: '700' },
   cellRight: { textAlign: 'right' },
   chip: {
     alignItems: 'center',
@@ -517,7 +539,7 @@ const styles = StyleSheet.create({
   inner: { padding: 12 },
   line: { alignItems: 'center', flexDirection: 'row', justifyContent: 'space-between', gap: 8 },
   loading: { color: COLORS.textMuted, fontSize: 12, marginTop: 20, textAlign: 'center' },
-  mid: { flex: 1, gap: 2 },
+  mid: { flex: 1, gap: 2, minWidth: 0 },
   name: { color: COLORS.text, flex: 1, fontSize: 14, fontWeight: '700' },
   rank: { color: COLORS.textMuted, fontSize: 12, width: 16 },
   root: { backgroundColor: COLORS.bg, flex: 1 },
@@ -541,10 +563,10 @@ const styles = StyleSheet.create({
   },
   source: { color: COLORS.textMuted, fontSize: 11, marginTop: 6 },
   stats: { color: COLORS.textMuted, fontSize: 11, fontWeight: '600' },
-  sub: { color: COLORS.textMuted, flex: 1, fontSize: 11, marginTop: 2 },
-  tab: { flex: 1 },
-  tabLabel: { alignItems: 'center', flexDirection: 'row', gap: 4, justifyContent: 'center', paddingVertical: 8 },
-  tabText: { color: COLORS.textMuted, fontSize: 12, fontWeight: '700' },
+  sub: { color: COLORS.textMuted, flex: 1, fontSize: 11, marginTop: 2, minWidth: 0 },
+  tab: { flex: 1, minWidth: 0 },
+  tabLabel: { alignItems: 'center', flexDirection: 'row', gap: 4, justifyContent: 'center', minWidth: 0, paddingVertical: 8 },
+  tabText: { color: COLORS.textMuted, flexShrink: 1, fontSize: 12, fontWeight: '700' },
   tabTextOn: { color: COLORS.text },
   tabUnderline: { backgroundColor: COLORS.amber, height: 3, borderRadius: 2 },
   tabUnderlineOff: { height: 3 },

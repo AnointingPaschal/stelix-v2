@@ -9,18 +9,25 @@
  *  Discipline card (Bull Lock), Contract Info / Orderbook tabs, Price
  *  Performance, Market Data, Trading Activity, Your Holdings, Contract.
  *
+ *  The Watchlist star persists per token in local storage. There is no
+ *  price-alert engine in the wallet (no background price checker), so
+ *  this page has no price-alert button — a toggle that never fires
+ *  would be a dead button, not a feature.
+ *
  *  Every token in My Assets opens this page in full — default (BNB,
  *  WBNB, USDT, WKC, GTAN) and imported — because the route resolves a
  *  symbol OR a contract address (see lib/tokenResolve) and native assets
  *  resolve market data + candles through their wrapped twin. Anything
  *  unavailable shows "—" / "No data", never an invented value. */
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { Alert, Animated, Pressable, ScrollView, StyleSheet, Switch, Text, TextInput, View } from 'react-native';
+import { Alert, Animated, Pressable, ScrollView, StyleSheet, Switch, Text, TextInput, View, useWindowDimensions } from 'react-native';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { router, useLocalSearchParams } from 'expo-router';
 import * as Clipboard from 'expo-clipboard';
-import { Bell, ChevronLeft, Lock, RefreshCw, Star } from 'lucide-react-native';
+import { ChevronLeft, Lock, RefreshCw, Star } from 'lucide-react-native';
 import { COLORS } from '../../theme';
 import { useApp } from '../../store/AppContext';
+import { kvGet, kvSet } from '../../lib/storage';
 import {
   COINGECKO_IDS_BY_SYMBOL,
   candlesMatchPrice,
@@ -59,6 +66,11 @@ const DURATIONS = [
 ];
 const TARGETS = [2, 3, 5, 10];
 
+/** Local-storage key for the persisted watchlist (JSON array of
+ *  `${chainId}:${address || symbol}` keys). Non-secret, same mechanism
+ *  as the imported-token list (see lib/storage). */
+const WATCHLIST_KEY = 'stelix:watchlist';
+
 const priceText = (p: number | null) => (p === null ? '—' : fmtPrice(p));
 const pctText = (v: number | null) => (v === null ? '—' : fmtPct(v));
 
@@ -71,6 +83,11 @@ export default function TokenDetail() {
     chainId?: string;
   }>();
   const { tokens, locks, chain: activeChain } = useApp();
+  const { width } = useWindowDimensions();
+  const insets = useSafeAreaInsets();
+  // 320–430px phones keep the compact v1 layout; 768px+ centres the
+  // column at 768px so the page never stretches edge-to-edge on web.
+  const isWide = width >= 768;
   const ref = useMemo(
     () =>
       resolveTokenRef(
@@ -92,6 +109,10 @@ export default function TokenDetail() {
   // --- Live price tick (8s poll) -------------------------------------------
   const [tick, setTick] = useState<{ price: number | null; change24h: number | null; source: PriceSource; updatedAt: number } | null>(null);
   const [liveState, setLiveState] = useState<LiveState>('stale');
+  // Manual refresh: bumping this re-runs the live-price poll effect
+  // below, so the refresh icon fetches a fresh price + candles now
+  // instead of only explaining the 8s auto-poll.
+  const [refreshNonce, setRefreshNonce] = useState(0);
   const pulse = useRef(new Animated.Value(1)).current;
 
   useEffect(() => {
@@ -309,7 +330,7 @@ export default function TokenDetail() {
       clearInterval(t);
       clearInterval(refresh);
     };
-  }, [marketAddress, chainId, coingeckoId, pairAddress, tf]);
+  }, [marketAddress, chainId, coingeckoId, pairAddress, tf, refreshNonce]);
 
   const closes = useMemo(() => candles.map((c) => c.close), [candles]);
   const indicators = useMemo(() => indicatorsFromCandles(candles), [candles]);
@@ -378,7 +399,43 @@ export default function TokenDetail() {
   const [showRsi, setShowRsi] = useState(true);
   const [tab, setTab] = useState<'contract' | 'orderbook'>('contract');
   const [watched, setWatched] = useState(false);
-  const [alertOn, setAlertOn] = useState(false);
+
+  // --- Watchlist (persisted per token) -----------------------------------
+  const watchKey = `${chainId}:${address || sym}`;
+  useEffect(() => {
+    let cancelled = false;
+    void kvGet(WATCHLIST_KEY).then((raw) => {
+      if (cancelled) return;
+      if (!raw) {
+        setWatched(false);
+        return;
+      }
+      try {
+        const list: unknown = JSON.parse(raw);
+        setWatched(Array.isArray(list) && list.includes(watchKey));
+      } catch {
+        setWatched(false);
+      }
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [watchKey]);
+
+  async function toggleWatch() {
+    const next = !watched;
+    setWatched(next);
+    try {
+      const raw = await kvGet(WATCHLIST_KEY);
+      const list: string[] = raw ? (JSON.parse(raw) as string[]) : [];
+      const updated = next
+        ? [...new Set([...list, watchKey])]
+        : list.filter((k) => k !== watchKey);
+      await kvSet(WATCHLIST_KEY, JSON.stringify(updated));
+    } catch {
+      // Storage failure leaves the in-memory star state as-is.
+    }
+  }
 
   // --- Create Discipline (Bull Lock) state ---
   const [amount, setAmount] = useState('');
@@ -444,16 +501,26 @@ export default function TokenDetail() {
         : 'Live data unavailable — showing last known price';
 
   return (
-    <ScrollView style={styles.root} contentContainerStyle={styles.inner}>
+    <ScrollView
+      style={styles.root}
+      contentContainerStyle={[
+        styles.inner,
+        {
+          paddingTop: 12 + insets.top,
+          paddingBottom: 24 + insets.bottom,
+          ...(isWide ? { maxWidth: 768, width: '100%', alignSelf: 'center' } : null),
+        },
+      ]}
+    >
       <View style={styles.head}>
         <Pressable onPress={() => router.back()} hitSlop={8}>
           <ChevronLeft size={22} color={COLORS.text} />
         </Pressable>
         <View style={styles.headToken}>
           <TokenLogo chainId={chainId} address={address} symbol={sym} size={36} logoUrl={storeToken?.logoUrl} />
-          <View>
-            <Text style={styles.title}>{sym || 'Token'}</Text>
-            <Text style={styles.sub}>{name}</Text>
+          <View style={styles.headTokenText}>
+            <Text style={styles.title} numberOfLines={1}>{sym || 'Token'}</Text>
+            <Text style={styles.sub} numberOfLines={1}>{name}</Text>
           </View>
         </View>
         <View style={styles.headRight}>
@@ -463,15 +530,14 @@ export default function TokenDetail() {
             ) : (
               <View style={[styles.liveDot, { backgroundColor: liveDotColor }]} />
             )}
-            <Text style={styles.price}>{priceText(price)}</Text>
+            <Text style={styles.price} numberOfLines={1} adjustsFontSizeToFit minimumFontScale={0.8}>{priceText(price)}</Text>
           </View>
           <Chip label={pctText(change24h)} tone={change24h === null ? 'muted' : up ? 'mint' : 'red'} />
         </View>
         <Pressable
-          onPress={() =>
-            Alert.alert('Live prices', `Prices update automatically every ${LIVE_POLL_MS / 1000} seconds — no refresh needed.`)
-          }
+          onPress={() => setRefreshNonce((n) => n + 1)}
           hitSlop={8}
+          accessibilityLabel="Refresh price now"
         >
           <RefreshCw size={18} color={COLORS.text} />
         </Pressable>
@@ -480,18 +546,18 @@ export default function TokenDetail() {
       <View style={styles.statCards}>
         <View style={styles.statCard}>
           <Text style={styles.statLabel}>Balance</Text>
-          <Text style={styles.statValue}>{fmtNum(balance, 4)} {sym}</Text>
-          <Text style={styles.statSub}>{fmtUsd(balance * (price ?? 0))}</Text>
+          <Text style={styles.statValue} numberOfLines={1} adjustsFontSizeToFit minimumFontScale={0.8}>{fmtNum(balance, 4)} {sym}</Text>
+          <Text style={styles.statSub} numberOfLines={1}>{fmtUsd(balance * (price ?? 0))}</Text>
         </View>
         <View style={styles.statCard}>
           <Text style={styles.statLabel}>Value</Text>
-          <Text style={styles.statValue}>{fmtUsd(balance * (price ?? 0))}</Text>
-          <Text style={styles.statSub}>{priceText(price)} / {sym}</Text>
+          <Text style={styles.statValue} numberOfLines={1} adjustsFontSizeToFit minimumFontScale={0.8}>{fmtUsd(balance * (price ?? 0))}</Text>
+          <Text style={styles.statSub} numberOfLines={1}>{priceText(price)} / {sym}</Text>
         </View>
         <View style={styles.statCard}>
           <Text style={styles.statLabel}>Locked</Text>
-          <Text style={styles.statValue}>{locked > 0 ? fmtNum(locked, 4) : '—'}</Text>
-          <Text style={styles.statSub}>{locked > 0 ? 'In vault' : 'None'}</Text>
+          <Text style={styles.statValue} numberOfLines={1} adjustsFontSizeToFit minimumFontScale={0.8}>{locked > 0 ? fmtNum(locked, 4) : '—'}</Text>
+          <Text style={styles.statSub} numberOfLines={1}>{locked > 0 ? 'In vault' : 'None'}</Text>
         </View>
       </View>
 
@@ -774,11 +840,7 @@ export default function TokenDetail() {
         <Btn label="Swap" variant="ghost" onPress={() => router.push({ pathname: '/(tabs)/swap', params: { from: sym } })} style={styles.actionBtn} />
       </View>
       <View style={styles.iconRow}>
-        <Pressable style={styles.iconBtn} onPress={() => setAlertOn((v) => !v)}>
-          <Bell size={16} color={alertOn ? COLORS.mintDark : COLORS.textMuted} />
-          <Text style={styles.iconLabel}>{alertOn ? 'Alert on' : 'Price alert'}</Text>
-        </Pressable>
-        <Pressable style={styles.iconBtn} onPress={() => setWatched((v) => !v)}>
+        <Pressable style={styles.iconBtn} onPress={() => void toggleWatch()}>
           <Star size={16} color={watched ? COLORS.navy : COLORS.textMuted} />
           <Text style={styles.iconLabel}>{watched ? 'Watching' : 'Watchlist'}</Text>
         </Pressable>
@@ -801,7 +863,10 @@ function DataRow({ label, value, tone }: { label: string; value: string; tone?: 
   return (
     <View style={styles.dataRow}>
       <Text style={styles.dataLabel}>{label}</Text>
-      <Text style={[styles.dataValue, tone === 'mint' && { color: COLORS.mintDark }, tone === 'red' && { color: COLORS.red }]}>
+      <Text
+        style={[styles.dataValue, tone === 'mint' && { color: COLORS.mintDark }, tone === 'red' && { color: COLORS.red }]}
+        numberOfLines={1}
+      >
         {value}
       </Text>
     </View>
@@ -825,7 +890,7 @@ const styles = StyleSheet.create({
   amountSym: { color: '#fff', fontSize: 14, fontWeight: '700' },
   chartCard: { marginTop: 12 },
   chartFoot: { alignItems: 'center', flexDirection: 'row', gap: 8, marginTop: 8 },
-  chartHead: { alignItems: 'center', flexDirection: 'row', gap: 8 },
+  chartHead: { alignItems: 'center', flexDirection: 'row', flexWrap: 'wrap', gap: 8 },
   chipBtn: {
     borderColor: COLORS.navySoft,
     borderRadius: 999,
@@ -845,9 +910,9 @@ const styles = StyleSheet.create({
     marginTop: 8,
     padding: 10,
   },
-  dataLabel: { color: COLORS.textMuted, fontSize: 12 },
+  dataLabel: { color: COLORS.textMuted, flexShrink: 0, fontSize: 12 },
   dataRow: { flexDirection: 'row', justifyContent: 'space-between', paddingVertical: 6 },
-  dataValue: { color: COLORS.text, fontSize: 12, fontWeight: '700', textAlign: 'right' },
+  dataValue: { color: COLORS.text, flex: 1, flexShrink: 1, fontSize: 12, fontWeight: '700', textAlign: 'right' },
   discHead: { alignItems: 'center', flexDirection: 'row', gap: 10 },
   discHint: { color: COLORS.textOnNavyMuted, fontSize: 11, marginTop: 6 },
   discIcon: {
@@ -864,8 +929,9 @@ const styles = StyleSheet.create({
   disciplineCard: { marginTop: 12, padding: 14 },
   footPrice: { color: COLORS.mintDark, fontSize: 16, fontWeight: '800' },
   head: { alignItems: 'center', flexDirection: 'row', gap: 8 },
-  headRight: { alignItems: 'flex-end', gap: 2 },
-  headToken: { alignItems: 'center', flex: 1, flexDirection: 'row', gap: 8 },
+  headRight: { alignItems: 'flex-end', flexShrink: 0, gap: 2 },
+  headToken: { alignItems: 'center', flex: 1, flexDirection: 'row', gap: 8, minWidth: 0 },
+  headTokenText: { flex: 1, minWidth: 0 },
   iconBtn: { alignItems: 'center', flexDirection: 'row', gap: 6 },
   iconLabel: { color: COLORS.textMuted, fontSize: 12, fontWeight: '700' },
   iconRow: { flexDirection: 'row', gap: 20, justifyContent: 'center', marginTop: 14 },
@@ -900,7 +966,7 @@ const styles = StyleSheet.create({
   pillText: { color: COLORS.text, fontSize: 11, fontWeight: '700' },
   pillTextOff: { color: COLORS.textMuted },
   pills: { flexDirection: 'row', flexWrap: 'wrap', gap: 6, justifyContent: 'center', marginTop: 10 },
-  price: { color: COLORS.mintDark, fontSize: 16, fontWeight: '800' },
+  price: { color: COLORS.mintDark, flexShrink: 1, fontSize: 16, fontWeight: '800' },
   priceRow: { alignItems: 'center', flexDirection: 'row', gap: 6 },
   reviewBtn: { backgroundColor: '#fff', marginTop: 14 },
   root: { backgroundColor: COLORS.bg, flex: 1 },
@@ -921,6 +987,7 @@ const styles = StyleSheet.create({
     borderRadius: 12,
     borderWidth: 1,
     flex: 1,
+    minWidth: 0,
     padding: 10,
   },
   statCards: { flexDirection: 'row', gap: 8, marginTop: 12 },

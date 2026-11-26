@@ -16,7 +16,8 @@
  *  swap. Signing happens only in the shared SignTransactionModal — there
  *  is no password field on this page. */
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { Pressable, ScrollView, StyleSheet, Text, TextInput, View } from 'react-native';
+import { Pressable, ScrollView, StyleSheet, Text, TextInput, View, useWindowDimensions } from 'react-native';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { ArrowDownUp, ChevronDown, Search, Settings } from 'lucide-react-native';
 import { useLocalSearchParams } from 'expo-router';
 import { COLORS } from '../../theme';
@@ -58,6 +59,12 @@ type MarketMap = Record<string, { price: number | null; change24h: number | null
 export default function Swap() {
   const params = useLocalSearchParams<{ from?: string; to?: string }>();
   const { tokens, chain, address, settings, addTx, refreshBalances } = useApp();
+  const { width, height } = useWindowDimensions();
+  const insets = useSafeAreaInsets();
+  const isWide = width >= 768;
+  // Token picker list inside the bottom sheet: bounded so a long
+  // catalogue scrolls inside the sheet instead of overflowing it.
+  const pickListMaxHeight = Math.min(420, Math.round(height * 0.45));
   const merged = useMemo(() => mergeSwapTokens(chain.id, tokens), [chain.id, tokens]);
 
   const [fromSymbol, setFromSymbol] = useState<string>(chain.nativeSymbol);
@@ -461,10 +468,20 @@ export default function Swap() {
   const otherSideSymbol = pickSide === 'from' ? toSymbol : fromSymbol;
 
   return (
-    <ScrollView style={styles.root} contentContainerStyle={styles.inner}>
+    <ScrollView
+      style={styles.root}
+      contentContainerStyle={[
+        styles.inner,
+        {
+          paddingTop: 12 + insets.top,
+          paddingBottom: 24 + insets.bottom,
+          ...(isWide ? { maxWidth: 768, width: '100%', alignSelf: 'center' } : null),
+        },
+      ]}
+    >
       <View style={styles.head}>
         <View style={styles.headSide} />
-        <Text style={styles.title}>Swap Assets</Text>
+        <Text style={styles.title} numberOfLines={1} adjustsFontSizeToFit minimumFontScale={0.85}>Swap Assets</Text>
         <View style={styles.headRight}>
           <Pressable onPress={() => setSlipOpen(true)} style={styles.gear} hitSlop={6}>
             <Settings size={18} color={COLORS.navy} />
@@ -492,7 +509,7 @@ export default function Swap() {
             {fromToken ? (
               <TokenLogo chainId={fromToken.chainId} address={fromToken.address} symbol={fromToken.symbol} size={28} fallbackTone="light" logoUrl={fromToken.logoUrl} />
             ) : null}
-            <Text style={styles.tokenSymbol}>{fromToken?.symbol ?? '—'}</Text>
+            <Text style={styles.tokenSymbol} numberOfLines={1}>{fromToken?.symbol ?? '—'}</Text>
             <ChevronDown size={14} color={COLORS.textMuted} />
           </Pressable>
           <TextInput
@@ -534,7 +551,7 @@ export default function Swap() {
             {toToken ? (
               <TokenLogo chainId={toToken.chainId} address={toToken.address} symbol={toToken.symbol} size={28} fallbackTone="light" logoUrl={toToken.logoUrl} />
             ) : null}
-            <Text style={styles.tokenSymbol}>{toToken?.symbol ?? '—'}</Text>
+            <Text style={styles.tokenSymbol} numberOfLines={1}>{toToken?.symbol ?? '—'}</Text>
             <ChevronDown size={14} color={COLORS.textMuted} />
           </Pressable>
           <Text style={styles.amountText}>{amt > 0 ? fmtNum(outAmount, 4) : '0.00'}</Text>
@@ -681,7 +698,8 @@ export default function Swap() {
             autoCorrect={false}
           />
         </View>
-        {pickList.map((t) => {
+        <ScrollView style={{ maxHeight: pickListMaxHeight }} showsVerticalScrollIndicator={false}>
+          {pickList.map((t) => {
           const price = t.price ?? market[t.symbol]?.price ?? null;
           const change = market[t.symbol]?.change24h ?? null;
           const disabled = t.symbol === otherSideSymbol;
@@ -695,21 +713,22 @@ export default function Swap() {
             >
               <TokenLogo chainId={t.chainId} address={t.address} symbol={t.symbol} size={28} fallbackTone="light" logoUrl={t.logoUrl} />
               <View style={styles.pickMid}>
-                <Text style={styles.pickName}>
+                <Text style={styles.pickName} numberOfLines={1}>
                   {t.symbol}
                   {t.balance === 0 ? ' · 0 balance' : ''}
                 </Text>
-                <Text style={styles.pickSub}>
+                <Text style={styles.pickSub} numberOfLines={1}>
                   {t.name}
                   {price !== null ? ` · ${fmtPrice(price)}` : ''}
                   {change !== null ? ` · ${change >= 0 ? '+' : ''}${fmtPct(change)}` : ''}
                 </Text>
               </View>
-              <Text style={styles.pickBal}>{fmtNum(t.balance, 4)}</Text>
+              <Text style={styles.pickBal} numberOfLines={1}>{fmtNum(t.balance, 4)}</Text>
             </Pressable>
           );
         })}
-        {pickList.length === 0 ? <Text style={styles.emptyBody}>No tokens match that search.</Text> : null}
+          {pickList.length === 0 ? <Text style={styles.emptyBody}>No tokens match that search.</Text> : null}
+        </ScrollView>
       </BottomSheet>
 
       <SignTransactionModal
@@ -728,14 +747,14 @@ function QuoteRow({ label, value }: { label: string; value: string }) {
   return (
     <View style={styles.qRow}>
       <Text style={styles.qLabel}>{label}</Text>
-      <Text style={styles.qValue}>{value}</Text>
+      <Text style={styles.qValue} numberOfLines={1}>{value}</Text>
     </View>
   );
 }
 
 const styles = StyleSheet.create({
-  amountInput: { flex: 1, fontSize: 20, fontWeight: '800', textAlign: 'right' },
-  amountText: { color: COLORS.text, flex: 1, fontSize: 20, fontWeight: '800', textAlign: 'right' },
+  amountInput: { flex: 1, fontSize: 20, fontWeight: '800', minWidth: 0, textAlign: 'right' },
+  amountText: { color: COLORS.text, flex: 1, fontSize: 20, fontWeight: '800', minWidth: 0, textAlign: 'right' },
   bal: { color: COLORS.textMuted, fontSize: 12 },
   cardHead: { alignItems: 'center', flexDirection: 'row', justifyContent: 'space-between' },
   cardLabel: { color: COLORS.textMuted, fontSize: 12, fontWeight: '700' },
@@ -779,7 +798,7 @@ const styles = StyleSheet.create({
   formError: { color: COLORS.red, fontSize: 12, fontWeight: '700', lineHeight: 17, marginTop: 8 },
   gear: { position: 'relative' },
   head: { alignItems: 'center', flexDirection: 'row', justifyContent: 'space-between' },
-  headRight: { alignItems: 'center', flexDirection: 'row', gap: 10 },
+  headRight: { alignItems: 'center', flexDirection: 'row', flexShrink: 0, gap: 10 },
   headSide: { width: 32 },
   hint: { color: COLORS.textMuted, fontSize: 12, lineHeight: 17, marginTop: 6 },
   inner: { padding: 12 },
@@ -788,15 +807,15 @@ const styles = StyleSheet.create({
   maxText: { color: '#fff', fontSize: 11, fontWeight: '800' },
   payCard: { marginTop: 12, padding: 12 },
   payRow: { alignItems: 'center', flexDirection: 'row', gap: 8, marginTop: 10 },
-  pickBal: { color: COLORS.text, fontSize: 12, fontWeight: '700' },
-  pickMid: { flex: 1 },
+  pickBal: { color: COLORS.text, flexShrink: 0, fontSize: 12, fontWeight: '700' },
+  pickMid: { flex: 1, minWidth: 0 },
   pickName: { color: COLORS.text, fontSize: 14, fontWeight: '700' },
   pickRow: { alignItems: 'center', borderBottomColor: COLORS.border, borderBottomWidth: 1, flexDirection: 'row', gap: 10, paddingVertical: 10 },
   pickRowDisabled: { opacity: 0.4 },
   pickSub: { color: COLORS.textMuted, fontSize: 12, marginTop: 2 },
-  qLabel: { color: COLORS.textMuted, fontSize: 12 },
+  qLabel: { color: COLORS.textMuted, flexShrink: 0, fontSize: 12, marginRight: 8 },
   qRow: { flexDirection: 'row', justifyContent: 'space-between', paddingVertical: 4 },
-  qValue: { color: COLORS.text, fontSize: 12, fontWeight: '700', textAlign: 'right' },
+  qValue: { color: COLORS.text, flex: 1, flexShrink: 1, fontSize: 12, fontWeight: '700', textAlign: 'right' },
   quote: { marginTop: 12 },
   quoteWarn: { color: COLORS.textMuted, fontSize: 12, lineHeight: 17, marginTop: 8 },
   root: { backgroundColor: COLORS.bg, flex: 1 },
@@ -834,10 +853,12 @@ const styles = StyleSheet.create({
     borderRadius: 999,
     borderWidth: 1,
     flexDirection: 'row',
+    flexShrink: 1,
     gap: 4,
+    minWidth: 0,
     paddingHorizontal: 8,
     paddingVertical: 6,
   },
   tokenPrice: { color: COLORS.textMuted, fontSize: 11, marginTop: 8 },
-  tokenSymbol: { color: COLORS.text, fontSize: 14, fontWeight: '700' },
+  tokenSymbol: { color: COLORS.text, flexShrink: 1, fontSize: 14, fontWeight: '700' },
 });

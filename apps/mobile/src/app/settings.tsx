@@ -1,14 +1,24 @@
 /** Screen 17 — Advanced Settings (v1): centred title, grouped cards under
  *  SECURITY & BACKUP / NETWORK & WEB3 / APP PREFERENCES / SYSTEM, icon
  *  circles, chevron rows, red Wipe Wallet Environment button. Network
- *  picker lists all six chains with Arc first (default). */
-import { useState } from 'react';
-import { Alert, Pressable, ScrollView, StyleSheet, Switch, Text, TextInput, View } from 'react-native';
+ *  picker lists all six chains with Arc first (default).
+ *
+ *  Every row does something real — no Alert.alert anywhere (it is a
+ *  no-op on web, so the old Address Book / Clear Cache / About rows
+ *  looked like dead buttons):
+ *  - Address Book is a real saved-address list (see lib/addressBook.ts),
+ *    also used by the Send screen's recipient picker.
+ *  - Clear Cache really clears the token-logo cache (lib/tokenLogos.ts
+ *    clearLogoCache) and confirms inline.
+ *  - About expands inline. Password change / wipe confirm inline. */
+import { useEffect, useState } from 'react';
+import { Pressable, ScrollView, StyleSheet, Switch, Text, TextInput, View } from 'react-native';
 import { router } from 'expo-router';
 import {
   Bell,
   BookUser,
   ChevronRight,
+  Copy,
   Fingerprint,
   Globe,
   Info,
@@ -17,12 +27,21 @@ import {
   Paintbrush,
   Timer,
   Trash2,
+  X,
 } from 'lucide-react-native';
 import { COLORS } from '../theme';
 import { useApp } from '../store/AppContext';
 import { changePassword, clearBiometricSessionPassword, exportSecret, wipeWallet } from '../lib/wallet';
+import {
+  addSavedAddress,
+  displaySavedAddress,
+  loadAddressBook,
+  removeSavedAddress,
+  type SavedAddress,
+} from '../lib/addressBook';
+import { clearLogoCache } from '../lib/tokenLogos';
 import * as Clipboard from 'expo-clipboard';
-import { Btn, Card, NetworkSheet, RiskNote } from '../components/ui';
+import { Btn, Card, NetworkSheet, RiskNote, centeredContent } from '../components/ui';
 
 const AUTO_LOCK_OPTIONS = [0, 1, 5, 15];
 const autoLockLabel = (m: number) => (m === 0 ? 'Immediately' : `${m} min`);
@@ -31,6 +50,7 @@ export default function Settings() {
   const { settings, updateSettings, chain, resetState } = useApp();
   const [netOpen, setNetOpen] = useState(false);
   const [wipeText, setWipeText] = useState('');
+  const [wipeMsg, setWipeMsg] = useState('');
   const [showWipe, setShowWipe] = useState(false);
   // Change password — wired to wallet.ts changePassword (decrypt with the
   // old password, re-encrypt under the new one). Wrong old password throws.
@@ -39,6 +59,7 @@ export default function Settings() {
   const [newPw, setNewPw] = useState('');
   const [newPw2, setNewPw2] = useState('');
   const [pwMsg, setPwMsg] = useState('');
+  const [pwOk, setPwOk] = useState(false);
   const [pwBusy, setPwBusy] = useState(false);
   // Export secrets — wired to wallet.ts exportSecret (password re-entry
   // required; the secret is shown once and never logged or stored).
@@ -47,26 +68,44 @@ export default function Settings() {
   const [exported, setExported] = useState('');
   const [exportMsg, setExportMsg] = useState('');
   const [exportBusy, setExportBusy] = useState(false);
+  // Address book — real saved recipients (lib/addressBook.ts).
+  const [bookOpen, setBookOpen] = useState(false);
+  const [contacts, setContacts] = useState<SavedAddress[]>([]);
+  const [newLabel, setNewLabel] = useState('');
+  const [newAddress, setNewAddress] = useState('');
+  const [bookMsg, setBookMsg] = useState('');
+  const [bookBusy, setBookBusy] = useState(false);
+  // Clear cache / About — inline confirmation, no Alert.
+  const [cacheMsg, setCacheMsg] = useState('');
+  const [aboutOpen, setAboutOpen] = useState(false);
+
+  useEffect(() => {
+    if (bookOpen) void loadAddressBook().then(setContacts);
+  }, [bookOpen]);
 
   async function submitPasswordChange() {
     if (newPw.length < 8) {
+      setPwOk(false);
       setPwMsg('New password must be at least 8 characters.');
       return;
     }
     if (newPw !== newPw2) {
+      setPwOk(false);
       setPwMsg('New passwords do not match.');
       return;
     }
     setPwBusy(true);
     setPwMsg('');
+    setPwOk(false);
     try {
       await changePassword(oldPw, newPw);
       setOldPw('');
       setNewPw('');
       setNewPw2('');
-      setPwOpen(false);
-      Alert.alert('Password changed', 'Your wallet is now encrypted under the new password.');
+      setPwOk(true);
+      setPwMsg('Password changed — your wallet is now encrypted under the new password.');
     } catch (e) {
+      setPwOk(false);
       setPwMsg(e instanceof Error ? e.message : String(e));
     } finally {
       setPwBusy(false);
@@ -92,9 +131,34 @@ export default function Settings() {
     updateSettings({ autoLockMinutes: AUTO_LOCK_OPTIONS[(i + 1) % AUTO_LOCK_OPTIONS.length] });
   }
 
+  async function submitAddContact() {
+    setBookBusy(true);
+    setBookMsg('');
+    try {
+      const contact = await addSavedAddress(newLabel, newAddress);
+      setContacts((prev) => [contact, ...prev]);
+      setNewLabel('');
+      setNewAddress('');
+      setBookMsg(`Saved ${contact.label} — it now appears in Send.`);
+    } catch (e) {
+      setBookMsg(e instanceof Error ? e.message : String(e));
+    } finally {
+      setBookBusy(false);
+    }
+  }
+
+  async function deleteContact(id: string) {
+    setContacts(await removeSavedAddress(id));
+  }
+
+  function doClearCache() {
+    clearLogoCache();
+    setCacheMsg('Cache cleared — token logos will be re-fetched when needed.');
+  }
+
   async function wipe() {
     if (wipeText.trim().toUpperCase() !== 'WIPE') {
-      Alert.alert('Type WIPE to confirm', 'Wiping removes the wallet from this device. Your seed phrase is the only recovery.');
+      setWipeMsg('Type WIPE to confirm — wiping removes the wallet from this device. Your seed phrase is the only recovery.');
       return;
     }
     await wipeWallet();
@@ -103,7 +167,7 @@ export default function Settings() {
   }
 
   return (
-    <ScrollView style={styles.root} contentContainerStyle={styles.inner}>
+    <ScrollView style={styles.root} contentContainerStyle={[styles.inner, centeredContent]}>
       <Text style={styles.title}>Advanced Settings</Text>
 
       <Text style={styles.section}>SECURITY & BACKUP</Text>
@@ -149,7 +213,7 @@ export default function Settings() {
           <TextInput style={styles.formInput} placeholder="Current password" secureTextEntry value={oldPw} onChangeText={setOldPw} autoCapitalize="none" />
           <TextInput style={styles.formInput} placeholder="New password (min 8 characters)" secureTextEntry value={newPw} onChangeText={setNewPw} autoCapitalize="none" />
           <TextInput style={styles.formInput} placeholder="Confirm new password" secureTextEntry value={newPw2} onChangeText={setNewPw2} autoCapitalize="none" />
-          {pwMsg ? <Text style={styles.formErr}>{pwMsg}</Text> : null}
+          {pwMsg ? <Text style={pwOk ? styles.formOk : styles.formErr}>{pwMsg}</Text> : null}
           <Btn label={pwBusy ? 'Changing…' : 'Change Password'} onPress={() => void submitPasswordChange()} disabled={pwBusy || !oldPw || !newPw || !newPw2} />
         </Card>
       ) : null}
@@ -188,8 +252,8 @@ export default function Settings() {
         <Row
           icon={<BookUser size={18} color={COLORS.text} />}
           title="Address Book"
-          sub="Manage saved wallet addresses"
-          onPress={() => Alert.alert('Address Book', 'No saved addresses yet.')}
+          sub={contacts.length > 0 ? `${contacts.length} saved address${contacts.length === 1 ? '' : 'es'}` : 'Manage saved wallet addresses'}
+          onPress={() => setBookOpen((v) => !v)}
         />
         <Divider />
         <Row icon={<Bell size={18} color={COLORS.text} />} title="Notifications" sub="Targets, maturity and security alerts" onPress={() => router.push('/notifications')} />
@@ -199,17 +263,54 @@ export default function Settings() {
         </Row>
       </Card>
 
+      {bookOpen ? (
+        <Card style={styles.formCard}>
+          <Text style={styles.formTitle}>Address book</Text>
+          <Text style={styles.formHint}>Saved recipients appear in Send. Only real wallet addresses can be saved.</Text>
+          {contacts.map((c) => (
+            <View key={c.id} style={styles.contactRow}>
+              <View style={styles.contactMid}>
+                <Text style={styles.contactLabel}>{c.label}</Text>
+                <Text style={styles.contactAddr}>{displaySavedAddress(c.address)}</Text>
+              </View>
+              <Pressable onPress={() => void Clipboard.setStringAsync(c.address)} hitSlop={8}>
+                <Copy size={16} color={COLORS.textMuted} />
+              </Pressable>
+              <Pressable onPress={() => void deleteContact(c.id)} hitSlop={8}>
+                <X size={16} color={COLORS.red} />
+              </Pressable>
+            </View>
+          ))}
+          {contacts.length === 0 ? <Text style={styles.formHint}>No saved addresses yet.</Text> : null}
+          <TextInput style={styles.formInput} placeholder="Label (e.g. Mum)" value={newLabel} onChangeText={setNewLabel} autoCapitalize="words" />
+          <TextInput style={styles.formInput} placeholder="Wallet address (0x… or Solana)" value={newAddress} onChangeText={setNewAddress} autoCapitalize="none" autoCorrect={false} />
+          {bookMsg ? <Text style={styles.formErr}>{bookMsg}</Text> : null}
+          <Btn label={bookBusy ? 'Saving…' : 'Add Address'} onPress={() => void submitAddContact()} disabled={bookBusy || !newLabel.trim() || !newAddress.trim()} />
+        </Card>
+      ) : null}
+
       <Text style={styles.section}>SYSTEM</Text>
       <Card style={styles.group}>
         <Row
           icon={<Trash2 size={18} color={COLORS.text} />}
           title="Clear Cache"
           sub="Free up application cache"
-          onPress={() => Alert.alert('Cache cleared', 'No cached price or token data was stored on this device.')}
+          onPress={doClearCache}
         />
         <Divider />
-        <Row icon={<Info size={18} color={COLORS.text} />} title="About Stelix" sub="Version 2.0.0" onPress={() => Alert.alert('About Stelix', 'Stelix 2.0.0 · Non-custodial multichain vault wallet. Arc default · BNB · Base · Ethereum · Polygon · Solana.')} />
+        <Row icon={<Info size={18} color={COLORS.text} />} title="About Stelix" sub="Version 2.0.0" onPress={() => setAboutOpen((v) => !v)} />
       </Card>
+
+      {cacheMsg ? <Text style={styles.inlineOk}>{cacheMsg}</Text> : null}
+      {aboutOpen ? (
+        <Card style={styles.formCard}>
+          <Text style={styles.formTitle}>About Stelix</Text>
+          <Text style={styles.formHint}>
+            Stelix 2.0.0 · Non-custodial multichain vault wallet. Arc default · BNB · Base · Ethereum · Polygon ·
+            Solana. Your keys never leave this device; locks are enforced on-chain by the StelixVault contract.
+          </Text>
+        </Card>
+      ) : null}
 
       <View style={styles.wipeWrap}>
         {!showWipe ? (
@@ -221,6 +322,7 @@ export default function Settings() {
           <Card style={styles.wipeCard}>
             <Text style={styles.wipeHint}>Type WIPE to remove the wallet from this device. Recovery needs your seed phrase.</Text>
             <TextInput style={styles.wipeInput} placeholder="WIPE" autoCapitalize="characters" value={wipeText} onChangeText={setWipeText} />
+            {wipeMsg ? <Text style={styles.formErr}>{wipeMsg}</Text> : null}
             <Btn label="Confirm Wipe" variant="danger" onPress={wipe} />
           </Card>
         )}
@@ -263,15 +365,21 @@ function Row({
 }
 
 const styles = StyleSheet.create({
+  contactAddr: { color: COLORS.textMuted, fontSize: 12, marginTop: 2 },
+  contactLabel: { color: COLORS.text, fontSize: 14, fontWeight: '700' },
+  contactMid: { flex: 1 },
+  contactRow: { alignItems: 'center', borderBottomColor: COLORS.border, borderBottomWidth: 1, flexDirection: 'row', gap: 12, paddingVertical: 8 },
   divider: { backgroundColor: COLORS.border, height: 1, marginLeft: 52 },
   formBtn: { marginTop: 10 },
   formCard: { gap: 10, marginTop: 10 },
   formErr: { color: COLORS.red, fontSize: 12, lineHeight: 17 },
   formHint: { color: COLORS.textMuted, fontSize: 12, lineHeight: 17 },
   formInput: { backgroundColor: COLORS.bgMuted, borderRadius: 12, fontSize: 14, padding: 12 },
+  formOk: { color: COLORS.mintDark, fontSize: 12, fontWeight: '700', lineHeight: 17 },
   formTitle: { color: COLORS.text, fontSize: 14, fontWeight: '800' },
   group: { paddingVertical: 4 },
   inner: { padding: 12 },
+  inlineOk: { color: COLORS.mintDark, fontSize: 12, fontWeight: '700', lineHeight: 17, marginTop: 10, textAlign: 'center' },
   root: { backgroundColor: COLORS.bg, flex: 1 },
   row: { alignItems: 'center', flexDirection: 'row', gap: 12, paddingVertical: 12 },
   rowIcon: {
@@ -283,7 +391,7 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
     width: 40,
   },
-  rowMid: { flex: 1 },
+  rowMid: { flex: 1, minWidth: 0 },
   rowSub: { color: COLORS.textMuted, fontSize: 12, lineHeight: 16, marginTop: 2 },
   rowTitle: { color: COLORS.text, fontSize: 14, fontWeight: '700' },
   secret: { backgroundColor: COLORS.bgMuted, borderRadius: 12, color: COLORS.text, fontSize: 12, lineHeight: 18, padding: 12 },

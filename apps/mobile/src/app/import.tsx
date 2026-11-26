@@ -10,7 +10,7 @@ import { useState } from 'react';
 import { ScrollView, StyleSheet, Text, TextInput, View } from 'react-native';
 import { router } from 'expo-router';
 import { COLORS } from '../theme';
-import { Btn, RiskNote } from '../components/ui';
+import { Btn, RiskNote, centeredContent } from '../components/ui';
 import { importWallet, isValidMnemonic } from '../lib/wallet';
 import { useApp } from '../store/AppContext';
 
@@ -61,7 +61,7 @@ export default function ImportWallet() {
   }
 
   return (
-    <ScrollView style={styles.root} contentContainerStyle={styles.inner}>
+    <ScrollView style={styles.root} contentContainerStyle={[styles.inner, centeredContent]}>
       <Text style={styles.title}>Import Wallet</Text>
       <Text style={styles.sub}>Name your wallet, select your import method, and provide the credentials.</Text>
       <Text style={styles.warn}>

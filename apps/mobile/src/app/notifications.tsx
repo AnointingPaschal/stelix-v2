@@ -1,27 +1,101 @@
 /** Screen 16 — Notifications: target progress, maturity, auto-sell,
- *  security alerts. Empty state when there is nothing yet. */
+ *  security alerts.
+ *
+ *  The list is real: stored notifications from the app plus alerts
+ *  derived live from the user's own locks (see lib/notifications.ts) —
+ *  maturing/matured locks, 50% / 80% / 100% of target, breached
+ *  trailing stops, break cooling-off. "Mark all read" marks both.
+ *  Read state for derived items is kept in kv storage. Empty state
+ *  only when there is genuinely nothing to report. */
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import { ScrollView, StyleSheet, Text, View } from 'react-native';
 import { Bell } from 'lucide-react-native';
 import { COLORS } from '../theme';
 import { useApp } from '../store/AppContext';
 import { fmtDateTime } from '../lib/format';
-import { Btn, EmptyState } from '../components/ui';
+import { deriveLockNotifications } from '../lib/notifications';
+import { kvGet, kvSet } from '../lib/storage';
+import { Btn, EmptyState, centeredContent } from '../components/ui';
+
+const READ_DERIVED_KEY = 'stelix_read_derived_notifications_v1';
+
+interface Row {
+  id: string;
+  title: string;
+  body: string;
+  at: number;
+  read: boolean;
+  derived: boolean;
+}
 
 export default function Notifications() {
-  const { notifications, markNotificationsRead } = useApp();
+  const { notifications, markNotificationsRead, locks, tokens } = useApp();
+  const [readDerived, setReadDerived] = useState<string[]>([]);
+
+  useEffect(() => {
+    void kvGet(READ_DERIVED_KEY).then((raw) => {
+      if (!raw) return;
+      try {
+        const parsed = JSON.parse(raw) as string[];
+        if (Array.isArray(parsed)) setReadDerived(parsed);
+      } catch {
+        // Corrupt read-state: start unread.
+      }
+    });
+  }, []);
+
+  const derived = useMemo(
+    () =>
+      deriveLockNotifications(
+        locks,
+        (symbol) => tokens.find((t) => t.symbol === symbol)?.price ?? null,
+      ),
+    [locks, tokens],
+  );
+
+  const rows: Row[] = useMemo(() => {
+    const stored: Row[] = notifications.map((n) => ({
+      id: n.id,
+      title: n.title,
+      body: n.body,
+      at: n.at,
+      read: n.read,
+      derived: false,
+    }));
+    const live: Row[] = derived.map((d) => ({
+      id: d.id,
+      title: d.title,
+      body: d.body,
+      at: d.at,
+      read: readDerived.includes(d.id),
+      derived: true,
+    }));
+    return [...stored, ...live].sort((a, b) => b.at - a.at);
+  }, [notifications, derived, readDerived]);
+
+  const unreadCount = rows.filter((r) => !r.read).length;
+
+  const markAllRead = useCallback(() => {
+    markNotificationsRead();
+    const ids = derived.map((d) => d.id);
+    const next = Array.from(new Set([...readDerived, ...ids]));
+    setReadDerived(next);
+    void kvSet(READ_DERIVED_KEY, JSON.stringify(next));
+  }, [markNotificationsRead, derived, readDerived]);
+
   return (
-    <ScrollView style={styles.root} contentContainerStyle={styles.inner}>
+    <ScrollView style={styles.root} contentContainerStyle={[styles.inner, centeredContent]}>
       <Text style={styles.title}>Notifications</Text>
-      {notifications.length > 0 ? (
-        <Btn label="Mark all read" variant="ghost" onPress={markNotificationsRead} style={styles.markBtn} />
+      {rows.length > 0 && unreadCount > 0 ? (
+        <Btn label={`Mark all read (${unreadCount})`} variant="ghost" onPress={markAllRead} style={styles.markBtn} />
       ) : null}
-      {notifications.length === 0 ? (
+      {rows.length === 0 ? (
         <EmptyState
           title="No notifications yet"
           body="Target progress, maturity reminders, auto-sell results and security alerts will appear here."
         />
       ) : (
-        notifications.map((n) => (
+        rows.map((n) => (
           <View key={n.id} style={[styles.row, !n.read && styles.unread]}>
             <View style={styles.icon}>
               <Bell size={16} color={n.read ? COLORS.textMuted : COLORS.mintDark} />

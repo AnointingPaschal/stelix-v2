@@ -5,7 +5,7 @@ import { Image, StyleSheet, Text, View } from 'react-native';
 import { router } from 'expo-router';
 import { Lock, Target, TrendingUp } from 'lucide-react-native';
 import { COLORS } from '../theme';
-import { Btn, RiskNote } from '../components/ui';
+import { Btn, RiskNote, centeredContent } from '../components/ui';
 
 const POINTS = [
   { icon: <Lock size={18} color={COLORS.mintDark} />, title: 'Lock it', body: 'Move funds into the Vault so they cannot be spent on impulse.' },
@@ -15,7 +15,7 @@ const POINTS = [
 
 export default function Onboarding() {
   return (
-    <View style={styles.root}>
+    <View style={[styles.root, centeredContent]}>
       <View style={styles.brandRow}>
         <Image source={require('../../assets/icon.png')} style={styles.logo} resizeMode="contain" />
         <View>

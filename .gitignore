@@ -8,3 +8,7 @@ cache/
 .env.*
 !.dev.vars.example
 .dev.vars
+.wrangler/
+contracts/lib/
+contracts/out/
+contracts/cache/
