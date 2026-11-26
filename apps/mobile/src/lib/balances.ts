@@ -1,5 +1,5 @@
 /**
- * LIVE balances — real RPC reads only. No demo/sample balances.
+ * LIVE balances — real RPC reads only. No placeholder balances.
  *
  * A new wallet has NO tokens: balances start empty and the portfolio is
  * $0.00 until the user receives funds on-chain. The imported-token list
@@ -12,13 +12,14 @@
  * - Prices come from prices.ts (DexScreener/CoinGecko) and are labelled
  *   with source + timestamp; a token with no live price has priceUsd null
  *   and contributes $0 to the displayed total (it is still listed).
- * - Solana: NOT wired here — Solana balances need an @solana/web3.js
- *   RPC client, which is not a dependency of this app yet. getBalances()
- *   returns a clear error for Solana instead of a fake number.
+ * - Solana: SOL + SPL tokens via @solana/web3.js (see lib/solana.ts).
+ *   The caller passes the wallet's derived Solana address (stored in the
+ *   wallet meta) as `address`; the EVM address is meaningless on Solana.
  */
 import { ethers } from 'ethers';
 import { getChain, type ChainConfig } from './chains';
 import { fetchDexScreenerToken, fetchMajorPrices } from './prices';
+import { fetchSolanaBalances } from './solana';
 import { kvGet, kvSet } from './storage';
 
 export const ERC20_MIN_ABI = [
@@ -67,6 +68,14 @@ export interface BalancesResult {
   loading: boolean;
   error: string | null;
   updatedAt: number;
+}
+
+/** The token rows actually listed on Home: spam hidden unless the user
+ *  opted to show it. The "Assets N tokens" header count must equal this
+ *  list's length — counting by balance (balance > 0) undercounts, because
+ *  0-balance default/imported rows are still listed. */
+export function visibleTokens<T extends { isSpam: boolean }>(tokens: T[], showSpam: boolean): T[] {
+  return tokens.filter((t) => !t.isSpam || showSpam);
 }
 
 const IMPORTED_TOKENS_KEY = 'stelix_imported_tokens_v2';
@@ -203,16 +212,69 @@ export async function fetchBalances(
     return { chain, address, tokens: [], totalUsd: 0, loading: false, error: 'Invalid wallet address.', updatedAt: startedAt };
   }
   if (chain.kind === 'solana') {
-    return {
-      chain,
-      address,
-      tokens: [],
-      totalUsd: 0,
-      loading: false,
-      error:
-        'Solana balances are not wired yet — @solana/web3.js is not installed. No balance is shown rather than a fake one.',
-      updatedAt: startedAt,
-    };
+    if (!address || address.startsWith('0x')) {
+      return {
+        chain,
+        address,
+        tokens: [],
+        totalUsd: 0,
+        loading: false,
+        error:
+          'No Solana address for this wallet — it was imported from a raw private key, so no Solana address could be derived. Import the seed phrase to use Solana.',
+        updatedAt: startedAt,
+      };
+    }
+    try {
+      const sol = await fetchSolanaBalances(address);
+      const tokens: TokenBalance[] = [];
+      const solPrice = (await fetchMajorPrices(['solana']))?.solana?.price ?? null;
+      tokens.push({
+        symbol: chain.nativeSymbol,
+        name: chain.nativeName,
+        chainId: chain.id,
+        address: '',
+        decimals: chain.nativeDecimals,
+        balance: sol.sol,
+        balanceRaw: sol.lamports.toString(),
+        locked: 0,
+        priceUsd: solPrice,
+        price: solPrice,
+        priceSource: solPrice !== null ? 'coingecko' : 'unavailable',
+        priceUpdatedAt: solPrice !== null ? Date.now() : null,
+        isSpam: false,
+      });
+      for (const t of sol.tokens) {
+        const ds = await fetchDexScreenerToken(chain.id, t.mint);
+        tokens.push({
+          symbol: ds?.symbol ?? `${t.mint.slice(0, 4)}…${t.mint.slice(-4)}`,
+          name: ds?.name ?? `SPL token ${t.mint.slice(0, 8)}…`,
+          chainId: chain.id,
+          address: t.mint,
+          decimals: t.decimals,
+          balance: t.balance,
+          balanceRaw: t.balanceRaw,
+          locked: 0,
+          priceUsd: ds?.priceUsd ?? null,
+          price: ds?.priceUsd ?? null,
+          priceSource: ds?.priceUsd ? 'dexscreener' : 'unavailable',
+          priceUpdatedAt: ds?.updatedAt ?? null,
+          logoUrl: null,
+          isSpam: false,
+        });
+      }
+      const totalUsd = tokens.reduce((s, t) => s + (t.priceUsd !== null ? t.balance * t.priceUsd : 0), 0);
+      return { chain, address, tokens, totalUsd, loading: false, error: null, updatedAt: Date.now() };
+    } catch (e) {
+      return {
+        chain,
+        address,
+        tokens: [],
+        totalUsd: 0,
+        loading: false,
+        error: `Could not read Solana balances from ${chain.rpcUrl}: ${e instanceof Error ? e.message : String(e)}`,
+        updatedAt: startedAt,
+      };
+    }
   }
   const provider = getProvider(chain);
   const imported = (importedTokens ?? (await loadImportedTokens())).filter((t) => t.chainId === chain.id);
