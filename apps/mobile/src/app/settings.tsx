@@ -28,7 +28,7 @@ const AUTO_LOCK_OPTIONS = [0, 1, 5, 15];
 const autoLockLabel = (m: number) => (m === 0 ? 'Immediately' : `${m} min`);
 
 export default function Settings() {
-  const { settings, updateSettings, chain, resetDemo } = useApp();
+  const { settings, updateSettings, chain, resetState } = useApp();
   const [netOpen, setNetOpen] = useState(false);
   const [wipeText, setWipeText] = useState('');
   const [showWipe, setShowWipe] = useState(false);
@@ -98,7 +98,7 @@ export default function Settings() {
       return;
     }
     await wipeWallet();
-    resetDemo();
+    resetState();
     router.replace('/onboarding');
   }
 
