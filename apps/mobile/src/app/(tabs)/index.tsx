@@ -16,6 +16,7 @@ import { router } from 'expo-router';
 import {
   ArrowDownLeft,
   ArrowUpRight,
+  Check,
   ChevronDown,
   ChevronRight,
   Copy,
@@ -31,8 +32,10 @@ import { COLORS } from '../../theme';
 import { useApp } from '../../store/AppContext';
 import { fmtNum, fmtPrice, fmtUsd, shortAddress } from '../../lib/format';
 import { addImportedToken, resolveTokenMetadata } from '../../lib/balances';
+import { createImportInputController } from '../../lib/importToken';
 import { fetchDexScreenerToken } from '../../lib/prices';
 import { resolveTokenLogo } from '../../lib/tokenLogos';
+import { tokenDetailRoute } from '../../lib/tokenResolve';
 import {
   BottomSheet,
   Btn,
@@ -68,17 +71,40 @@ export default function Home() {
   const [importing, setImporting] = useState(false);
   const [importPreview, setImportPreview] = useState<ImportPreview | null>(null);
   const [previewLoading, setPreviewLoading] = useState(false);
-  const previewTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  // Sequence guard: a preview fetch that resolves after the user typed a
+  // different address (or closed the sheet) is discarded, never shown.
+  const previewSeq = useRef(0);
+  const fetchPreviewRef = useRef(fetchImportPreview);
+  useEffect(() => {
+    fetchPreviewRef.current = fetchImportPreview;
+  });
+  // Debounced address handler (pure, unit-tested in lib/__tests__/
+  // importToken.test.ts): focus/typing/paste/clear never throw, a valid
+  // paste fires one fetch, an invalid address shows an inline error.
+  const importController = useRef(
+    createImportInputController({
+      onValidAddress: (a) => void fetchPreviewRef.current(a),
+      onInvalidAddress: (msg) => {
+        previewSeq.current++; // invalidate any in-flight preview fetch
+        setImportMsg(msg);
+        setImportPreview(null);
+      },
+      onCleared: () => {
+        previewSeq.current++;
+        setImportMsg('');
+        setImportPreview(null);
+      },
+    }),
+  );
 
   useEffect(() => {
-    return () => {
-      if (previewTimer.current) clearTimeout(previewTimer.current);
-    };
+    return () => importController.current.cancel();
   }, []);
 
   /** Fetch the token BEFORE it can be imported: on-chain metadata + real
    *  logo + live price. Shows a preview card; errors are inline. */
   async function fetchImportPreview(a: string) {
+    const seq = ++previewSeq.current;
     setPreviewLoading(true);
     setImportMsg('');
     setImportPreview(null);
@@ -88,6 +114,7 @@ export default function Home() {
         resolveTokenLogo(chain.id, a).catch(() => ({ url: null as string | null, source: 'none' as const })),
         fetchDexScreenerToken(chain.id, a).catch(() => null),
       ]);
+      if (seq !== previewSeq.current) return; // superseded — a newer address was typed
       setImportPreview({
         symbol: meta.symbol,
         name: meta.name,
@@ -96,27 +123,23 @@ export default function Home() {
         priceUsd: market?.priceUsd ?? null,
       });
     } catch (e) {
+      if (seq !== previewSeq.current) return;
       setImportMsg(
         `Could not read that contract on ${chain.name} — it may not be a token contract. ${e instanceof Error ? e.message : ''}`,
       );
     } finally {
-      setPreviewLoading(false);
+      if (seq === previewSeq.current) setPreviewLoading(false);
     }
   }
 
   function onImportAddrChange(v: string) {
     setImportAddr(v);
-    setImportMsg('');
-    setImportPreview(null);
-    if (previewTimer.current) clearTimeout(previewTimer.current);
-    const a = v.trim();
-    if (/^0x[0-9a-fA-F]{40}$/.test(a)) {
-      // Small debounce so a paste fires once, not per keystroke.
-      previewTimer.current = setTimeout(() => void fetchImportPreview(a), 400);
-    }
+    importController.current.change(v);
   }
 
   function resetImportSheet() {
+    importController.current.cancel();
+    previewSeq.current++;
     setImportAddr('');
     setImportMsg('');
     setImportPreview(null);
@@ -277,7 +300,13 @@ export default function Home() {
           onAction={() => router.push('/receive')}
         />
       ) : (
-        visible.map((t) => <TokenRow key={t.symbol} token={t} onPress={() => router.push(`/token/${t.symbol}`)} />)
+        visible.map((t) => (
+          <TokenRow
+            key={`${t.chainId}:${t.address || t.symbol}`}
+            token={t}
+            onPress={() => router.push(tokenDetailRoute(t))}
+          />
+        ))
       )}
       {tokens.some((t) => t.isSpam) && (
         <Pressable onPress={() => setShowSpam((s) => !s)}>
@@ -307,7 +336,7 @@ export default function Home() {
             <Text style={styles.walletName}>Wallet 1</Text>
             <Text style={styles.walletAddr}>{address ? shortAddress(address) : 'No wallet yet'}</Text>
           </View>
-          <Text style={styles.walletCheck}>✓</Text>
+          <Check size={16} color={COLORS.mintDark} />
         </Pressable>
         <Pressable
           style={styles.walletRow}
@@ -339,8 +368,10 @@ export default function Home() {
           placeholder="Contract Address (0x…)"
           autoCapitalize="none"
           autoCorrect={false}
+          spellCheck={false}
           value={importAddr}
           onChangeText={onImportAddrChange}
+          onBlur={() => importController.current.blur(importAddr)}
         />
         {previewLoading ? <Text style={styles.previewLoading}>Fetching token details…</Text> : null}
         {importPreview ? (
@@ -510,7 +541,6 @@ const styles = StyleSheet.create({
   },
   walletAddText: { color: COLORS.text, fontSize: 18, fontWeight: '700' },
   walletAddr: { color: COLORS.textMuted, fontSize: 12, marginTop: 2 },
-  walletCheck: { color: COLORS.mintDark, fontSize: 16, fontWeight: '800' },
   walletIcon: {
     alignItems: 'center',
     backgroundColor: COLORS.navy,
