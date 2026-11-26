@@ -13,6 +13,7 @@ import { COLORS } from '../../theme';
 import { useApp } from '../../store/AppContext';
 import { fmtPct, fmtPrice, fmtUsd } from '../../lib/format';
 import { fetchTrending, searchTokens, type DiscoverToken } from '../../lib/discover';
+import { tokenDetailRoute } from '../../lib/tokenResolve';
 import { EmptyState } from '../../components/ui';
 import { TokenLogo } from '../../components/TokenLogo';
 
@@ -161,10 +162,7 @@ export default function Discover() {
             key={`${t.chainId}:${t.address}`}
             style={styles.row}
             onPress={() =>
-              router.push({
-                pathname: '/token/[symbol]',
-                params: { symbol: t.symbol, address: t.address, chainId: t.chainId },
-              })
+              router.push(tokenDetailRoute({ symbol: t.symbol, address: t.address, chainId: t.chainId || chain.id }))
             }
           >
             <Text style={styles.rank}>{i + 1}</Text>
