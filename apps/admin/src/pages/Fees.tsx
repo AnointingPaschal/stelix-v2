@@ -6,7 +6,25 @@ import { LiveNote, PageHeader, SectionTitle } from '../components/ui'
 import { AlertModal } from '../components/AlertModal'
 
 export default function Fees() {
-  const [fees, setFees] = useState<FeeConfig>(DEFAULT_FEES)
+  // The form keeps every numeric field as a STRING while it is being
+  // typed. A controlled number state eats the decimal point: typing
+  // "0.1" sets Number("0.") = 0, so the input snaps back to "0" and
+  // the user can never reach "0.1". Strings preserve every keystroke;
+  // the numbers are parsed once, on save, and validated by the same
+  // validateFeePayload the Worker runs.
+  const [draft, setDraft] = useState<Record<string, string>>({
+    autoSellFeePct: String(DEFAULT_FEES.autoSellFeePct),
+    minLockUsd: String(DEFAULT_FEES.minLockUsd),
+    maxLockUsd: String(DEFAULT_FEES.maxLockUsd),
+    defaultPenaltyPct: String(DEFAULT_FEES.defaultPenaltyPct),
+    twapMinutes: String(DEFAULT_FEES.twapMinutes),
+    trailingStopOptions: DEFAULT_FEES.trailingStopOptions,
+    defaultSlippagePct: String(DEFAULT_FEES.defaultSlippagePct),
+    breakCoolingOffHours: String(DEFAULT_FEES.breakCoolingOffHours),
+    guardianBreakDelayHours: String(DEFAULT_FEES.guardianBreakDelayHours),
+    maxPriceImpactPct: String(DEFAULT_FEES.maxPriceImpactPct),
+  })
+  const [destination, setDestination] = useState<FeeConfig['penaltyDestination']>(DEFAULT_FEES.penaltyDestination)
   const [version, setVersion] = useState<number | null>(null)
   const [meta, setMeta] = useState('')
   const [history, setHistory] = useState<{ id: number; version: number; payload_json: string; published_by: string; created_at: string }[]>([])
@@ -14,12 +32,27 @@ export default function Fees() {
   const [notice, setNotice] = useState('')
   const [busy, setBusy] = useState(false)
 
+  const set = (key: string, value: string) => setDraft((d) => ({ ...d, [key]: value }))
+
   const load = () => {
     api.getFees().then((d) => {
       if (d.fees) {
         // Older published configs predate the break / impact fields —
         // merge over the defaults so the form never shows undefined.
-        setFees({ ...DEFAULT_FEES, ...d.fees })
+        const fees = { ...DEFAULT_FEES, ...d.fees }
+        setDraft({
+          autoSellFeePct: String(fees.autoSellFeePct),
+          minLockUsd: String(fees.minLockUsd),
+          maxLockUsd: String(fees.maxLockUsd),
+          defaultPenaltyPct: String(fees.defaultPenaltyPct),
+          twapMinutes: String(fees.twapMinutes),
+          trailingStopOptions: fees.trailingStopOptions,
+          defaultSlippagePct: String(fees.defaultSlippagePct),
+          breakCoolingOffHours: String(fees.breakCoolingOffHours),
+          guardianBreakDelayHours: String(fees.guardianBreakDelayHours),
+          maxPriceImpactPct: String(fees.maxPriceImpactPct),
+        })
+        setDestination(fees.penaltyDestination)
         setVersion(d.version ?? null)
         setMeta(d.publishedAt ? `Version ${d.version} · published ${d.publishedAt} by ${d.publishedBy ?? 'admin'}` : '')
       } else {
@@ -32,11 +65,25 @@ export default function Fees() {
 
   const save = async () => {
     setError(''); setNotice('')
-    const { errors } = validateFeePayload(fees)
+    const payload = {
+      autoSellFeePct: Number(draft.autoSellFeePct),
+      minLockUsd: Number(draft.minLockUsd),
+      maxLockUsd: Number(draft.maxLockUsd),
+      defaultPenaltyPct: Number(draft.defaultPenaltyPct),
+      twapMinutes: Number(draft.twapMinutes),
+      trailingStopOptions: draft.trailingStopOptions,
+      defaultSlippagePct: Number(draft.defaultSlippagePct),
+      penaltyDestination: destination,
+      breakCoolingOffHours: Number(draft.breakCoolingOffHours),
+      guardianBreakDelayHours: Number(draft.guardianBreakDelayHours),
+      maxPriceImpactPct: Number(draft.maxPriceImpactPct),
+    }
+    const { config, errors } = validateFeePayload(payload)
     if (errors.length > 0) { setError(errors.join(' ')); return }
+    if (!config) { setError('Could not build a valid fee config.'); return }
     setBusy(true)
     try {
-      const r = await api.saveFees(fees)
+      const r = await api.saveFees(config)
       setNotice(`Fee config v${r.version} saved and versioned in D1. Existing locks keep their snapshot.`)
       load()
     } catch (e) { setError(e instanceof Error ? e.message : 'Could not save fees.') }
@@ -57,45 +104,45 @@ export default function Fees() {
       <div className="grid grid2">
         <div className="card">
           <SectionTitle icon={<Percent />}>Auto-sell fee</SectionTitle>
-          <label>Fee on successful auto-sell only (%) — max 10</label>
+          <label>Fee on successful auto-sell only (%) — max 10, decimals allowed (e.g. 0.1)</label>
           <input
-            value={fees.autoSellFeePct}
+            value={draft.autoSellFeePct}
             inputMode="decimal"
-            onChange={(e) => setFees({ ...fees, autoSellFeePct: Number(e.target.value) })}
+            onChange={(e) => set('autoSellFeePct', e.target.value)}
           />
           <p className="field-hint">No sale, no fee. Set before mainnet; shown in Create Lock review.</p>
         </div>
         <div className="card">
           <SectionTitle icon={<SlidersHorizontal />}>Limits</SectionTitle>
-          <label>Minimum lock (USD)</label>
-          <input value={fees.minLockUsd} inputMode="decimal" onChange={(e) => setFees({ ...fees, minLockUsd: Number(e.target.value) })} />
-          <label>Maximum lock (USD)</label>
-          <input value={fees.maxLockUsd} inputMode="decimal" onChange={(e) => setFees({ ...fees, maxLockUsd: Number(e.target.value) })} />
-          <label>Default penalty break (%) — 5 to 10</label>
-          <input value={fees.defaultPenaltyPct} inputMode="decimal" onChange={(e) => setFees({ ...fees, defaultPenaltyPct: Number(e.target.value) })} />
+          <label>Minimum lock (USD) — decimals allowed (e.g. 0.1)</label>
+          <input value={draft.minLockUsd} inputMode="decimal" onChange={(e) => set('minLockUsd', e.target.value)} />
+          <label>Maximum lock (USD) — decimals allowed</label>
+          <input value={draft.maxLockUsd} inputMode="decimal" onChange={(e) => set('maxLockUsd', e.target.value)} />
+          <label>Default penalty break (%) — 5 to 10, decimals allowed</label>
+          <input value={draft.defaultPenaltyPct} inputMode="decimal" onChange={(e) => set('defaultPenaltyPct', e.target.value)} />
         </div>
         <div className="card">
           <SectionTitle icon={<ShieldCheck />}>Exit guards</SectionTitle>
           <label>TWAP window (minutes) — 5 to 120</label>
-          <input value={fees.twapMinutes} inputMode="numeric" onChange={(e) => setFees({ ...fees, twapMinutes: Number(e.target.value) })} />
+          <input value={draft.twapMinutes} inputMode="numeric" onChange={(e) => set('twapMinutes', e.target.value)} />
           <label>Trailing-stop options offered</label>
-          <input value={fees.trailingStopOptions} onChange={(e) => setFees({ ...fees, trailingStopOptions: e.target.value })} />
-          <label>Default slippage (%) — max 50</label>
-          <input value={fees.defaultSlippagePct} inputMode="decimal" onChange={(e) => setFees({ ...fees, defaultSlippagePct: Number(e.target.value) })} />
+          <input value={draft.trailingStopOptions} onChange={(e) => set('trailingStopOptions', e.target.value)} />
+          <label>Default slippage (%) — max 50, decimals allowed (e.g. 0.1)</label>
+          <input value={draft.defaultSlippagePct} inputMode="decimal" onChange={(e) => set('defaultSlippagePct', e.target.value)} />
           <label>Penalty break cooling-off (hours) — 0 to 72</label>
-          <input value={fees.breakCoolingOffHours} inputMode="numeric" onChange={(e) => setFees({ ...fees, breakCoolingOffHours: Number(e.target.value) })} />
+          <input value={draft.breakCoolingOffHours} inputMode="numeric" onChange={(e) => set('breakCoolingOffHours', e.target.value)} />
           <p className="field-hint">Shown in Create Lock as “Penalty break (5%, 24h cooling-off)”. Hours after locking before a penalty break is allowed.</p>
           <label>Guardian break delay (hours) — 0 to 168</label>
-          <input value={fees.guardianBreakDelayHours} inputMode="numeric" onChange={(e) => setFees({ ...fees, guardianBreakDelayHours: Number(e.target.value) })} />
+          <input value={draft.guardianBreakDelayHours} inputMode="numeric" onChange={(e) => set('guardianBreakDelayHours', e.target.value)} />
           <p className="field-hint">Shown in Create Lock as “Guardian break — approval + 48h delay”.</p>
-          <label>Max price impact on swaps (%) — max 50</label>
-          <input value={fees.maxPriceImpactPct} inputMode="decimal" onChange={(e) => setFees({ ...fees, maxPriceImpactPct: Number(e.target.value) })} />
+          <label>Max price impact on swaps (%) — max 50, decimals allowed (e.g. 0.1)</label>
+          <input value={draft.maxPriceImpactPct} inputMode="decimal" onChange={(e) => set('maxPriceImpactPct', e.target.value)} />
           <p className="field-hint">Swaps above this impact are split or blocked in the app Swap screen.</p>
         </div>
         <div className="card">
           <SectionTitle icon={<CheckCircle2 />}>Penalty destination</SectionTitle>
           <label>Where break penalties go</label>
-          <select value={fees.penaltyDestination} onChange={(e) => setFees({ ...fees, penaltyDestination: e.target.value as FeeConfig['penaltyDestination'] })}>
+          <select value={destination} onChange={(e) => setDestination(e.target.value as FeeConfig['penaltyDestination'])}>
             <option value="burn">Burn</option>
             <option value="treasury">Treasury</option>
             <option value="relock">Re-lock</option>

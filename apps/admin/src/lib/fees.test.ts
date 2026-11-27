@@ -57,6 +57,24 @@ describe('validateFeePayload', () => {
     expect(config?.maxPriceImpactPct).toBe(5);
   });
 
+  it('accepts decimal fee values such as 0.1 (the form used to eat the decimal point)', () => {
+    const decimals: FeeConfig = {
+      ...DEFAULT_FEES,
+      autoSellFeePct: 0.1,
+      minLockUsd: 0.1,
+      maxLockUsd: 100000.5,
+      defaultPenaltyPct: 5.5,
+      defaultSlippagePct: 0.1,
+      maxPriceImpactPct: 0.25,
+    };
+    const { config, errors } = validateFeePayload(decimals);
+    expect(errors).toEqual([]);
+    expect(config?.autoSellFeePct).toBe(0.1);
+    expect(config?.minLockUsd).toBe(0.1);
+    expect(config?.defaultSlippagePct).toBe(0.1);
+    expect(config?.maxPriceImpactPct).toBe(0.25);
+  });
+
   it('still rejects the old invalid ranges', () => {
     expect(validateFeePayload({ ...DEFAULT_FEES, minLockUsd: -1 }).errors.length).toBeGreaterThan(0);
     expect(validateFeePayload({ ...DEFAULT_FEES, defaultPenaltyPct: 4 }).errors.length).toBeGreaterThan(0);
