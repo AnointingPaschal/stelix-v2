@@ -105,10 +105,15 @@ export default function ContractStudio() {
   }
   useEffect(load, [])
 
-  // Deployed (on-chain verified) multisigs on the selected network only:
-  // only these may be picked as Owner. A merely prepared multisig has no
-  // Safe address yet and never appears here.
-  const deployedMultisigs = multisigs.filter((m) => m.status === 'deployed' && m.chainId === effectiveChainId)
+  // One universal multisig for all EVM chains (2026-11-27): a deployed
+  // (on-chain verified) Safe is the vault Owner on EVERY EVM chain, so
+  // the dropdown is NOT filtered by the selected network. Only a merely
+  // prepared multisig has no Safe address yet and never appears here.
+  // Solana is the exception — Safe is EVM-only, so no multisig Owner
+  // is offered there at all.
+  const deployedMultisigs = chainFamily === 'solana'
+    ? []
+    : multisigs.filter((m) => m.status === 'deployed')
 
   const auditGatePass = gate?.gatePass ?? false
   // The verified testnet deployment that gates a mainnet deploy lives
@@ -308,7 +313,13 @@ export default function ContractStudio() {
                 </select>
               </>
             ) : (
-              <p className="field-hint">No deployed multisig on {networkName} yet — <a href="/multisig">create one in the Multisig Creator</a>. Only a Safe verified on-chain can be picked here.</p>
+              <>
+                {chainFamily === 'solana' ? (
+                  <p className="field-hint">No multisig Owner on Solana — Safe is EVM-only, so no Safe can be created or recorded for Solana.</p>
+                ) : (
+                  <p className="field-hint">No deployed multisig yet — <a href="/multisig">create one in the Multisig Creator</a>. Only a Safe verified on-chain can be picked here.</p>
+                )}
+              </>
             )}
             <input placeholder="Keeper address" style={{ marginTop: 8 }} value={params.keeper} onChange={(e) => setParams({ ...params, keeper: e.target.value })} />
             <input placeholder="DEX router address (confirmed on explorer — never guess)" style={{ marginTop: 8 }} value={params.router} onChange={(e) => setParams({ ...params, router: e.target.value })} />

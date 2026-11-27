@@ -1,20 +1,17 @@
 import { useEffect, useMemo, useState } from 'react'
 import { BadgeCheck, Copy, ExternalLink, KeyRound, ShieldAlert, ShieldCheck, Trash2, Users } from 'lucide-react'
 import { api, type MultisigRow } from '../lib/api'
-import type { Chain } from '../lib/types'
 import {
   MAX_OWNERS, MIN_OWNERS, SAFE_CHAINS, SAFE_FALLBACK_HANDLER, SAFE_PROXY_FACTORY, SAFE_SINGLETON,
-  SAFE_VERSION, SAFE_WEB_APP, safeChainFor, thresholdLabel, validateMultisigInput,
+  SAFE_VERSION, SAFE_WEB_APP, thresholdLabel, validateMultisigInput,
 } from '../lib/multisig'
 import { LiveNote, PageHeader, SectionTitle } from '../components/ui'
 
 const short = (a: string) => `${a.slice(0, 6)}…${a.slice(-4)}`
 
 export default function Multisig() {
-  const [chains, setChains] = useState<Chain[]>([])
   const [rows, setRows] = useState<MultisigRow[]>([])
   const [label, setLabel] = useState('')
-  const [chainId, setChainId] = useState('bnb')
   const [ownerInputs, setOwnerInputs] = useState<string[]>(['', '', ''])
   const [threshold, setThreshold] = useState(2)
   const [saltNonce, setSaltNonce] = useState('0')
@@ -28,12 +25,10 @@ export default function Multisig() {
   const [confirmFor, setConfirmFor] = useState<number | null>(null)
 
   const load = () => {
-    api.getChains().then(setChains).catch(() => undefined)
     api.getMultisigs().then(setRows).catch((e: Error) => setError(e.message))
   }
   useEffect(load, [])
 
-  const chainInfo = safeChainFor(chainId)
   const ownerCount = ownerInputs.filter((o) => o.trim() !== '').length
   const deployed = useMemo(() => rows.filter((r) => r.status === 'deployed'), [rows])
   const prepared = useMemo(() => rows.filter((r) => r.status === 'prepared'), [rows])
@@ -50,12 +45,12 @@ export default function Multisig() {
   const prepare = async () => {
     setError(''); setNotice(''); setJustPrepared(null)
     const owners = ownerInputs.map((o) => o.trim()).filter(Boolean)
-    const { multisig, errors } = validateMultisigInput({ chainId, label, owners, threshold, saltNonce })
+    const { multisig, errors } = validateMultisigInput({ label, owners, threshold, saltNonce })
     if (!multisig) { setError(errors.join(' ')); return }
     setBusy(true)
     try {
-      const r = await api.createMultisig({ chainId, label: multisig.label, owners, threshold, saltNonce })
-      setNotice(`Multisig prepared on ${chainInfo?.name ?? chainId}: ${thresholdLabel(threshold, owners.length)}. It is NOT deployed yet — create the Safe in your wallet next, then confirm it below. No Safe address has been recorded.`)
+      const r = await api.createMultisig({ label: multisig.label, owners, threshold, saltNonce })
+      setNotice(`Multisig prepared for all EVM chains: ${thresholdLabel(threshold, owners.length)}. It is NOT deployed yet — create the Safe in your wallet next, then confirm it below. No Safe address has been recorded.`)
       setOwnerInputs(['', '', ''])
       setThreshold(2)
       setLabel('')
@@ -85,7 +80,7 @@ export default function Multisig() {
     setBusy(true)
     try {
       const r = await api.confirmMultisig(row.id, confirmAddr.trim(), confirmTx.trim() || null)
-      setNotice(`Verified on-chain: Safe ${r.safeAddress} on ${r.chain} is ${thresholdLabel(r.threshold, r.owners.length)}. It is now available as the vault Owner in Contract Studio.`)
+      setNotice(`Verified on-chain${r.verifiedChainId ? ` on ${r.verifiedChainId}` : ''}: Safe ${r.safeAddress} is ${thresholdLabel(r.threshold, r.owners.length)}. It is now available as the vault Owner in Contract Studio for every EVM chain.`)
       setConfirmFor(null); setConfirmAddr(''); setConfirmTx(''); setJustPrepared(null)
       load()
     } catch (e) { setError(e instanceof Error ? e.message : 'Confirmation failed.') }
@@ -93,7 +88,7 @@ export default function Multisig() {
   }
 
   const remove = async (row: MultisigRow) => {
-    if (!window.confirm(`Discard the prepared (not deployed) multisig #${row.id} on ${row.chainId}?`)) return
+    if (!window.confirm(`Discard the prepared (not deployed) multisig #${row.id}?`)) return
     setError('')
     try {
       await api.deleteMultisig(row.id)
@@ -104,10 +99,10 @@ export default function Multisig() {
   }
 
   const copySummary = async (row: MultisigRow) => {
-    const info = safeChainFor(row.chainId)
     const text = [
       `Stelix multisig #${row.id}${row.label ? ` — ${row.label}` : ''}`,
-      `Chain: ${info?.name ?? row.chainId} (chain id ${info?.chainId ?? '?'})`,
+      'Chains: all EVM chains — one Safe, same address on every EVM chain (same owners + threshold + salt nonce + Safe v1.4.1 factory/singleton).',
+      row.verifiedChainId ? `Verified on: ${row.verifiedChainId}` : '',
       `Safe version: ${row.safeVersion} (canonical)`,
       `SafeProxyFactory: ${row.factoryAddress}`,
       `Safe singleton: ${row.singletonAddress}`,
@@ -129,8 +124,9 @@ export default function Multisig() {
   }
 
   const castCommand = (row: MultisigRow) => {
-    const rpc = chains.find((c) => c.id === row.chainId)?.rpcUrls[0] ?? ''
-    return `cast safe create ${row.owners.join(' ')} --threshold ${row.threshold} --salt-nonce ${row.saltNonce} --factory ${row.factoryAddress} --singleton ${row.singletonAddress} --fallback-handler ${SAFE_FALLBACK_HANDLER}${rpc ? ` --rpc-url ${rpc}` : ''}`
+    // No --rpc-url baked in: the same command deploys the same Safe on
+    // any EVM chain — add --rpc-url <that chain's RPC> when you run it.
+    return `cast safe create ${row.owners.join(' ')} --threshold ${row.threshold} --salt-nonce ${row.saltNonce} --factory ${row.factoryAddress} --singleton ${row.singletonAddress} --fallback-handler ${SAFE_FALLBACK_HANDLER}`
   }
 
   return (
@@ -138,7 +134,7 @@ export default function Multisig() {
       <PageHeader
         icon={<Users />}
         title="Multisig Creator"
-        sub="Create a Safe multisig to own the StelixVault. The admin only prepares the plan — the Safe itself is created and signed in the owners' own wallets, and its address is recorded only after the admin verifies it on-chain. No private key is ever stored here."
+        sub="Create ONE Safe multisig to own the StelixVault on every EVM chain. One set of owners + threshold, one Safe — with the same owners, threshold, salt nonce and Safe v1.4.1 factory, the Safe address is the same on every EVM chain. The admin only prepares the plan — the Safe itself is created and signed in the owners' own wallets, and its address is recorded only after the admin verifies it on-chain. No private key is ever stored here. No multisig for Solana — Safe is EVM-only."
         pill={<LiveNote />}
       />
       {error && <div className="notice alert"><ShieldAlert /><span>{error}</span></div>}
@@ -146,30 +142,20 @@ export default function Multisig() {
       <div className="notice info">
         <ShieldAlert />
         <span>
-          <b>How it works:</b> 1) Prepare the owners + threshold below. 2) Create the Safe in your wallet
+          <b>How it works:</b> 1) Prepare the owners + threshold below — no chain to pick. 2) Create the Safe once, in your wallet
           (Safe web app on Ethereum / BNB / Base / Polygon; Safe CLI or <span className="kbd">cast safe create</span> on
-          Arc, where the Safe web app does not list the chain). 3) Paste the deployed Safe address below and
-          confirm — the admin checks contract code, threshold and owners on-chain before recording it.
-          Only a confirmed Safe can be picked as the vault Owner in Contract Studio.
+          Arc, where the Safe web app does not list the chain). Deploy it on any EVM chain — the address is the same on every EVM chain.
+          3) Paste the deployed Safe address below and confirm — the admin checks every EVM chain until it finds the Safe and verifies its contract code, threshold and owners on-chain before recording it.
+          Only a confirmed Safe can be picked as the vault Owner in Contract Studio, for every EVM chain.
         </span>
       </div>
 
       <div className="grid grid2">
         <div className="card">
           <SectionTitle icon={<KeyRound />}>Step 1 — Prepare a multisig</SectionTitle>
+          <p className="field-hint">One multisig for all EVM chains — no chain to pick. Solana has no multisig here: Safe is EVM-only.</p>
           <label>Label (optional, e.g. “Stelix treasury owners”)</label>
           <input value={label} onChange={(e) => setLabel(e.target.value)} placeholder="Stelix vault owners" maxLength={80} />
-          <label>Chain</label>
-          <select value={chainId} onChange={(e) => setChainId(e.target.value)}>
-            {SAFE_CHAINS.map((c) => <option key={c.slug} value={c.slug}>{c.name} · {c.chainId}</option>)}
-          </select>
-          {chainInfo && (
-            <p className="field-hint">
-              {chainInfo.support === 'supported' && <>Safe is fully supported here — create the Safe at <a href={SAFE_WEB_APP} target="_blank" rel="noreferrer">app.safe.global</a>.</>}
-              {chainInfo.support === 'contracts-only' && <>Safe v1.4.1 contracts are on-chain here (verified via eth_getCode), but the Safe web app does not list this chain — create with the Safe CLI / <span className="kbd">cast safe create</span> (command is shown after you prepare).</>}
-              {chainInfo.support === 'unsupported' && <><b>Safe is not available on {chainInfo.name}.</b> {chainInfo.note}</>}
-            </p>
-          )}
           <label>Owners — wallet addresses ({MIN_OWNERS}–{MAX_OWNERS}, no duplicates, no zero address)</label>
           {ownerInputs.map((o, i) => (
             <div key={i} style={{ display: 'flex', gap: 8, marginTop: 8 }}>
@@ -196,7 +182,7 @@ export default function Multisig() {
           <p className="field-hint">Recommended: 2-of-3. A threshold of 1 means any one owner can move funds alone; a threshold equal to all owners means one lost key locks the vault.</p>
           <label>Salt nonce (reference only — the Safe app chooses its own; what matters is the deployed Safe&apos;s owners + threshold)</label>
           <input value={saltNonce} onChange={(e) => setSaltNonce(e.target.value)} inputMode="numeric" placeholder="0" />
-          <button className="btn mint block" style={{ marginTop: 14 }} onClick={prepare} disabled={busy || chainInfo?.support === 'unsupported'}>
+          <button className="btn mint block" style={{ marginTop: 14 }} onClick={prepare} disabled={busy}>
             <Users />{busy ? 'Preparing…' : 'Prepare multisig (no deployment yet)'}
           </button>
           <p className="field-hint">Preparing only saves the plan in D1. Nothing is deployed and no Safe address is recorded until step 3.</p>
@@ -233,17 +219,14 @@ export default function Multisig() {
             <div className="card">
               <SectionTitle icon={<ShieldCheck />}>Step 2 — Create the Safe in your wallet</SectionTitle>
               <p className="muted">
-                Prepared #{justPrepared.id} on {safeChainFor(justPrepared.chainId)?.name ?? justPrepared.chainId}:{' '}
+                Prepared #{justPrepared.id} for all EVM chains:{' '}
                 <b>{thresholdLabel(justPrepared.threshold, justPrepared.owners.length)}</b> — owners{' '}
                 {justPrepared.owners.map(short).join(', ')}.
               </p>
-              {safeChainFor(justPrepared.chainId)?.support === 'supported' ? (
-                <a className="btn mint block" href={`${SAFE_WEB_APP}/new-safe/create`} target="_blank" rel="noreferrer">
-                  Open Safe web app <ExternalLink />
-                </a>
-              ) : (
-                <p className="field-hint">The Safe web app does not list this chain. Create the Safe with the command below (owners sign in their own wallets), or with the Safe Protocol Kit using the same factory + singleton.</p>
-              )}
+              <p className="field-hint">Deploy this Safe ONCE, on any EVM chain — the address is the same on every EVM chain. On Ethereum / BNB / Base / Polygon use the Safe web app; on Arc (not listed in the Safe web app) use the command below, adding <span className="kbd">--rpc-url</span> for the chain you deploy on.</p>
+              <a className="btn mint block" href={`${SAFE_WEB_APP}/new-safe/create`} target="_blank" rel="noreferrer">
+                Open Safe web app <ExternalLink />
+              </a>
               <label style={{ marginTop: 12 }}>Command (Safe CLI / cast) — owners sign in their own wallets</label>
               <pre>{castCommand(justPrepared)}</pre>
               <button className="btn ghost block" onClick={() => copySummary(justPrepared)}><Copy /> Copy creation summary</button>
@@ -260,12 +243,11 @@ export default function Multisig() {
         ) : (
           <div className="table-wrap">
             <table className="rtable">
-              <thead><tr><th>#</th><th>Chain</th><th>Owners</th><th>Safe address</th><th>Status</th><th></th></tr></thead>
+              <thead><tr><th>#</th><th>Owners</th><th>Safe address</th><th>Verified on</th><th>Status</th><th></th></tr></thead>
               <tbody>
                 {rows.map((r) => (
                   <tr key={r.id}>
                     <td data-label="#">{r.id}{r.label ? <><br /><span className="muted">{r.label}</span></> : ''}</td>
-                    <td data-label="Chain">{safeChainFor(r.chainId)?.name ?? r.chainId}</td>
                     <td data-label="Owners">{thresholdLabel(r.threshold, r.owners.length)}<br /><span className="muted">{r.owners.map(short).join(', ')}</span></td>
                     <td data-label="Safe address">
                       {r.safeAddress
@@ -273,6 +255,12 @@ export default function Multisig() {
                         : r.predictedAddress
                           ? <><span className="kbd">{r.predictedAddress}</span><br /><span className="muted">predicted — not deployed</span></>
                           : <span className="muted">not created yet</span>}
+                    </td>
+                    <td data-label="Verified on">
+                      {r.verifiedChainId
+                        ? <span>{r.verifiedChainId}</span>
+                        : <span className="muted">—</span>}
+                      <br /><span className="muted">all EVM chains</span>
                     </td>
                     <td data-label="Status">
                       {r.status === 'deployed'
@@ -318,7 +306,7 @@ export default function Multisig() {
             >
               <ShieldCheck />{busy ? 'Verifying on-chain…' : 'Verify on-chain & record Safe'}
             </button>
-            <p className="field-hint">The admin reads the chain&apos;s RPC and checks contract code, threshold and owners against the prepared plan. If anything does not match, nothing is recorded. A verified Safe then appears as the Owner choice in Contract Studio.</p>
+            <p className="field-hint">The admin checks every EVM chain&apos;s RPC until it finds the Safe, and verifies its contract code, threshold and owners against the prepared plan. If anything does not match, nothing is recorded. A verified Safe then appears as the Owner choice in Contract Studio for every EVM chain — you do not deploy or confirm it again per chain.</p>
           </div>
         )}
       </div>

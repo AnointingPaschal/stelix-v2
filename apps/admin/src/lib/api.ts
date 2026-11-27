@@ -175,7 +175,12 @@ export interface CircleConfigStatus {
 
 export interface MultisigRow {
   id: number
+  /** Always 'evm' now: one multisig for all EVM chains (2026-11-27).
+   *  Legacy per-chain rows were retagged by migration 0011. */
   chainId: string
+  /** The ONE EVM chain the Safe was verified on at confirm time, or
+   *  null until it is deployed + verified. */
+  verifiedChainId: string | null
   label: string | null
   owners: string[]
   threshold: number
@@ -193,7 +198,7 @@ export interface MultisigRow {
 }
 
 type MultisigDbRow = {
-  id: number; chain_id: string; label: string | null; owners_json: string; threshold: number
+  id: number; chain_id: string; verified_chain_id?: string | null; label: string | null; owners_json: string; threshold: number
   salt_nonce: string; status: MultisigRow['status']; predicted_address: string | null
   safe_address: string | null; deploy_tx_hash: string | null; factory_address: string
   singleton_address: string; safe_version: string; created_by: string; created_at: string
@@ -204,7 +209,7 @@ const mapMultisig = (r: MultisigDbRow): MultisigRow => {
   let owners: string[] = []
   try { owners = JSON.parse(r.owners_json) as string[] } catch { owners = [] }
   return {
-    id: r.id, chainId: r.chain_id, label: r.label, owners, threshold: r.threshold,
+    id: r.id, chainId: r.chain_id, verifiedChainId: r.verified_chain_id ?? null, label: r.label, owners, threshold: r.threshold,
     saltNonce: r.salt_nonce, status: r.status, predictedAddress: r.predicted_address,
     safeAddress: r.safe_address, deployTxHash: r.deploy_tx_hash,
     factoryAddress: r.factory_address, singletonAddress: r.singleton_address,
@@ -477,13 +482,13 @@ export const api = {
     const d = await live<{ multisigs: MultisigDbRow[] }>('/api/admin/multisigs')
     return d.multisigs.map(mapMultisig)
   },
-  async createMultisig(data: { chainId: string; label?: string | null; owners: string[]; threshold: number; saltNonce?: string; predictedAddress?: string | null }): Promise<{ ok: boolean; id: number | null }> {
+  async createMultisig(data: { label?: string | null; owners: string[]; threshold: number; saltNonce?: string; predictedAddress?: string | null; chainId?: string }): Promise<{ ok: boolean; id: number | null }> {
     return post('/api/admin/multisigs', data)
   },
   async setMultisigPredicted(id: number, predictedAddress: string): Promise<{ ok: boolean; predictedAddress: string }> {
     return post(`/api/admin/multisigs/${id}/predicted`, { predictedAddress })
   },
-  async confirmMultisig(id: number, safeAddress: string, txHash?: string | null): Promise<{ ok: boolean; safeAddress: string; chain: string; threshold: number; owners: string[] }> {
+  async confirmMultisig(id: number, safeAddress: string, txHash?: string | null): Promise<{ ok: boolean; safeAddress: string; chain: string; verifiedChainId?: string | null; threshold: number; owners: string[] }> {
     return post(`/api/admin/multisigs/${id}/confirm`, { safeAddress, txHash: txHash ?? undefined })
   },
   async deleteMultisig(id: number): Promise<{ ok: boolean }> {

@@ -13,6 +13,7 @@
 }
 *{box-sizing:border-box}
 html{-webkit-text-size-adjust:100%}
+html,body{overflow-x:hidden;max-width:100%}
 body{margin:0;font-family:Inter,system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;background:var(--bg);color:var(--text);font-size:15px;line-height:1.5}
 a{color:inherit;text-decoration:none}
 button{cursor:pointer;font:inherit}
@@ -43,7 +44,10 @@ p{margin:0 0 10px}
 .icon-btn:hover{background:var(--navy3)}
 .icon-btn svg{width:22px;height:22px}
 .main{padding:16px 16px calc(var(--bottomnav-h) + 24px);min-width:0;max-width:1120px;margin:0 auto}
-.main-inner{width:100%}
+.main-inner{width:100%;min-width:0}
+.layout{min-width:0}
+.card{min-width:0;overflow-wrap:anywhere}
+.grid>*{min-width:0}
 
 /* Drawer (mobile nav) */
 .drawer-overlay{
@@ -212,13 +216,14 @@ label:first-child{margin-top:0}
 .field-hint{font-size:12.5px;color:var(--muted);margin-top:5px}
 
 /* ---------- Notices ---------- */
-.notice{display:flex;gap:10px;align-items:flex-start;border-radius:12px;padding:12px 14px;font-size:13.5px;margin-bottom:14px;line-height:1.5}
+.notice{display:flex;gap:10px;align-items:flex-start;border-radius:12px;padding:12px 14px;font-size:13.5px;margin-bottom:14px;line-height:1.5;min-width:0;overflow-wrap:anywhere}
+.notice>*{min-width:0;overflow-wrap:anywhere}
 .notice svg{flex:none;width:18px;height:18px;margin-top:1px}
 .notice.alert{background:#FEF2F2;border:1px solid #FECACA;color:#991B1B}
 .notice.ok{background:#ECFDF5;border:1px solid #A7F3D0;color:#065F46}
 .notice.info{background:#EFF6FF;border:1px solid #BFDBFE;color:#1E40AF}
 .notice b{font-weight:700}
-pre{background:var(--navy);color:#D1FAE5;border-radius:10px;padding:14px;overflow:auto;font-size:12px;line-height:1.55;margin:12px 0 0}
+pre{background:var(--navy);color:#D1FAE5;border-radius:10px;padding:14px;overflow:auto;font-size:12px;line-height:1.55;margin:12px 0 0;max-width:100%;white-space:pre-wrap;word-break:break-all;overflow-wrap:anywhere}
 .kbd{font-family:ui-monospace,Menlo,monospace;background:#EEF2F7;padding:1px 6px;border-radius:4px;font-size:12px;overflow-wrap:anywhere}
 .mono{font-family:ui-monospace,Menlo,monospace;font-size:12.5px;overflow-wrap:anywhere}
 .empty{padding:18px 0 6px;text-align:center;color:var(--muted);font-size:13.5px}

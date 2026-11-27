@@ -1,5 +1,16 @@
 // Stelix Admin — Multisig creator (Safe protocol).
 //
+// ONE multisig for all EVM chains (user decision 2026-11-27 09:24 WAT):
+// there is no chain selector any more. A multisig is one set of owners
+// + threshold + salt nonce, stored with chain_id 'evm'. With the same
+// owners + threshold + salt nonce + same Safe v1.4.1 factory/singleton,
+// the CREATE2 predicted/deployed Safe address is the SAME on every EVM
+// chain, so the Safe is deployed once (on any EVM chain) and verified
+// once (on any EVM chain — the Worker checks every EVM chain's RPC
+// until it finds the Safe), and then it is the vault Owner for every
+// EVM chain in Contract Studio. Solana is the only exception: Safe is
+// EVM-only, so no multisig can be created or recorded for Solana.
+//
 // The admin NEVER deploys a multisig itself and NEVER holds a private key.
 // Flow: prepare (validate + record a draft in D1) -> the owners create the
 // Safe in their own wallet (Safe web app, Safe CLI / Protocol Kit, or
@@ -18,7 +29,10 @@
 // (v1.3.0 used different addresses — e.g. factory
 // 0xa6B71E26C5e0845f74c812102Ca7114b6a896AB2 — do not mix versions.)
 //
-// Per-chain availability (checked 2026-11-27, do not guess others):
+// EVM chains a Safe can be deployed / verified on (checked 2026-11-27,
+// do not guess others). This is a REFERENCE table only — it is not a
+// chain selector: a multisig is prepared once, for all EVM chains, and
+// verified once, on whichever EVM chain the Safe was deployed on.
 // - Ethereum (1), BNB Smart Chain (56), Base (8453), Polygon (137):
 //   in the Safe registry and served by app.safe.global + the Safe
 //   Transaction Service — create in the Safe web app.
@@ -46,6 +60,17 @@ export const SAFE_WEB_APP = 'https://app.safe.global'
 export const ZERO_ADDRESS = '0x0000000000000000000000000000000000000000'
 export const MIN_OWNERS = 2
 export const MAX_OWNERS = 10
+
+/** Chain-agnostic marker stored in D1 for every multisig (see header).
+ *  'evm' means "all EVM chains" — never a single chain slug. The chain
+ *  the Safe was actually verified on is recorded separately, in
+ *  `verified_chain_id`, at confirm time. */
+export const UNIVERSAL_MULTISIG_CHAIN_ID = 'evm'
+
+/** True for the universal marker and for legacy per-chain rows that the
+ *  0011 migration retagged to it. */
+export const isUniversalMultisigChainId = (chainId: string | null | undefined): boolean =>
+  chainId === UNIVERSAL_MULTISIG_CHAIN_ID
 
 export type SafeChainSupport = 'supported' | 'contracts-only' | 'unsupported'
 
@@ -125,13 +150,15 @@ export function validateMultisigInput(input: unknown): { multisig: ValidMultisig
   }
   const p = input as Record<string, unknown>
 
-  const chainId = typeof p.chainId === 'string' ? p.chainId.trim() : ''
-  if (!chainId) errors.push('chainId is required')
-  const chainInfo = chainId ? safeChainFor(chainId) : undefined
-  if (chainId && !chainInfo) errors.push(`unknown chain "${chainId}" — add it in Chain Manager first`)
-  if (chainInfo && chainInfo.support === 'unsupported') {
-    errors.push(`Safe is not available on ${chainInfo.name}: ${chainInfo.note}`)
+  // Chain-agnostic: no chain is required to prepare a multisig, and any
+  // chain supplied (old clients still send one) is normalised to 'evm'.
+  // The ONLY chain exception is Solana — Safe is EVM-only, so a Solana
+  // multisig is refused outright.
+  const rawChainId = typeof p.chainId === 'string' ? p.chainId.trim() : ''
+  if (rawChainId === 'solana') {
+    errors.push('Safe is not available on Solana: Safe is EVM-only — there are no Safe contracts on Solana, so no multisig can be created or recorded for it.')
   }
+  const chainId = UNIVERSAL_MULTISIG_CHAIN_ID
 
   const label = typeof p.label === 'string' ? p.label.trim() : ''
   if (label.length > 80) errors.push('label must be 80 characters or fewer')

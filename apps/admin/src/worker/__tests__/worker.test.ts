@@ -595,34 +595,34 @@ describe('Worker API (live endpoints, no sample data)', () => {
     expect(missing.body.contributions).toEqual([])
   })
 
-  it('multisigs: prepare validates owners/threshold/chain; Solana refused, Arc allowed', async () => {
+  it('multisigs: prepare validates owners/threshold; no chain needed, Solana refused, legacy chain normalised to evm', async () => {
     const owners = [
       '0x1111111111111111111111111111111111111111',
       '0x2222222222222222222222222222222222222222',
       '0x3333333333333333333333333333333333333333',
     ]
     const noAuth = await call(env, '/api/admin/multisigs', {
-      method: 'POST', body: { chainId: 'bnb', owners, threshold: 2 },
+      method: 'POST', body: { owners, threshold: 2 },
     })
     expect(noAuth.status).toBe(401)
     const badOwner = await call(env, '/api/admin/multisigs', {
-      method: 'POST', token, body: { chainId: 'bnb', owners: [owners[0], 'not-an-address', owners[2]], threshold: 2 },
+      method: 'POST', token, body: { owners: [owners[0], 'not-an-address', owners[2]], threshold: 2 },
     })
     expect(badOwner.status).toBe(400)
     const tooHigh = await call(env, '/api/admin/multisigs', {
-      method: 'POST', token, body: { chainId: 'bnb', owners, threshold: 4 },
+      method: 'POST', token, body: { owners, threshold: 4 },
     })
     expect(tooHigh.status).toBe(400)
     const zero = await call(env, '/api/admin/multisigs', {
-      method: 'POST', token, body: { chainId: 'bnb', owners, threshold: 0 },
+      method: 'POST', token, body: { owners, threshold: 0 },
     })
     expect(zero.status).toBe(400)
     const dup = await call(env, '/api/admin/multisigs', {
-      method: 'POST', token, body: { chainId: 'bnb', owners: [owners[0], owners[1], owners[0].toUpperCase()], threshold: 2 },
+      method: 'POST', token, body: { owners: [owners[0], owners[1], owners[0].toUpperCase()], threshold: 2 },
     })
     expect(dup.status).toBe(400)
     const one = await call(env, '/api/admin/multisigs', {
-      method: 'POST', token, body: { chainId: 'bnb', owners: [owners[0]], threshold: 1 },
+      method: 'POST', token, body: { owners: [owners[0]], threshold: 1 },
     })
     expect(one.status).toBe(400)
     const solana = await call(env, '/api/admin/multisigs', {
@@ -630,20 +630,22 @@ describe('Worker API (live endpoints, no sample data)', () => {
     })
     expect(solana.status).toBe(400)
     expect(JSON.stringify(solana.body.details)).toMatch(/Safe is not available on Solana/)
+    // No chainId at all: one multisig for all EVM chains, stored as 'evm'.
     const ok = await call(env, '/api/admin/multisigs', {
-      method: 'POST', token, body: { chainId: 'bnb', label: 'Treasury', owners, threshold: 2, saltNonce: '0' },
+      method: 'POST', token, body: { label: 'Treasury', owners, threshold: 2, saltNonce: '0' },
     })
     expect(ok.status).toBe(201)
     expect(ok.body.id).toBeGreaterThan(0)
-    // Arc: contracts are on-chain, creation is via CLI — preparing is allowed.
-    const arc = await call(env, '/api/admin/multisigs', {
-      method: 'POST', token, body: { chainId: 'arc', owners, threshold: 2 },
+    // A legacy per-chain chainId is normalised, not stored per-chain.
+    const legacy = await call(env, '/api/admin/multisigs', {
+      method: 'POST', token, body: { chainId: 'bnb', owners, threshold: 2 },
     })
-    expect(arc.status).toBe(201)
+    expect(legacy.status).toBe(201)
     const list = await call(env, '/api/admin/multisigs', { token })
     expect(list.status).toBe(200)
     const rows = list.body.multisigs as Record<string, unknown>[]
     expect(rows.length).toBe(2)
+    expect(rows.every((r) => r.chain_id === 'evm')).toBe(true)
     expect(rows[0].status).toBe('prepared')
     expect(rows[0].safe_address).toBeNull()
     expect(rows[0].factory_address).toBe('0x4e1DCf7AD4e460CfD30791CCC4F9c8a4f820ec67')
@@ -658,7 +660,7 @@ describe('Worker API (live endpoints, no sample data)', () => {
     ]
     const SAFE = '0x9B3E9B6B8f3D2C1A4E5F60718293A4B5C6D7E8F9'
     const created = await call(env, '/api/admin/multisigs', {
-      method: 'POST', token, body: { chainId: 'bnb', owners, threshold: 2 },
+      method: 'POST', token, body: { owners, threshold: 2 },
     })
     expect(created.status).toBe(201)
     const id = created.body.id as number
@@ -710,7 +712,9 @@ describe('Worker API (live endpoints, no sample data)', () => {
     })
     expect(mismatch.status).toBe(400)
     expect(String(mismatch.body.error)).toMatch(/On-chain threshold is 1/)
-    // Matching owners + threshold: recorded as deployed.
+    // Matching owners + threshold: recorded as deployed, verified on the
+    // first EVM chain whose RPC reports the Safe (arc, the default chain
+    // in this test env) — and stored as the universal 'evm' multisig.
     onChainThreshold = 2
     const confirmed = await call(env, `/api/admin/multisigs/${id}/confirm`, {
       method: 'POST', token, body: { safeAddress: SAFE, txHash: '0x' + 'b'.repeat(64) },
@@ -718,9 +722,13 @@ describe('Worker API (live endpoints, no sample data)', () => {
     expect(confirmed.status).toBe(201)
     expect(confirmed.body.safeAddress).toBe(SAFE.toLowerCase())
     expect(confirmed.body.threshold).toBe(2)
+    expect(confirmed.body.chain).toBe('arc')
+    expect(confirmed.body.verifiedChainId).toBe('arc')
     const list = await call(env, '/api/admin/multisigs', { token })
     const row = (list.body.multisigs as Record<string, unknown>[])[0]
     expect(row.status).toBe('deployed')
+    expect(row.chain_id).toBe('evm')
+    expect(row.verified_chain_id).toBe('arc')
     expect(row.safe_address).toBe(SAFE.toLowerCase())
     // Confirm twice and delete-when-deployed are both refused.
     const again = await call(env, `/api/admin/multisigs/${id}/confirm`, {
@@ -731,7 +739,7 @@ describe('Worker API (live endpoints, no sample data)', () => {
     expect(delDeployed.status).toBe(409)
     // A prepared multisig can still be discarded.
     const second = await call(env, '/api/admin/multisigs', {
-      method: 'POST', token, body: { chainId: 'bnb', owners, threshold: 2 },
+      method: 'POST', token, body: { owners, threshold: 2 },
     })
     const delPrepared = await call(env, `/api/admin/multisigs/${second.body.id as number}`, { method: 'DELETE', token })
     expect(delPrepared.status).toBe(200)

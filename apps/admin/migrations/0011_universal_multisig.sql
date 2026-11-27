@@ -1,0 +1,23 @@
+-- Stelix 2.0 Admin — migration 0011: one universal multisig for all EVM chains.
+-- Apply:
+--   wrangler d1 execute stelix-admin-db --remote --file=migrations/0011_universal_multisig.sql
+--
+-- User decision 2026-11-27 09:24 WAT: "I just need to create one multisig,
+-- which will be used for all chains, which i will select in the contract
+-- studio to deploy the contract.. No need to select chain, except its
+-- non evm". So a multisig is no longer tied to one chain: it is stored
+-- with chain_id 'evm' ("all EVM chains"). With the same owners + threshold
+-- + salt nonce + same Safe v1.4.1 factory/singleton, the CREATE2 Safe
+-- address is the SAME on every EVM chain, so one Safe, verified once on
+-- any EVM chain, is the vault Owner for every EVM chain. Solana is the
+-- only exception (Safe is EVM-only) — no multisig is ever recorded for it.
+--
+-- verified_chain_id records, at confirm time, the ONE EVM chain the Safe
+-- was actually verified on (eth_getCode + getThreshold + getOwners).
+-- Existing rows are retagged to 'evm' — the user's prepared multisig #1
+-- (Arc Mainnet, 2-of-2) keeps its owners/threshold/salt nonce and becomes
+-- the universal multisig; nobody has to re-enter it. The UNIQUE
+-- (chain_id, safe_address) then prevents the same deployed Safe being
+-- recorded twice, globally, instead of once per chain.
+ALTER TABLE multisigs ADD COLUMN verified_chain_id TEXT;
+UPDATE multisigs SET chain_id = 'evm' WHERE chain_id != 'evm';

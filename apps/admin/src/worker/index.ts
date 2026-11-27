@@ -63,7 +63,7 @@ import { runStaticAudit, sha256Hex, type AuditFinding } from '../lib/auditCheck'
 import { validateFeePayload, type FeeConfig } from '../lib/fees'
 import { buildCircleChallengeRequest, CIRCLE_API_BASE, isValidCircleAppId, maskAppId, parseCircleError, validateCircleChallengeInput } from '../lib/circle'
 import { isAddress, isTxHash, mainnetConfirmPhrase, testnetChainIdFor, validateDeployParams } from '../lib/deployParams'
-import { safeChainFor, validateMultisigInput } from '../lib/multisig'
+import { validateMultisigInput } from '../lib/multisig'
 import { validateChainInput, type ChainInput } from '../lib/chainValidation'
 import artifact from '../contracts/StelixVault.artifact.json'
 
@@ -1938,12 +1938,9 @@ export default {
       const body = await readJson(req)
       const { multisig, errors } = validateMultisigInput(body)
       if (!multisig) return json({ error: 'invalid multisig', details: errors }, 400)
-      const chain = await env.DB.prepare('SELECT * FROM chains WHERE id = ?').bind(multisig.chainId).first<ChainRow>()
-      if (!chain) return json({ error: 'chain not found in Chain Manager' }, 400)
-      const info = safeChainFor(multisig.chainId)
-      if (info && chain.chain_id !== info.chainId) {
-        return json({ error: `Chain Manager row "${multisig.chainId}" has chain id ${chain.chain_id}, but Safe expects ${info.chainId} for ${info.name}. Fix the chain row before preparing a multisig.` }, 400)
-      }
+      // Chain-agnostic (2026-11-27): a multisig is prepared once, for all
+      // EVM chains — no Chain Manager row is needed or checked. Its
+      // chain_id is always 'evm' (see lib/multisig.ts).
       const run = await env.DB.prepare(
         'INSERT INTO multisigs (chain_id, label, owners_json, threshold, salt_nonce, status, predicted_address, safe_address, deploy_tx_hash, factory_address, singleton_address, safe_version, created_by) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
       ).bind(
@@ -1952,7 +1949,7 @@ export default {
         multisig.factoryAddress, multisig.singletonAddress, multisig.safeVersion, authed,
       ).run()
       const id = (run as unknown as { meta?: { last_row_id?: number } }).meta?.last_row_id ?? null
-      await audit(env, authed, 'multisig.prepare', `Multisig prepared on ${multisig.chainId}: ${multisig.threshold}-of-${multisig.owners.length} (id ${id ?? ''}) — not deployed yet, no Safe address recorded`)
+      await audit(env, authed, 'multisig.prepare', `Multisig prepared for all EVM chains: ${multisig.threshold}-of-${multisig.owners.length} (id ${id ?? ''}) — not deployed yet, no Safe address recorded`)
       return json({ ok: true, id }, 201)
     }
     if (multisigIdMatch && multisigIdMatch[2] === '/predicted' && req.method === 'POST') {
@@ -1988,48 +1985,71 @@ export default {
       } catch {
         return json({ error: 'Stored owners for this multisig are corrupt — delete it and prepare it again.' }, 500)
       }
-      const duplicate = await env.DB.prepare('SELECT id FROM multisigs WHERE chain_id = ? AND safe_address = ?').bind(row.chain_id, safeAddress.toLowerCase()).first()
-      if (duplicate) return json({ error: 'This Safe address is already recorded as a deployed multisig on this chain.' }, 409)
-      const chain = await env.DB.prepare('SELECT * FROM chains WHERE id = ?').bind(row.chain_id).first<ChainRow>()
-      if (!chain) return json({ error: 'chain not found in Chain Manager' }, 404)
-      const rpcUrl = (chain.rpc_urls.split(',')[0] ?? '').trim()
-      if (!rpcUrl) return json({ error: 'No RPC URL is configured for this chain — add one in Chain Manager before confirming.' }, 400)
-      // 1. Contract code must exist at the Safe address on this chain.
-      let code = '0x'
-      try {
-        const result = await rpcCall(rpcUrl, 'eth_getCode', [safeAddress, 'latest'])
-        if (typeof result === 'string') code = result
-      } catch {
-        return json({ error: 'Chain RPC unreachable — the Safe could not be verified on-chain. Try again when the RPC is reachable.' }, 502)
-      }
-      if (code === '0x' || code === '0x0' || /^0x0+$/.test(code) || code.length <= 2) {
-        return json({ error: 'No contract code exists at this address on this chain. The Safe has not been deployed yet — deploy it in your wallet first, then confirm.' }, 400)
-      }
-      // 2. On-chain threshold must equal the prepared threshold.
-      // 3. On-chain owners must equal the prepared owner set.
-      let onChainThreshold: number
-      let onChainOwners: string[]
-      try {
-        const thresholdHex = await ethCall(rpcUrl, safeAddress, '0x0d582f13')
-        onChainThreshold = Number(hexToBigInt(thresholdHex.slice(0, 2 + 64)))
-        const ownersHex = await ethCall(rpcUrl, safeAddress, '0xa0e67e2b')
-        onChainOwners = decodeAddressArray(ownersHex)
-      } catch {
-        return json({ error: 'Could not read the Safe configuration on-chain (getThreshold/getOwners failed). The address may not be a Safe, or the RPC is unreachable.' }, 502)
-      }
-      if (onChainThreshold !== row.threshold) {
-        return json({ error: `On-chain threshold is ${onChainThreshold}-of-${onChainOwners.length}, but this multisig was prepared as ${row.threshold}-of-${owners.length}. This Safe does not match the prepared multisig.` }, 400)
-      }
+      // One Safe, globally: the same CREATE2 address on every EVM chain,
+      // so it must never be recorded twice, on any chain.
+      const duplicate = await env.DB.prepare('SELECT id FROM multisigs WHERE safe_address = ?').bind(safeAddress.toLowerCase()).first()
+      if (duplicate) return json({ error: 'This Safe address is already recorded as a deployed multisig.' }, 409)
+      // Verify on ONE EVM chain — whichever one the Safe was deployed on.
+      // The Worker tries every EVM chain in Chain Manager (Solana is
+      // skipped: Safe is EVM-only) until it finds contract code at the
+      // address whose getThreshold/getOwners match the prepared plan.
+      // The chain it is found on is recorded as verified_chain_id; the
+      // Safe is then the vault Owner for ALL EVM chains, not just that one.
+      const evmChains = (await getChains(env)).filter((c) => c.id !== 'solana')
+      if (evmChains.length === 0) return json({ error: 'No EVM chain is configured in Chain Manager — add one before confirming.' }, 400)
       const want = [...owners].map((o) => o.toLowerCase()).sort()
-      const got = [...onChainOwners].map((o) => o.toLowerCase()).sort()
-      if (want.length !== got.length || want.some((o, i) => o !== got[i])) {
-        return json({ error: 'On-chain owners do not match the prepared owners. This Safe does not match the prepared multisig — check the chain and the Safe address.' }, 400)
+      let verifiedChainId: string | null = null
+      let codeFoundOn: string | null = null
+      let mismatchOn: { chainId: string; threshold: number; ownerCount: number } | null = null
+      let rpcReachable = false
+      for (const chain of evmChains) {
+        const rpcUrl = (chain.rpc_urls.split(',')[0] ?? '').trim()
+        if (!rpcUrl.startsWith('https://')) continue
+        let code = '0x'
+        try {
+          const result = await rpcCall(rpcUrl, 'eth_getCode', [safeAddress, 'latest'])
+          if (typeof result === 'string') code = result
+          rpcReachable = true
+        } catch {
+          continue // This chain's RPC is down — try the next EVM chain.
+        }
+        if (code === '0x' || code === '0x0' || /^0x0+$/.test(code) || code.length <= 2) continue
+        codeFoundOn = chain.id
+        // 2. On-chain threshold must equal the prepared threshold.
+        // 3. On-chain owners must equal the prepared owner set.
+        let onChainThreshold: number
+        let onChainOwners: string[]
+        try {
+          const thresholdHex = await ethCall(rpcUrl, safeAddress, '0x0d582f13')
+          onChainThreshold = Number(hexToBigInt(thresholdHex.slice(0, 2 + 64)))
+          const ownersHex = await ethCall(rpcUrl, safeAddress, '0xa0e67e2b')
+          onChainOwners = decodeAddressArray(ownersHex)
+        } catch {
+          continue // Could not read this Safe's config here — try the next chain.
+        }
+        const got = [...onChainOwners].map((o) => o.toLowerCase()).sort()
+        if (onChainThreshold !== row.threshold || want.length !== got.length || want.some((o, i) => o !== got[i])) {
+          mismatchOn = { chainId: chain.id, threshold: onChainThreshold, ownerCount: onChainOwners.length }
+          continue
+        }
+        verifiedChainId = chain.id
+        break
+      }
+      if (!verifiedChainId) {
+        if (!rpcReachable) return json({ error: 'No EVM chain RPC was reachable — the Safe could not be verified on-chain. Try again when an RPC is reachable.' }, 502)
+        if (mismatchOn) {
+          return json({ error: `On-chain threshold is ${mismatchOn.threshold}-of-${mismatchOn.ownerCount} on ${mismatchOn.chainId}, but this multisig was prepared as ${row.threshold}-of-${owners.length}. This Safe does not match the prepared multisig.` }, 400)
+        }
+        if (codeFoundOn) {
+          return json({ error: 'On-chain owners do not match the prepared owners. This Safe does not match the prepared multisig — check the Safe address.' }, 400)
+        }
+        return json({ error: 'No contract code exists at this address on any EVM chain. The Safe has not been deployed yet — deploy it in your wallet first, then confirm.' }, 400)
       }
       await env.DB.prepare(
-        "UPDATE multisigs SET status = ?, safe_address = ?, deploy_tx_hash = ?, deployed_at = datetime('now') WHERE id = ?",
-      ).bind('deployed', safeAddress.toLowerCase(), txHash, id).run()
-      await audit(env, authed, 'multisig.confirm', `Multisig id ${id} deployed and verified on-chain on ${row.chain_id}: Safe ${safeAddress.toLowerCase()} (${row.threshold}-of-${owners.length})`)
-      return json({ ok: true, id, safeAddress: safeAddress.toLowerCase(), chain: row.chain_id, threshold: row.threshold, owners }, 201)
+        "UPDATE multisigs SET status = ?, safe_address = ?, deploy_tx_hash = ?, verified_chain_id = ?, deployed_at = datetime('now') WHERE id = ?",
+      ).bind('deployed', safeAddress.toLowerCase(), txHash, verifiedChainId, id).run()
+      await audit(env, authed, 'multisig.confirm', `Multisig id ${id} deployed and verified on-chain on ${verifiedChainId}: Safe ${safeAddress.toLowerCase()} (${row.threshold}-of-${owners.length}) — usable as vault Owner on all EVM chains`)
+      return json({ ok: true, id, safeAddress: safeAddress.toLowerCase(), chain: verifiedChainId, verifiedChainId, threshold: row.threshold, owners }, 201)
     }
     if (multisigIdMatch && !multisigIdMatch[2] && req.method === 'DELETE') {
       const id = Number(multisigIdMatch[1])

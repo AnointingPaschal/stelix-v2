@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest'
 import { validateDeployParams } from '../deployParams'
 import {
   SAFE_FALLBACK_HANDLER, SAFE_PROXY_FACTORY, SAFE_SINGLETON, SAFE_VERSION,
+  UNIVERSAL_MULTISIG_CHAIN_ID,
   safeChainFor, thresholdLabel, validateMultisigInput,
 } from '../multisig'
 
@@ -12,16 +13,31 @@ const OWNERS = [
 ]
 
 describe('validateMultisigInput', () => {
-  it('accepts a 2-of-3 multisig on BNB', () => {
-    const { multisig, errors } = validateMultisigInput({ chainId: 'bnb', label: 'Treasury', owners: OWNERS, threshold: 2, saltNonce: '0' })
+  it('accepts a 2-of-3 multisig with no chain — one multisig for all EVM chains', () => {
+    const { multisig, errors } = validateMultisigInput({ label: 'Treasury', owners: OWNERS, threshold: 2, saltNonce: '0' })
     expect(errors).toEqual([])
-    expect(multisig?.chainId).toBe('bnb')
+    expect(multisig?.chainId).toBe(UNIVERSAL_MULTISIG_CHAIN_ID)
+    expect(multisig?.chainId).toBe('evm')
     expect(multisig?.threshold).toBe(2)
     expect(multisig?.owners).toEqual(OWNERS)
     expect(multisig?.factoryAddress).toBe(SAFE_PROXY_FACTORY)
     expect(multisig?.singletonAddress).toBe(SAFE_SINGLETON)
     expect(multisig?.safeVersion).toBe(SAFE_VERSION)
     expect(thresholdLabel(2, 3)).toBe('2-of-3')
+  })
+
+  it('normalises a legacy per-chain chainId to the universal marker', () => {
+    for (const chainId of ['bnb', 'ethereum', 'arc', 'arc-mainnet']) {
+      const { multisig, errors } = validateMultisigInput({ chainId, owners: OWNERS, threshold: 2 })
+      expect(errors).toEqual([])
+      expect(multisig?.chainId).toBe('evm')
+    }
+  })
+
+  it('refuses Solana outright — Safe is EVM-only, no chain selector can pick it', () => {
+    const { multisig, errors } = validateMultisigInput({ chainId: 'solana', owners: OWNERS, threshold: 2 })
+    expect(multisig).toBeNull()
+    expect(errors.some((e) => e.includes('Safe is not available on Solana'))).toBe(true)
   })
 
   it('accepts 3-of-3 and a 2-owner multisig', () => {
@@ -106,9 +122,10 @@ describe('Safe availability per chain', () => {
   it('marks Arc testnet and mainnet as contracts-on-chain only (no Safe web app)', () => {
     expect(safeChainFor('arc')).toMatchObject({ chainId: 5042002, support: 'contracts-only' })
     expect(safeChainFor('arc-mainnet')).toMatchObject({ chainId: 5042, support: 'contracts-only' })
-    // Preparing an Arc multisig is allowed — creation happens via CLI/cast.
-    const { errors } = validateMultisigInput({ chainId: 'arc', owners: OWNERS, threshold: 2 })
+    // Preparing a multisig needs no chain at all — creation happens via CLI/cast on Arc.
+    const { multisig, errors } = validateMultisigInput({ owners: OWNERS, threshold: 2 })
     expect(errors).toEqual([])
+    expect(multisig?.chainId).toBe('evm')
   })
 
   it('refuses Solana: Safe is EVM-only', () => {
