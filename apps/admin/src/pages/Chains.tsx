@@ -61,7 +61,6 @@ const toInput = (f: ChainFormState) => ({
 })
 
 const errStyle = { color: '#e5484d', fontSize: 12, margin: '4px 0 0' } as const
-const checkStyle = { display: 'flex', alignItems: 'center', gap: 8, margin: '12px 0 0', fontSize: 13, fontWeight: 600, color: 'var(--muted)' } as const
 
 function FieldError({ errors, field }: { errors: ChainFieldErrors; field: string }) {
   const msg = errors[field]
@@ -241,15 +240,15 @@ export default function Chains() {
       <label>Paired chain slug (testnet ↔ mainnet pair, e.g. arc — blank if unpaired)</label>
       <input value={f.pairedChainId} onChange={(e) => set({ pairedChainId: e.target.value }, which)} placeholder="arc" />
       <FieldError errors={errors} field="pairedChainId" />
-      <label style={checkStyle}>
+      <label className="check-row">
         <input type="checkbox" checked={f.isTestnet} onChange={(e) => set({ isTestnet: e.target.checked }, which)} />
         Testnet chain
       </label>
-      <label style={checkStyle}>
+      <label className="check-row">
         <input type="checkbox" checked={f.active} onChange={(e) => set({ active: e.target.checked }, which)} />
         Enabled — listed in the wallet (uncheck to hide it without deleting it)
       </label>
-      <label style={checkStyle}>
+      <label className="check-row">
         <input type="checkbox" checked={f.isDefault} onChange={(e) => set({ isDefault: e.target.checked }, which)} />
         Default chain in the wallet
       </label>
@@ -324,14 +323,14 @@ export default function Chains() {
               {chains.map((c) => (
                 <tr key={c.id}>
                   <td data-label="Chain">
-                    <span style={{ display: 'inline-flex', alignItems: 'center', gap: 8 }}>
+                    <span style={{ display: 'inline-flex', alignItems: 'center', gap: 8, flexWrap: 'wrap', maxWidth: '100%' }}>
                       <span className="chain-dot" style={{ background: CHAIN_COLORS[c.id] ?? '#8A99AF' }} />
-                      <b>{c.name}</b>
+                      <b className="chain-name">{c.name}</b>
                       {c.isDefault && <span className="badge b-mint">Default</span>}
                       {c.isTestnet && <span className="badge b-blue">Testnet</span>}
                       {c.pairedChainId && <span className="muted small">↔ {c.pairedChainId}</span>}
                     </span>
-                    <br /><span className="muted small">{c.explorerUrl}</span>
+                    <span className="muted small chain-url">{c.explorerUrl}</span>
                   </td>
                   <td data-label="Chain ID">{c.chainId}</td>
                   <td data-label="Native / Stablecoin">
@@ -345,7 +344,7 @@ export default function Chains() {
                     <span className={'badge ' + (c.active ? 'b-green' : 'b-grey')}>{c.active ? 'Enabled' : 'Disabled'}</span>
                   </td>
                   <td data-label="Edit">
-                    <span style={{ display: 'inline-flex', gap: 6 }}>
+                    <span style={{ display: 'inline-flex', gap: 6, flexWrap: 'wrap' }}>
                       <button className="btn ghost" onClick={() => { setEditing(c); setEdit(fromChain(c)); setEditErrors({}); setNotice('') }}>
                         <Pencil />Edit
                       </button>

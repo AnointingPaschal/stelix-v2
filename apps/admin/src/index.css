@@ -46,7 +46,13 @@ p{margin:0 0 10px}
 .main{padding:16px 16px calc(var(--bottomnav-h) + 24px);min-width:0;max-width:1120px;margin:0 auto}
 .main-inner{width:100%;min-width:0}
 .layout{min-width:0}
-.card{min-width:0;overflow-wrap:anywhere}
+/* overflow-wrap:break-word (not anywhere): long addresses/URLs break only
+ * when they must, never mid-word. "anywhere" split chain names like
+ * "Polygon" into "Polyg o n" and "Arc Testnet" letter-by-letter on
+ * phones — reported 2026-11-27. */
+.card{min-width:0;overflow-wrap:break-word}
+.chain-name{white-space:nowrap}
+.chain-url{display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:100%}
 .grid>*{min-width:0}
 
 /* Drawer (mobile nav) */
@@ -174,6 +180,13 @@ th{text-align:left;color:var(--muted);font-weight:600;padding:8px;border-bottom:
 td{padding:11px 8px;border-bottom:1px solid var(--border);vertical-align:top}
 tr:last-child td{border-bottom:0}
 @media(max-width:767px){
+  /* Smaller, calmer phones: slightly smaller type and tighter cards,
+   * so pages feel compact without squeezing any text. */
+  body{font-size:14px}
+  h1{font-size:19px}
+  .card{padding:14px}
+  .btn{font-size:13.5px;min-height:42px;padding:0 14px}
+  input,select,textarea{font-size:14px}
   .table-wrap{margin:0;padding:0}
   table.rtable{min-width:0;display:block}
   table.rtable thead{display:none}
@@ -182,13 +195,17 @@ tr:last-child td{border-bottom:0}
     display:block;border:1px solid var(--border);border-radius:12px;
     padding:6px 12px;margin-bottom:10px;background:#fff;
   }
-  table.rtable td{display:flex;justify-content:space-between;align-items:flex-start;gap:12px;border-bottom:1px solid #F1F5F9;padding:8px 0;font-size:13.5px}
+  /* Stacked rows, not side-by-side: the label sits above the value at
+   * full width. The old space-between row squeezed the value into ~40%
+   * of the screen, and overflow-wrap:anywhere then broke words
+   * mid-word ("Polyg o n", "Arc Testnet" letter-by-letter). */
+  table.rtable td{display:flex;flex-direction:column;align-items:flex-start;gap:2px;border-bottom:1px solid #F1F5F9;padding:8px 0;font-size:13px}
   table.rtable td:last-child{border-bottom:0}
   table.rtable td::before{
-    content:attr(data-label);flex:none;color:var(--muted);font-size:12px;font-weight:600;
-    text-transform:uppercase;letter-spacing:.04em;padding-top:2px;
+    content:attr(data-label);flex:none;color:var(--muted);font-size:11px;font-weight:600;
+    text-transform:uppercase;letter-spacing:.04em;
   }
-  table.rtable td>*{text-align:right;min-width:0;overflow-wrap:anywhere}
+  table.rtable td>*{text-align:left;min-width:0;max-width:100%;overflow-wrap:break-word}
 }
 
 /* ---------- Forms & buttons ---------- */
@@ -216,16 +233,16 @@ label:first-child{margin-top:0}
 .field-hint{font-size:12.5px;color:var(--muted);margin-top:5px}
 
 /* ---------- Notices ---------- */
-.notice{display:flex;gap:10px;align-items:flex-start;border-radius:12px;padding:12px 14px;font-size:13.5px;margin-bottom:14px;line-height:1.5;min-width:0;overflow-wrap:anywhere}
-.notice>*{min-width:0;overflow-wrap:anywhere}
+.notice{display:flex;gap:10px;align-items:flex-start;border-radius:12px;padding:12px 14px;font-size:13.5px;margin-bottom:14px;line-height:1.5;min-width:0;overflow-wrap:break-word}
+.notice>*{min-width:0;overflow-wrap:break-word}
 .notice svg{flex:none;width:18px;height:18px;margin-top:1px}
 .notice.alert{background:#FEF2F2;border:1px solid #FECACA;color:#991B1B}
 .notice.ok{background:#ECFDF5;border:1px solid #A7F3D0;color:#065F46}
 .notice.info{background:#EFF6FF;border:1px solid #BFDBFE;color:#1E40AF}
 .notice b{font-weight:700}
-pre{background:var(--navy);color:#D1FAE5;border-radius:10px;padding:14px;overflow:auto;font-size:12px;line-height:1.55;margin:12px 0 0;max-width:100%;white-space:pre-wrap;word-break:break-all;overflow-wrap:anywhere}
-.kbd{font-family:ui-monospace,Menlo,monospace;background:#EEF2F7;padding:1px 6px;border-radius:4px;font-size:12px;overflow-wrap:anywhere}
-.mono{font-family:ui-monospace,Menlo,monospace;font-size:12.5px;overflow-wrap:anywhere}
+pre{background:var(--navy);color:#D1FAE5;border-radius:10px;padding:14px;overflow:auto;font-size:12px;line-height:1.55;margin:12px 0 0;max-width:100%;white-space:pre-wrap;overflow-wrap:break-word}
+.kbd{font-family:ui-monospace,Menlo,monospace;background:#EEF2F7;padding:1px 6px;border-radius:4px;font-size:12px;overflow-wrap:break-word}
+.mono{font-family:ui-monospace,Menlo,monospace;font-size:12.5px;overflow-wrap:break-word}
 .empty{padding:18px 0 6px;text-align:center;color:var(--muted);font-size:13.5px}
 .empty svg{width:28px;height:28px;color:var(--muted2);margin-bottom:6px}
 .loading{padding:32px 16px;text-align:center;color:var(--muted);font-size:14px}
