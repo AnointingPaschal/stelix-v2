@@ -27,7 +27,7 @@
  *     verified and registered in ROUTER_ADDRESSES below.
  */
 import { ethers } from 'ethers';
-import { getChain, VAULT_DEFAULTS } from './chains';
+import { EVM_NATIVE_RPC_DECIMALS, getChain, VAULT_DEFAULTS } from './chains';
 import { getProvider } from './balances';
 
 export const PANCAKESWAP_V2_ROUTER = '0x10ED43C718714eb63d5aA57B78B54704E256024E';
@@ -336,7 +336,8 @@ export async function estimateSwapFee(
     ]);
     const gasPrice = feeData.gasPrice ?? feeData.maxFeePerGas ?? 0n;
     const feeRaw = gasLimit * gasPrice;
-    const feeNative = ethers.formatUnits(feeRaw, chain.nativeDecimals);
+    // Gas is priced in wei, always 18 decimals — never nativeDecimals.
+    const feeNative = ethers.formatUnits(feeRaw, EVM_NATIVE_RPC_DECIMALS);
     return {
       feeNative,
       feeUsd: nativePriceUsd !== null ? Number(feeNative) * nativePriceUsd : null,

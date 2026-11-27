@@ -23,7 +23,7 @@
  *   Restored 2026-11-27 (all chains active again).
  */
 import { ethers } from 'ethers';
-import { getChain, type ChainConfig } from './chains';
+import { EVM_NATIVE_RPC_DECIMALS, getChain, type ChainConfig } from './chains';
 import { fetchDexScreenerToken, fetchMajorPrices } from './prices';
 import { fetchSolanaBalances } from './solana';
 import { kvGet, kvSet } from './storage';
@@ -204,13 +204,22 @@ async function fetchNativeBalance(
   address: string,
 ): Promise<TokenBalance> {
   const raw = await provider.getBalance(address);
-  const balance = Number(ethers.formatUnits(raw, chain.nativeDecimals));
+  // eth_getBalance is ALWAYS wei — 10^18 per native unit — on every EVM
+  // chain, including Arc. Arc's "6 decimals" is the USDC *token*
+  // decimals (the ERC-20 view of USDC), NOT the native RPC unit. The
+  // old code formatted with chain.nativeDecimals (6 on Arc), so a real
+  // 30 USDC balance (30e18 wei) showed as 30,000,000,000,000 USDC —
+  // 1,000,000,000,000x too big — and native sends built with
+  // tokenDecimals 6 sent 1e6 wei instead of 1e18 wei per USDC.
+  // The native entry therefore carries decimals 18: that is the unit
+  // every native amount (value, gas, balance) is actually in.
+  const balance = Number(ethers.formatUnits(raw, EVM_NATIVE_RPC_DECIMALS));
   return {
     symbol: chain.nativeSymbol,
     name: chain.nativeName,
     chainId: chain.id,
     address: '',
-    decimals: chain.nativeDecimals,
+    decimals: EVM_NATIVE_RPC_DECIMALS,
     balance,
     balanceRaw: raw.toString(),
     locked: 0,

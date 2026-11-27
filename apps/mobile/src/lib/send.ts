@@ -4,8 +4,11 @@
  * - Validates the recipient (EVM address, not the zero address, and not
  *   the sender's own address unless the caller explicitly allows it).
  * - Native: a plain value transfer. ERC-20: transfer() on the token
- *   contract. Amounts are parsed with the token's real decimals — Arc's
- *   native gas asset is USDC with 6 decimals, not 18 (see lib/chains.ts).
+ *   contract. Amounts are parsed with the token's real decimals — the
+ *   native asset's RPC unit is always wei (18 decimals, see
+ *   EVM_NATIVE_RPC_DECIMALS in lib/chains.ts), even on Arc, where the
+ *   USDC *token* has 6 decimals. A native amount parsed with 6 would
+ *   send 10^12 times too little.
  * - Gas is estimated from the live RPC before sending; the caller shows
  *   the estimate and the user signs once. Nothing is recorded in History
  *   until the transaction is mined — the returned receipt hash is the
@@ -14,7 +17,7 @@
  *   build; the UI labels the chain (testnet) at review time.
  */
 import { ethers } from 'ethers';
-import { getChain } from './chains';
+import { EVM_NATIVE_RPC_DECIMALS, getChain } from './chains';
 import { getProvider, ERC20_MIN_ABI } from './balances';
 import { isValidEvmAddress } from './wallet';
 
@@ -34,7 +37,7 @@ export interface SendEstimate {
   gasLimit: bigint;
   /** Fee in native units, formatted. */
   feeNative: string;
-  /** Fee in native units, raw wei (or 6-decimal USDC units on Arc). */
+  /** Fee in native units, raw wei (always 18 decimals, even on Arc). */
   feeRaw: bigint;
   /** Fee in USD when a price is supplied, else null. */
   feeUsd: number | null;
@@ -101,10 +104,11 @@ export async function estimateSendFee(
   req: SendRequest,
   fromAddress: string,
   nativePriceUsd: number | null = null,
+  providerOverride?: ethers.AbstractProvider,
 ): Promise<SendEstimate> {
   const amountRaw = validateSend(req, fromAddress);
   const chain = getChain(req.chainId);
-  const provider = getProvider(chain);
+  const provider = providerOverride ?? getProvider(chain);
   const tx = buildTx(req, amountRaw);
   const [gasLimit, feeData] = await Promise.all([
     provider.estimateGas({ ...tx, from: fromAddress }),
@@ -112,7 +116,9 @@ export async function estimateSendFee(
   ]);
   const gasPrice = feeData.gasPrice ?? feeData.maxFeePerGas ?? 0n;
   const feeRaw = gasLimit * gasPrice;
-  const feeNative = ethers.formatUnits(feeRaw, chain.nativeDecimals);
+  // Gas is priced in wei, always 18 decimals — never nativeDecimals
+  // (6 on Arc would inflate the displayed fee by 10^12).
+  const feeNative = ethers.formatUnits(feeRaw, EVM_NATIVE_RPC_DECIMALS);
   const feeUsd =
     nativePriceUsd !== null ? Number(feeNative) * nativePriceUsd : null;
   return { gasLimit, feeNative, feeRaw, feeUsd };

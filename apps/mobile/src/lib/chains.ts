@@ -20,7 +20,10 @@
  *     https://rpc.drpc.testnet.arc.io,
  *     https://rpc.quicknode.testnet.arc.io
  *   - Arc Testnet explorer: https://explorer.testnet.arc.io
- *   - Native gas asset: USDC, 6 decimals (NOT 18)
+ *   - Native gas asset: USDC, 6 decimals as a *token* — but the EVM
+ *     native unit (eth_getBalance, tx value, gas) is always wei (18).
+ *     Do not format a native balance with 6; see
+ *     EVM_NATIVE_RPC_DECIMALS below.
  * Arc MAINNET (chain id 5042, live 2026-09-16) is registered below as
  * `arc-mainnet` — registry source data ONLY, never a picker entry.
  * The picker shows ONE 'Arc' entry whose variant is chosen by the
@@ -46,6 +49,17 @@
 
 export type ChainKind = 'evm' | 'solana';
 
+/**
+ * The unit every EVM native RPC value is in: eth_getBalance, the
+ * transaction `value` field, gasPrice × gasLimit. It is ALWAYS 18
+ * (wei), on every EVM chain — including Arc, where the USDC *token*
+ * has 6 decimals. Formatting a native balance or fee with
+ * chain.nativeDecimals (6 on Arc) inflates it by 10^12 and makes
+ * native sends send 10^12 times too little. Found 2026-11-27 when a
+ * real 30 USDC Arc balance showed as 30,000,000,000,000 USDC.
+ */
+export const EVM_NATIVE_RPC_DECIMALS = 18;
+
 export interface ChainConfig {
   id: string;
   name: string;
@@ -53,7 +67,11 @@ export interface ChainConfig {
   kind: ChainKind;
   nativeSymbol: string;
   nativeName: string;
-  /** Decimals of the native gas asset (Arc USDC = 6, most EVM = 18). */
+  /** Decimals of the native gas asset as a token (Arc USDC = 6, most
+   *  EVM = 18). This is the ERC-20 view of the asset — it is NOT the
+   *  unit eth_getBalance / tx value / gas use. Those are always wei
+   *  (see EVM_NATIVE_RPC_DECIMALS below). Never format a native RPC
+   *  balance or fee with nativeDecimals. */
   nativeDecimals: number;
   /** Stablecoin the user receives on an auto-sell on this chain. */
   exitStablecoin: 'USDT' | 'USDC' | 'BUSD';

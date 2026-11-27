@@ -104,6 +104,31 @@ describe('sendToken with a fake signer', () => {
     expect(sent[0].value).toBe(ethers.parseEther('0.5'));
   });
 
+  // Regression 2026-11-27: a real 30 USDC balance on Arc Testnet showed
+  // as 30,000,000,000,000 USDC. eth_getBalance is always wei (18
+  // decimals); Arc's "6 decimals" is the USDC token decimals, not the
+  // native RPC unit. The native entry now carries decimals 18, so a
+  // 30 USDC native send must move exactly 30e18 wei, and the fee must
+  // be formatted in wei too (21,000 gas × 1 gwei = 0.000021 USDC, not
+  // 21,000,000,000).
+  it('Arc native send moves 30 USDC as exactly 30e18 wei', async () => {
+    const provider = makeFakeProvider(0n);
+    provider.getBalance = async () => ethers.parseEther('100');
+    const { signer, sent } = makeFakeSigner(provider);
+    const arcReq: SendRequest = { chainId: 'arc', tokenAddress: '', tokenSymbol: 'USDC', tokenDecimals: 18, to: TO, amount: 30 };
+    const res = await sendToken(signer, arcReq);
+    expect(res.amountRaw).toBe(ethers.parseEther('30').toString());
+    expect(sent[0].value).toBe(ethers.parseEther('30'));
+  });
+
+  it('Arc native fee is formatted in wei, not 6-decimal USDC units', async () => {
+    const provider = makeFakeProvider(0n);
+    const arcReq: SendRequest = { chainId: 'arc', tokenAddress: '', tokenSymbol: 'USDC', tokenDecimals: 18, to: TO, amount: 30 };
+    const est = await estimateSendFee(arcReq, FROM, 1, provider as never);
+    expect(est.feeNative).toBe('0.000021');
+    expect(est.feeUsd).toBeCloseTo(0.000021);
+  });
+
   it('refuses a native send that exceeds balance + gas', async () => {
     const provider = makeFakeProvider(0n);
     provider.getBalance = async () => ethers.parseEther('0.1');
