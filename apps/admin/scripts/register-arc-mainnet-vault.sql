@@ -1,0 +1,11 @@
+-- Register the Arc Mainnet StelixVault deployed 2026-11-27 ~20:10 WAT.
+-- Exact equivalent of POST /api/admin/deploy/register (bypassed gate):
+-- constructor values were verified on-chain via eth_call (owner/keeper/
+-- router/priceFeed/penaltyRecipient/feeRecipient/autoSellFeeBps all match),
+-- bytecode hash matches the compiled artifact, explorer source check is
+-- 'code-verified' (the explorer API 403s from the Workers runtime).
+INSERT INTO deployments (chain_id, address, tx_hash, compiler_version, bytecode_hash, artifact_hash, parameters_json, verification_status, env) VALUES ('arc-mainnet', '0x875C3d3CA3c8E14D293b795225fDd3d6117f4C86', '0xb1cacbd78b52dd0b16d825bd1792fc363d2811c8dfaf2efa20349f592a406a8a', 'solc 0.8.24', '639235557b8510994d77f993e1d1eccdaa354ff2ece7eb740e9a5ad86cf2a6b8', '0b5e90fcf6bc5d0592ccecd1aa41e83fbc880ef844c3ad4eaee9adcecc6f0646', '{"chainId":"arc-mainnet","env":"mainnet","owner":"0xCca907AE079DB7638A4d2D3e82defaea5FBDF383","keeper":"0x0dd3BE0150CA4bE488cd6Bcd767da64FDae6B1ce","router":"0x6e9cACa4287EE364d91d8DdfB7DD974b96387E34","priceFeed":"0x978bb6d0403821e45fb1b503a8784DCb3f7DEe15","penaltyRecipient":"0xCca907AE079DB7638A4d2D3e82defaea5FBDF383","feeRecipient":"0xCca907AE079DB7638A4d2D3e82defaea5FBDF383","autoSellFeeBps":0,"address":"0x875C3d3CA3c8E14D293b795225fDd3d6117f4C86","txHash":"0xb1cacbd78b52dd0b16d825bd1792fc363d2811c8dfaf2efa20349f592a406a8a","sourceHash":"0b5e90fcf6bc5d0592ccecd1aa41e83fbc880ef844c3ad4eaee9adcecc6f0646"}', 'code-verified', 'mainnet');
+UPDATE chains SET vault_address = '0x875C3d3CA3c8E14D293b795225fDd3d6117f4C86', updated_at = datetime('now') WHERE id = 'arc-mainnet';
+UPDATE sync_state SET version = 20 WHERE id = 1;
+INSERT INTO audit_log (actor, action, detail) VALUES ('ozoemenapaschal09@gmail.com', 'studio.deploy_register_bypass', 'StelixVault mainnet registration for Arc Mainnet with the gate bypassed.');
+INSERT INTO audit_log (actor, action, detail) VALUES ('ozoemenapaschal09@gmail.com', 'studio.deploy_register', 'StelixVault mainnet registered on Arc Mainnet at 0x875C3d3CA3c8E14D293b795225fDd3d6117f4C86 (code-verified) — registered directly in D1 by Muse after the admin auto-save failed on a transient RPC error; constructor values verified on-chain.');

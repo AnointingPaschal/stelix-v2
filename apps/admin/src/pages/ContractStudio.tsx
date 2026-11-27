@@ -144,11 +144,27 @@ export default function ContractStudio() {
   // Fill the deployed-address / tx boxes from the database for one
   // network. A deployment saved in D1 is the source of truth, so the
   // boxes always show it — switching networks or reloading the page can
-  // never "clear" a deployed vault again. No deployment yet: empty.
+  // never "clear" a deployed vault again. No deployment yet: a deploy
+  // whose auto-save failed still leaves its address in this browser
+  // (saved by onVaultDeployed below), so a refresh cannot lose it either.
   const fillDeployed = (list: Deployment[], chainId: string, e: 'testnet' | 'mainnet') => {
     const d = list.find((x) => x.chain_id === chainId && x.env === e)
-    setAddress(d?.address ?? '')
-    setTxHash(d?.tx_hash ?? '')
+    if (d) {
+      setAddress(d.address ?? '')
+      setTxHash(d.tx_hash ?? '')
+      return
+    }
+    try {
+      const raw = localStorage.getItem('stelix.pendingDeployment')
+      const p = raw ? JSON.parse(raw) as { chainId?: string; env?: string; address?: string; txHash?: string } : null
+      if (p && p.chainId === chainId && p.env === e && p.address) {
+        setAddress(p.address)
+        setTxHash(p.txHash ?? '')
+        return
+      }
+    } catch { /* corrupt storage — fall through to empty */ }
+    setAddress('')
+    setTxHash('')
   }
 
   const load = () => {
@@ -331,6 +347,13 @@ export default function ContractStudio() {
         sourceHash: compileResult.sourceHash, confirmation: registerEnv === 'mainnet' ? confirmText : undefined,
       })
       setNotice(`Registered: StelixVault on ${r.chain} at ${r.address} (${r.verificationStatus}). Vault address written to Chain Manager. ${r.note}`)
+      // The deployment is in D1 now — the browser backup for this network
+      // is no longer needed.
+      try {
+        const raw = localStorage.getItem('stelix.pendingDeployment')
+        const p = raw ? JSON.parse(raw) as { chainId?: string; env?: string } : null
+        if (p && p.chainId === buildParams().chainId && p.env === registerEnv) localStorage.removeItem('stelix.pendingDeployment')
+      } catch { /* ignore */ }
       load()
       setBusy(false)
       return true
@@ -353,6 +376,10 @@ export default function ContractStudio() {
   const onVaultDeployed = async (deployedAddress: string, deployedTxHash: string) => {
     setAddress(deployedAddress)
     setTxHash(deployedTxHash)
+    // Browser backup: if the automatic save below fails, the address is
+    // still recoverable after a refresh — fillDeployed reads this back
+    // when D1 has no deployment for the network yet.
+    try { localStorage.setItem('stelix.pendingDeployment', JSON.stringify({ chainId: effectiveChainId, env, address: deployedAddress, txHash: deployedTxHash })) } catch { /* storage unavailable — form state still holds it */ }
     let cr = compileRes
     if (!cr || !cr.matchesArtifact) {
       setNotice(`StelixVault deployed at ${deployedAddress}. Compiling so it can be saved to the database…`)
