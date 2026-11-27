@@ -45,6 +45,7 @@ import { gcm } from '@noble/ciphers/aes.js';
 import { rngChacha20 } from '@noble/ciphers/chacha.js';
 import { pbkdf2Async } from '@noble/hashes/pbkdf2.js';
 import { sha256 } from '@noble/hashes/sha2.js';
+import { withTimeout } from './timeout';
 
 const PBKDF2_ITERATIONS = 600_000;
 const KEY_LENGTH_BYTES = 32;
@@ -143,9 +144,15 @@ function probeExpoCrypto(): Promise<ExpoCryptoLike | null> {
   if (!expoCryptoProbe) {
     expoCryptoProbe = (async () => {
       try {
-        // Dynamic import: a static import would load expo-modules-core
-        // (and its react-native linkage) in Jest/node and on web.
-        const core = (await import('expo-modules-core')) as {
+        // 5s bound: a dynamic import that never settles (on-demand
+        // Metro chunk fetch in dev) must fall through to the DRBG,
+        // never hang the caller. The catch below treats a timeout
+        // exactly like a missing module.
+        const core = (await withTimeout(
+          import('expo-modules-core'),
+          5_000,
+          'expo-modules-core dynamic import (ExpoCrypto probe)',
+        )) as {
           requireOptionalNativeModule?: (name: string) => unknown;
         };
         const mod = core.requireOptionalNativeModule?.('ExpoCrypto') as ExpoCryptoLike | null;
@@ -320,17 +327,42 @@ export function assertStrongPassword(password: string): void {
   }
 }
 
-/** Encrypt a secret (mnemonic or private key) under the session password. */
-export async function encryptSecret(secret: string, password: string): Promise<string> {
+/** Encrypt a secret (mnemonic or private key) under the session password.
+ *  `onStep` reports progress for the import/create UI; in __DEV__ each
+ *  step is also timed in the Metro logs so a hang can be located by
+ *  the last label printed. KDF stays at 600,000 iterations (OWASP) —
+ *  slow on a phone (est. 5–30s) but it resolves; the step label makes
+ *  the wait honest instead of a silent spinner. */
+export type EncryptStep = 'randomBytes' | 'deriveKey' | 'gcm';
+export async function encryptSecret(
+  secret: string,
+  password: string,
+  onStep?: (step: EncryptStep) => void,
+): Promise<string> {
   await yieldToPaint();
   assertStrongPassword(password);
+  const t0 = Date.now();
+  const devLog = (label: string, t: number): void => {
+    // typeof-guard: __DEV__ is a React Native global, absent in Jest/Node.
+    if (typeof __DEV__ !== 'undefined' && __DEV__) {
+      console.log(`[stelix] encryptSecret ${label}: ${Date.now() - t}ms (total ${Date.now() - t0}ms)`);
+    }
+  };
+  onStep?.('randomBytes');
   const salt = await randomBytes(SALT_LENGTH_BYTES);
   const iv = await randomBytes(IV_LENGTH_BYTES);
+  devLog('randomBytes', t0);
+  onStep?.('deriveKey');
+  const tKdf = Date.now();
   const key = await deriveKey(password, salt);
+  devLog('deriveKey', tKdf);
+  onStep?.('gcm');
+  const tGcm = Date.now();
   // @noble/ciphers AES-GCM appends the 16-byte auth tag to the
   // ciphertext — the same layout WebCrypto produced, so v1 payloads
   // stay interchangeable.
   const ct = gcm(key, iv).encrypt(new TextEncoder().encode(secret));
+  devLog('gcm', tGcm);
   const payload: EncryptedPayload = {
     v: 1,
     salt: b64encode(salt),

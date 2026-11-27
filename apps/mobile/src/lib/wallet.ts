@@ -28,8 +28,33 @@
  */
 import { ethers } from 'ethers';
 import { assertStrongPassword, decryptSecret, encryptSecret, randomBytesSync } from './crypto';
+import type { EncryptStep } from './crypto';
 import { deriveSolanaAddress } from './solana';
 import { isNativeApp, kvDelete, kvGet, kvSet } from './storage';
+import { TimeoutError, withTimeout } from './timeout';
+
+/** Import progress steps, in order. Reported to the import screen via
+ *  importWallet's onProgress callback and named in the overall-timeout
+ *  error, so a hang always says WHERE it stopped. */
+export type ImportStep =
+  | 'deriving-address'
+  | 'deriving-key'
+  | 'encrypting'
+  | 'saving-wallet'
+  | 'deriving-solana'
+  | 'saving-meta';
+
+export const IMPORT_STEP_LABELS: Record<ImportStep, string> = {
+  'deriving-address': 'Deriving address…',
+  'deriving-key': 'Deriving encryption key… this can take ~10–30 s on this device',
+  encrypting: 'Encrypting…',
+  'saving-wallet': 'Saving wallet…',
+  'deriving-solana': 'Deriving Solana address…',
+  'saving-meta': 'Saving wallet details…',
+};
+
+/** Default overall bound for an import (see importWallet). */
+export const IMPORT_TIMEOUT_MS = 90_000;
 
 /** "Web" here means "not the native app" — SecureStore is a native
  *  module and must never be attempted off native. Detection is
@@ -86,19 +111,44 @@ function tryDeriveSolanaAddress(phrase: string | null): string | null {
  */
 let secureStoreAvailable: boolean | null = null;
 
+/** Last import step reached in this launch — read by the overall
+ *  timeout so its error names the step that was in progress. */
+let lastImportStep: ImportStep | null = null;
+
+export function getLastImportStep(): ImportStep | null {
+  return lastImportStep;
+}
+
+function devLogStep(label: string, startedAt: number): void {
+  if (typeof __DEV__ !== 'undefined' && __DEV__) {
+    console.log(`[stelix] importWallet ${label}: ${Date.now() - startedAt}ms`);
+  }
+}
+
 async function secureStore(): Promise<typeof import('expo-secure-store') | null> {
   if (isWeb()) return null;
   if (secureStoreAvailable === false) return null;
   try {
     // Dynamic import: static import breaks Jest/node and web bundles
-    // where the native module is absent.
-    const mod = await import('expo-secure-store');
+    // where the native module is absent. 10s bound — an on-demand
+    // Metro chunk fetch that never settles used to hang the whole
+    // import forever (2026-11-27); a timeout is treated exactly like
+    // an unavailable module and falls through to the kv store.
+    const mod = await withTimeout(
+      import('expo-secure-store'),
+      10_000,
+      'expo-secure-store dynamic import',
+    );
     if (typeof mod.setItemAsync !== 'function' || typeof mod.getItemAsync !== 'function') {
       secureStoreAvailable = false;
       return null;
     }
     if (typeof mod.isAvailableAsync === 'function') {
-      const available = await mod.isAvailableAsync().catch(() => false);
+      const available = await withTimeout(
+        mod.isAvailableAsync().catch(() => false),
+        10_000,
+        'SecureStore.isAvailableAsync()',
+      );
       if (!available) {
         secureStoreAvailable = false;
         return null;
@@ -106,7 +156,10 @@ async function secureStore(): Promise<typeof import('expo-secure-store') | null>
     }
     secureStoreAvailable = true;
     return mod;
-  } catch {
+  } catch (e) {
+    if (e instanceof TimeoutError) {
+      console.warn('[stelix] SecureStore unavailable: import/isAvailable timed out after 10s — using encrypted kv fallback.');
+    }
     secureStoreAvailable = false;
     return null;
   }
@@ -116,9 +169,15 @@ async function storeSet(key: string, value: string): Promise<void> {
   const ss = await secureStore();
   if (ss) {
     try {
-      await ss.setItemAsync(key, value);
+      // 10s bound: a setItemAsync that never settles used to hang the
+      // import forever. A timeout falls through to kv, as a rejection
+      // already did — the payload is encrypted either way.
+      await withTimeout(ss.setItemAsync(key, value), 10_000, `SecureStore.setItemAsync(${key})`);
       return;
-    } catch {
+    } catch (e) {
+      if (e instanceof TimeoutError) {
+        console.warn(`[stelix] SecureStore.setItemAsync(${key}) timed out after 10s — using encrypted kv fallback.`);
+      }
       // SecureStore failed at runtime — fall through to the durable
       // encrypted kv fallback (AsyncStorage on native) instead of
       // losing the wallet.
@@ -136,9 +195,12 @@ async function storeGet(key: string): Promise<string | null> {
   const ss = await secureStore();
   if (ss) {
     try {
-      const value = await ss.getItemAsync(key);
+      const value = await withTimeout(ss.getItemAsync(key), 10_000, `SecureStore.getItemAsync(${key})`);
       if (value !== null) return value;
-    } catch {
+    } catch (e) {
+      if (e instanceof TimeoutError) {
+        console.warn(`[stelix] SecureStore.getItemAsync(${key}) timed out after 10s — reading encrypted kv fallback.`);
+      }
       secureStoreAvailable = false;
     }
   }
@@ -149,7 +211,7 @@ async function storeDelete(key: string): Promise<void> {
   const ss = await secureStore();
   if (ss) {
     try {
-      await ss.deleteItemAsync(key);
+      await withTimeout(ss.deleteItemAsync(key), 10_000, `SecureStore.deleteItemAsync(${key})`);
     } catch {
       secureStoreAvailable = false;
     }
@@ -232,24 +294,91 @@ function walletFromSecret(secret: string): ethers.Wallet | ethers.HDNodeWallet {
   return new ethers.Wallet(hex);
 }
 
-/** Import from a seed phrase or private key. Throws on invalid input. */
-export async function importWallet(secret: string, password: string, name?: string): Promise<string> {
-  assertStrongPassword(password);
-  const wallet = walletFromSecret(secret);
-  // Store the canonical secret (phrase when available, else private key)
-  // encrypted under the session password — never plaintext.
-  const canonical = (wallet as ethers.HDNodeWallet).mnemonic?.phrase ?? wallet.privateKey;
-  const encrypted = await encryptSecret(canonical, password);
-  await storeSet(WALLET_KEY, encrypted);
-  const meta: WalletMeta = {
-    address: wallet.address,
-    createdAt: Date.now(),
-    hasBiometrics: false,
-    name: name?.trim() || undefined,
-    solanaAddress: tryDeriveSolanaAddress((wallet as ethers.HDNodeWallet).mnemonic?.phrase ?? null),
+export interface ImportWalletOptions {
+  /** Called with each step as it starts — drives the import screen's
+   *  step label so the user sees progress during the slow KDF. */
+  onProgress?: (step: ImportStep) => void;
+  /** Overall bound for the whole import (default 90s). On expiry the
+   *  import rejects with `Import timed out at <step>` — the screen's
+   *  existing catch shows it inline and finally setBusy(false) runs,
+   *  so the button can never spin forever again. Tests pass a small
+   *  value; production must not pass a smaller one. */
+  timeoutMs?: number;
+}
+
+/** Import from a seed phrase or private key. Throws on invalid input.
+ *  KDF stays at 600,000 iterations (OWASP) — slow on a phone, but it
+ *  resolves; the step label + overall timeout make the wait honest. */
+export async function importWallet(
+  secret: string,
+  password: string,
+  name?: string,
+  opts?: ImportWalletOptions,
+): Promise<string> {
+  const timeoutMs = opts?.timeoutMs ?? IMPORT_TIMEOUT_MS;
+  const onProgress = opts?.onProgress;
+  let currentStep: ImportStep = 'deriving-address';
+  const report = (step: ImportStep): void => {
+    currentStep = step;
+    lastImportStep = step;
+    onProgress?.(step);
   };
-  await storeSet(WALLET_META_KEY, JSON.stringify(meta));
-  return wallet.address;
+  const run = async (): Promise<string> => {
+    assertStrongPassword(password);
+    const t0 = Date.now();
+    report('deriving-address');
+    const wallet = walletFromSecret(secret);
+    devLogStep('fromPhrase', t0);
+    // Store the canonical secret (phrase when available, else private key)
+    // encrypted under the session password — never plaintext.
+    const canonical = (wallet as ethers.HDNodeWallet).mnemonic?.phrase ?? wallet.privateKey;
+    const onEncryptStep = (s: EncryptStep): void => {
+      report(s === 'deriveKey' ? 'deriving-key' : s === 'gcm' ? 'encrypting' : 'deriving-key');
+    };
+    const encrypted = await encryptSecret(canonical, password, onEncryptStep);
+    report('saving-wallet');
+    const tSave = Date.now();
+    await storeSet(WALLET_KEY, encrypted);
+    devLogStep('storeSet:wallet', tSave);
+    report('deriving-solana');
+    const tSol = Date.now();
+    // Best-effort: a Solana derivation failure must never block import.
+    const solanaAddress = tryDeriveSolanaAddress(
+      (wallet as ethers.HDNodeWallet).mnemonic?.phrase ?? null,
+    );
+    devLogStep('solana', tSol);
+    const meta: WalletMeta = {
+      address: wallet.address,
+      createdAt: Date.now(),
+      hasBiometrics: false,
+      name: name?.trim() || undefined,
+      solanaAddress,
+    };
+    report('saving-meta');
+    const tMeta = Date.now();
+    await storeSet(WALLET_META_KEY, JSON.stringify(meta));
+    devLogStep('storeSet:meta', tMeta);
+    return wallet.address;
+  };
+  // Overall timeout: the timer's rejection reads currentStep LIVE, so
+  // the error names the step that was actually in progress.
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    const timeout = new Promise<never>((_resolve, reject) => {
+      timer = setTimeout(
+        () =>
+          reject(
+            new Error(
+              `Import timed out at ${IMPORT_STEP_LABELS[currentStep]} — the device did not finish that step within ${Math.max(1, Math.round(timeoutMs / 1000))}s. Check your connection and try again.`,
+            ),
+          ),
+        timeoutMs,
+      );
+    });
+    return await Promise.race([run(), timeout]);
+  } finally {
+    if (timer !== undefined) clearTimeout(timer);
+  }
 }
 
 /**
@@ -314,12 +443,20 @@ const BIOMETRIC_PASSWORD_KEY = 'stelix_biometric_session_password_v1';
 export async function saveBiometricSessionPassword(password: string): Promise<boolean> {
   if (isWeb()) return false;
   try {
-    const mod = await import('expo-secure-store');
+    const mod = await withTimeout(
+      import('expo-secure-store'),
+      10_000,
+      'expo-secure-store dynamic import (biometric save)',
+    );
     if (typeof mod.setItemAsync !== 'function') return false;
-    await mod.setItemAsync(BIOMETRIC_PASSWORD_KEY, password, {
-      requireAuthentication: true,
-      authenticationPrompt: 'Authenticate to enable biometric signing',
-    });
+    await withTimeout(
+      mod.setItemAsync(BIOMETRIC_PASSWORD_KEY, password, {
+        requireAuthentication: true,
+        authenticationPrompt: 'Authenticate to enable biometric signing',
+      }),
+      10_000,
+      'SecureStore.setItemAsync(biometric password)',
+    );
     return true;
   } catch {
     return false;
@@ -333,12 +470,20 @@ export async function saveBiometricSessionPassword(password: string): Promise<bo
 export async function readBiometricSessionPassword(): Promise<string | null> {
   if (isWeb()) return null;
   try {
-    const mod = await import('expo-secure-store');
+    const mod = await withTimeout(
+      import('expo-secure-store'),
+      10_000,
+      'expo-secure-store dynamic import (biometric read)',
+    );
     if (typeof mod.getItemAsync !== 'function') return null;
-    return await mod.getItemAsync(BIOMETRIC_PASSWORD_KEY, {
-      requireAuthentication: true,
-      authenticationPrompt: 'Authenticate to sign this transaction',
-    });
+    return await withTimeout(
+      mod.getItemAsync(BIOMETRIC_PASSWORD_KEY, {
+        requireAuthentication: true,
+        authenticationPrompt: 'Authenticate to sign this transaction',
+      }),
+      10_000,
+      'SecureStore.getItemAsync(biometric password)',
+    );
   } catch {
     return null;
   }
@@ -347,9 +492,17 @@ export async function readBiometricSessionPassword(): Promise<string | null> {
 export async function clearBiometricSessionPassword(): Promise<void> {
   if (isWeb()) return;
   try {
-    const mod = await import('expo-secure-store');
+    const mod = await withTimeout(
+      import('expo-secure-store'),
+      10_000,
+      'expo-secure-store dynamic import (biometric clear)',
+    );
     if (typeof mod.deleteItemAsync === 'function') {
-      await mod.deleteItemAsync(BIOMETRIC_PASSWORD_KEY);
+      await withTimeout(
+        mod.deleteItemAsync(BIOMETRIC_PASSWORD_KEY),
+        10_000,
+        'SecureStore.deleteItemAsync(biometric password)',
+      );
     }
   } catch {
     // Best-effort cleanup — a missing key is already clean.

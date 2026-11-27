@@ -160,6 +160,19 @@ export interface AuditGate {
   note: string
 }
 
+export interface CircleConfigStatus {
+  configured: boolean
+  appIdConfigured: boolean
+  apiKeyConfigured: boolean
+  arcTestnet: boolean
+  appIdMasked: string | null
+  circleReachable: boolean | null
+  circleAppIdMatches: boolean | null
+  circleError: string | null
+  vaultDeployed: boolean
+  note: string
+}
+
 export interface MultisigRow {
   id: number
   chainId: string
@@ -449,6 +462,16 @@ export const api = {
   },
   async getAuditGate(): Promise<AuditGate> {
     return live('/api/admin/audit/gate')
+  },
+  /** Circle User-Controlled Wallets (Arc only, EOA first). The config
+   *  response never contains the API key or the full App ID — only a
+   *  masked App ID prefix. Challenge creation returns a challengeId the
+   *  mobile SDK executes; no user token is ever returned here. */
+  async getCircleConfig(): Promise<CircleConfigStatus> {
+    return live('/api/circle/config')
+  },
+  async saveCircleAppId(appId: string): Promise<{ ok: boolean; appIdMasked: string | null }> {
+    return post('/api/admin/circle-config', { appId })
   },
   async getMultisigs(): Promise<MultisigRow[]> {
     const d = await live<{ multisigs: MultisigDbRow[] }>('/api/admin/multisigs')

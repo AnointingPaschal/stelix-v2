@@ -835,4 +835,125 @@ describe('Worker API (live endpoints, no sample data)', () => {
     expect(clear.status).toBe(200)
     expect(clear.body.networkMode).toBeNull()
   })
+
+  // ---- Circle User-Controlled Wallets (Arc only, EOA first) ----
+  it('circle: unauthenticated calls are rejected', async () => {
+    const noAuth = await call(env, '/api/circle/config')
+    expect(noAuth.status).toBe(401)
+  })
+
+  it('circle: challenge validation rejects a non-Arc blockchain before any Circle call', async () => {
+    const res = await call(env, '/api/circle/challenges', { method: 'POST', token, body: { type: 'createWallet', userId: 'stelix-user-1', blockchain: 'ETH' } })
+    expect(res.status).toBe(400)
+    expect(String(res.body.error)).toMatch(/ARC-TESTNET or ARC/)
+  })
+
+  it('circle: executeContract to an unregistered contract is refused — no vault deployed yet', async () => {
+    const res = await call(env, '/api/circle/challenges', {
+      method: 'POST', token,
+      body: {
+        type: 'executeContract', userId: 'stelix-user-1', blockchain: 'ARC-TESTNET', walletId: 'wallet-1',
+        contractAddress: '0x7777777777777777777777777777777777777777',
+        abiFunctionSignature: 'lock(uint256,uint256)', abiParameters: ['1000000'],
+      },
+    })
+    expect(res.status).toBe(400)
+    expect(String(res.body.error)).toMatch(/not a registered StelixVault/)
+    expect(res.body.code).toBe('vault_not_registered')
+  })
+
+  it('circle: missing CIRCLE_API_KEY is an honest 503, and config reports unconfigured', async () => {
+    // No CIRCLE_API_KEY in this env (beforeEach): user creation refuses honestly.
+    const user = await call(env, '/api/circle/users', { method: 'POST', token, body: { userId: 'stelix-user-1', email: 'user@example.com' } })
+    expect(user.status).toBe(503)
+    expect(String(user.body.error)).toMatch(/CIRCLE_API_KEY is not set/)
+    // A registered user + challenge also stops at the missing key, not at Circle.
+    db.tables.circle_users = [{ id: 1, user_id: 'stelix-user-1', circle_user_id: 'circle-user-uuid', email: null, created_by: 'admin' }]
+    const chal = await call(env, '/api/circle/challenges', { method: 'POST', token, body: { type: 'createWallet', userId: 'stelix-user-1', blockchain: 'ARC-TESTNET' } })
+    expect(chal.status).toBe(503)
+    expect(String(chal.body.error)).toMatch(/CIRCLE_API_KEY is not set/)
+    const cfg = await call(env, '/api/circle/config', { token })
+    expect(cfg.status).toBe(200)
+    expect(cfg.body.configured).toBe(false)
+    expect(cfg.body.apiKeyConfigured).toBe(false)
+    expect(cfg.body.arcTestnet).toBe(true)
+    expect(cfg.body.appIdMasked).toBeNull()
+    expect(cfg.body.vaultDeployed).toBe(false)
+  })
+
+  it('circle: config never leaks the key once it is set, and the App ID round-trips masked only', async () => {
+    const key = 'TESTKEY:circle-test-key-value-never-shown'
+    env.CIRCLE_API_KEY = key
+    const bad = await call(env, '/api/admin/circle-config', { method: 'POST', token, body: { appId: 'not-a-uuid' } })
+    expect(bad.status).toBe(400)
+    const appId = 'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee'
+    const saved = await call(env, '/api/admin/circle-config', { method: 'POST', token, body: { appId } })
+    expect(saved.status).toBe(200)
+    expect(saved.body.appIdMasked).toBe('aaaaaaaa…')
+    expect(JSON.stringify(saved.body)).not.toContain(appId)
+    const cfg = await call(env, '/api/circle/config', { token })
+    expect(cfg.status).toBe(200)
+    expect(cfg.body.apiKeyConfigured).toBe(true)
+    expect(cfg.body.appIdConfigured).toBe(true)
+    expect(cfg.body.appIdMasked).toBe('aaaaaaaa…')
+    expect(JSON.stringify(cfg.body)).not.toContain(key)
+    expect(JSON.stringify(cfg.body)).not.toContain(appId)
+    const log = await call(env, '/api/admin/audit', { token })
+    expect((log.body.audit as { action: string }[]).map((a) => a.action)).toContain('circle.config_set')
+  })
+
+  it('circle: users + challenges proxy Circle and return the challengeId only', async () => {
+    env.CIRCLE_API_KEY = 'TESTKEY:circle-test-key'
+    globalThis.fetch = vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input)
+      if (url === 'https://api.circle.com/v1/w3s/users') {
+        return new Response(JSON.stringify({ data: { id: '11111111-2222-3333-4444-555555555555' } }), { status: 201 })
+      }
+      if (url === 'https://api.circle.com/v1/w3s/users/token') {
+        return new Response(JSON.stringify({ data: { userToken: 'user-token-must-never-leak', encryptionKey: 'encryption-key-must-never-leak' } }), { status: 200 })
+      }
+      if (url === 'https://api.circle.com/v1/w3s/user/wallets') {
+        return new Response(JSON.stringify({ data: { challengeId: '22222222-3333-4444-5555-666666666666' } }), { status: 201 })
+      }
+      if (url.startsWith('https://api.circle.com/v1/w3s/wallets')) {
+        return new Response(JSON.stringify({ data: { wallets: [{ id: 'wallet-1', blockchain: 'ARC-TESTNET', address: '0x1111111111111111111111111111111111111111' }] } }), { status: 200 })
+      }
+      if (url.startsWith('https://api.circle.com/v1/w3s/transactions/')) {
+        return new Response(JSON.stringify({ data: { id: 'tx-1', state: 'CONFIRMED', txHash: '0x' + 'c'.repeat(64) } }), { status: 200 })
+      }
+      return new Response(JSON.stringify({ code: 404, message: 'not found' }), { status: 404 })
+    }) as unknown as typeof fetch
+    const created = await call(env, '/api/circle/users', { method: 'POST', token, body: { userId: 'stelix-user-1', email: 'user@example.com' } })
+    expect(created.status).toBe(201)
+    expect(created.body.circleUserId).toBe('11111111-2222-3333-4444-555555555555')
+    // Creating the same Stelix user again returns the stored mapping, no second Circle call.
+    const again = await call(env, '/api/circle/users', { method: 'POST', token, body: { userId: 'stelix-user-1' } })
+    expect(again.status).toBe(200)
+    expect(again.body.existing).toBe(true)
+    const chal = await call(env, '/api/circle/challenges', { method: 'POST', token, body: { type: 'createWallet', userId: 'stelix-user-1', blockchain: 'ARC-TESTNET' } })
+    expect(chal.status).toBe(201)
+    expect(chal.body.challengeId).toBe('22222222-3333-4444-5555-666666666666')
+    // The user token minted for the challenge is never returned.
+    expect(JSON.stringify(chal.body)).not.toContain('user-token-must-never-leak')
+    expect(JSON.stringify(chal.body)).not.toContain('encryption-key-must-never-leak')
+    const wallets = await call(env, '/api/circle/wallets?userId=stelix-user-1', { token })
+    expect(wallets.status).toBe(200)
+    expect((wallets.body.wallets as unknown[]).length).toBe(1)
+    const tx = await call(env, '/api/circle/transactions/tx-1', { token })
+    expect(tx.status).toBe(200)
+    expect((tx.body.transaction as { state: string }).state).toBe('CONFIRMED')
+    // Unknown user: 404 before any Circle call.
+    const missing = await call(env, '/api/circle/wallets?userId=nope-user', { token })
+    expect(missing.status).toBe(404)
+  })
+
+  it('circle: a Circle 4xx is surfaced honestly with its code and message', async () => {
+    env.CIRCLE_API_KEY = 'TESTKEY:circle-test-key'
+    globalThis.fetch = vi.fn(async () => new Response(JSON.stringify({ code: 155106, message: 'User already exists.' }), { status: 400 })) as unknown as typeof fetch
+    const res = await call(env, '/api/circle/users', { method: 'POST', token, body: { userId: 'stelix-user-1' } })
+    expect(res.status).toBe(400)
+    expect(res.body.code).toBe(155106)
+    // The Worker follows the repo's `error`-field convention for failures.
+    expect(String(res.body.error)).toMatch(/User already exists/)
+  })
 })

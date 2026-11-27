@@ -20,7 +20,24 @@
 // read feeds the wallet polls; /api/sync is the single polling endpoint
 // that returns all of them plus a monotonic sync version (see bumpSync).
 // No secrets in code: password hash, session secret, config signing secret,
-// keeper run key and explorer key are Pages/Worker secrets (see wrangler.toml).
+// keeper run key, explorer key and the Circle API key are Pages/Worker
+// secrets (see wrangler.toml). The Circle App ID is public and is stored
+// in D1 circle_config (POST /api/admin/circle-config), never as a secret.
+//
+// CIRCLE (User-Controlled Wallets, Arc only, EOA first): the Worker is a
+// proxy for api.circle.com under /v1/w3s/. POST /api/circle/users creates
+// the Circle user, POST /api/circle/challenges creates a challenge the
+// mobile SDK executes (sdk.execute(challengeId), user approves with PIN),
+// GET /api/circle/wallets lists a user's wallets, GET
+// /api/circle/transactions/:id reads transaction status, GET
+// /api/circle/config reports setup status (masked App ID only, never the
+// key), POST /api/admin/circle-config saves the public App ID. All of
+// them need an admin session. The backend never holds a user key share
+// and never signs: challenge calls mint a short-lived user token with
+// POST /v1/w3s/users/token, use it once in memory, and return only the
+// challengeId. executeContract challenges are refused unless the target
+// contract is a StelixVault registered in Chain Manager — no vault is
+// deployed anywhere yet, so locks refuse honestly until one is.
 //
 // REALTIME (live polling, NOT push): there is no websocket/push channel.
 // The wallet polls GET /api/sync every ~45s, on foreground, on network-
@@ -44,6 +61,7 @@
 // small-value smoke-test attestation, and the typed confirmation phrase.
 import { runStaticAudit, sha256Hex, type AuditFinding } from '../lib/auditCheck'
 import { validateFeePayload, type FeeConfig } from '../lib/fees'
+import { buildCircleChallengeRequest, CIRCLE_API_BASE, isValidCircleAppId, maskAppId, parseCircleError, validateCircleChallengeInput } from '../lib/circle'
 import { isAddress, isTxHash, mainnetConfirmPhrase, testnetChainIdFor, validateDeployParams } from '../lib/deployParams'
 import { safeChainFor, validateMultisigInput } from '../lib/multisig'
 import { validateChainInput, type ChainInput } from '../lib/chainValidation'
@@ -60,6 +78,9 @@ export interface Env {
   KEEPER_WORKER_URL?: string
   KEEPER_RUN_KEY?: string
   EXPLORER_API_KEY?: string
+  /** Circle W3S API key (Wrangler secret, never in code/git/D1). The
+   *  Circle App ID is public and lives in D1 circle_config instead. */
+  CIRCLE_API_KEY?: string
 }
 
 const SOLC_PINNED = '0.8.24'
@@ -281,6 +302,82 @@ async function fetchWithTimeout(url: string, init: RequestInit, ms = 8000): Prom
     return await fetch(url, { ...init, signal: ctrl.signal })
   } finally {
     clearTimeout(t)
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Circle User-Controlled Wallets proxy (Arc only, EOA first).
+// One call, 8s timeout, no retries on 4xx (and no retries at all — a
+// challenge must never be created twice by a retry). Circle's error
+// code/message are surfaced honestly; the API key is never logged and
+// never appears in any response.
+// ---------------------------------------------------------------------------
+type CircleResult =
+  | { ok: true; status: number; data: unknown }
+  | { ok: false; status: number; code: number | string; message: string }
+
+/** Map a Circle HTTP status to the status this Worker returns: Circle
+ *  4xx pass through (the caller's input or Circle account is wrong),
+ *  Circle 5xx / unreachable become 502 (an upstream failure, not a
+ *  client error). */
+const circleStatusToHttp = (status: number): number => (status >= 400 && status < 500 ? status : 502)
+
+async function circleCall(
+  env: Env,
+  path: string,
+  init: { method: string; userToken?: string; body?: Record<string, unknown> },
+): Promise<CircleResult> {
+  const headers: Record<string, string> = {
+    'content-type': 'application/json',
+    authorization: `Bearer ${env.CIRCLE_API_KEY ?? ''}`,
+  }
+  if (init.userToken) headers['x-user-token'] = init.userToken
+  let r: Response
+  try {
+    r = await fetchWithTimeout(
+      `${CIRCLE_API_BASE}${path}`,
+      { method: init.method, headers, body: init.body ? JSON.stringify(init.body) : undefined },
+      8000,
+    )
+  } catch {
+    return { ok: false, status: 502, code: 'circle_unreachable', message: 'Circle API did not respond within 8 seconds. No challenge or user was created — try again.' }
+  }
+  let parsed: unknown = null
+  try {
+    parsed = await r.json()
+  } catch {
+    parsed = null
+  }
+  if (!r.ok) {
+    const e = parseCircleError(parsed, r.status)
+    return { ok: false, status: r.status, code: e.code, message: e.message }
+  }
+  return { ok: true, status: r.status, data: parsed }
+}
+
+/** Mint a short-lived (60-minute) user session token for one challenge
+ *  call. The token is used once, in memory, and never stored or returned:
+ *  the mobile SDK needs the challengeId only, plus its own session. */
+async function circleUserToken(env: Env, externalUserId: string): Promise<{ ok: true; userToken: string } | { ok: false; status: number; code: number | string; message: string }> {
+  const res = await circleCall(env, '/v1/w3s/users/token', { method: 'POST', body: { userId: externalUserId } })
+  if (!res.ok) return res
+  const token = (res.data as { data?: { userToken?: unknown } } | null)?.data?.userToken
+  if (typeof token !== 'string' || token === '') {
+    return { ok: false, status: 502, code: 'circle_bad_response', message: 'Circle returned no user token — the challenge was not created.' }
+  }
+  return { ok: true, userToken: token }
+}
+
+/** The public Circle App ID saved in D1 (circle_config, id = 1), or null
+ *  when the admin has never saved one. Missing table (migration 0010
+ *  not applied yet) reads as null, not a crash. */
+async function getCircleAppId(env: Env): Promise<string | null> {
+  try {
+    const row = await env.DB.prepare('SELECT app_id FROM circle_config WHERE id = 1').first<{ app_id: string | null }>()
+    const appId = row?.app_id ?? null
+    return typeof appId === 'string' && appId !== '' ? appId : null
+  } catch {
+    return null
   }
 }
 
@@ -624,6 +721,170 @@ export default {
     if (!authed) {
       // Non-API paths fall through to the SPA below only when authed; otherwise
       // the SPA itself redirects to login via its session check.
+    }
+
+    // ---- Circle User-Controlled Wallets (Arc only, EOA first) ----
+    // Proxy for api.circle.com /v1/w3s/. Every route here needs the admin
+    // session (the gate above). The backend creates challenges; the mobile
+    // SDK executes them and the user approves with their PIN. The backend
+    // never holds a user key share and never signs for a user.
+    if (path === '/api/circle/users' && req.method === 'POST') {
+      const body = await readJson(req)
+      const userId = String(body.userId ?? '').trim()
+      const email = body.email ? String(body.email).trim() : null
+      if (userId.length < 5 || userId.length > 50) {
+        return json({ error: 'userId is required (5–50 characters) — pass the Stelix user id; Circle stores it as the external user id.' }, 400)
+      }
+      if (email !== null && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
+        return json({ error: 'email must be a valid email address' }, 400)
+      }
+      const existing = await env.DB.prepare('SELECT * FROM circle_users WHERE user_id = ?').bind(userId).first<{ circle_user_id: string; email: string | null }>()
+      if (existing) {
+        return json({ ok: true, userId, circleUserId: existing.circle_user_id, email: existing.email, existing: true })
+      }
+      if (!env.CIRCLE_API_KEY) {
+        return json({ error: 'CIRCLE_API_KEY is not set. Set it with: wrangler pages secret put CIRCLE_API_KEY --project-name stelix-admin. No Circle user was created.', code: 'circle_api_key_missing' }, 503)
+      }
+      const res = await circleCall(env, '/v1/w3s/users', { method: 'POST', body: { userId } })
+      if (!res.ok) return json({ error: res.message, code: res.code, circleStatus: res.status }, circleStatusToHttp(res.status))
+      const circleUserId = (res.data as { data?: { id?: unknown } } | null)?.data?.id
+      if (typeof circleUserId !== 'string' || circleUserId === '') {
+        return json({ error: 'Circle returned no user id — the user was not recorded.', code: 'circle_bad_response' }, 502)
+      }
+      await env.DB.prepare('INSERT INTO circle_users (user_id, circle_user_id, email, created_by) VALUES (?, ?, ?, ?)').bind(userId, circleUserId, email, authed).run()
+      await audit(env, authed, 'circle.user_create', `Circle user created for ${userId} (Circle id ${circleUserId})`)
+      return json({ ok: true, userId, circleUserId, email }, 201)
+    }
+    if (path === '/api/circle/challenges' && req.method === 'POST') {
+      const body = await readJson(req)
+      const { value, errors } = validateCircleChallengeInput(body)
+      if (!value) {
+        return json({ error: errors[0] ?? 'invalid challenge', details: errors }, 400)
+      }
+      // executeContract may only target a StelixVault that is deployed
+      // and registered in Chain Manager. No vault is deployed anywhere
+      // yet, so until one is, every lock attempt is refused here with a
+      // clear message instead of reaching Circle.
+      if (value.type === 'executeContract') {
+        const chains = await getChains(env)
+        const vault = chains.find((c) => c.vault_address && c.vault_address.toLowerCase() === (value.contractAddress ?? '').toLowerCase())
+        if (!vault) {
+          return json({ error: `Contract ${value.contractAddress} is not a registered StelixVault — no vault is deployed on any chain yet. Deploy a vault in Contract Studio and register it in Chain Manager first; lock attempts are refused until then.`, code: 'vault_not_registered' }, 400)
+        }
+      }
+      const mapping = await env.DB.prepare('SELECT * FROM circle_users WHERE user_id = ?').bind(value.userId).first<{ circle_user_id: string }>()
+      if (!mapping) {
+        return json({ error: `No Circle user is registered for userId "${value.userId}" — create one first with POST /api/circle/users.`, code: 'circle_user_not_found' }, 404)
+      }
+      if (!env.CIRCLE_API_KEY) {
+        return json({ error: 'CIRCLE_API_KEY is not set. Set it with: wrangler pages secret put CIRCLE_API_KEY --project-name stelix-admin. No challenge was created.', code: 'circle_api_key_missing' }, 503)
+      }
+      const tokenRes = await circleUserToken(env, value.userId)
+      if (!tokenRes.ok) return json({ error: tokenRes.message, code: tokenRes.code, circleStatus: tokenRes.status }, circleStatusToHttp(tokenRes.status))
+      const { path: circlePath, body: circleBody } = buildCircleChallengeRequest(value, crypto.randomUUID())
+      const res = await circleCall(env, circlePath, { method: 'POST', userToken: tokenRes.userToken, body: circleBody })
+      if (!res.ok) return json({ error: res.message, code: res.code, circleStatus: res.status }, circleStatusToHttp(res.status))
+      const challengeId = (res.data as { data?: { challengeId?: unknown } } | null)?.data?.challengeId
+      if (typeof challengeId !== 'string' || challengeId === '') {
+        return json({ error: 'Circle returned no challengeId — the challenge was not created.', code: 'circle_bad_response' }, 502)
+      }
+      // Audit trail only: the user token is never stored, and only the
+      // challengeId is returned to the caller.
+      try {
+        await env.DB.prepare('INSERT INTO circle_challenges (challenge_id, circle_user_id, type, blockchain, wallet_id, contract_address) VALUES (?, ?, ?, ?, ?, ?)').bind(challengeId, mapping.circle_user_id, value.type, value.blockchain, value.walletId ?? null, value.contractAddress ?? null).run()
+      } catch {
+        // The challenge already exists at Circle; a D1 audit write must
+        // not fail the response.
+      }
+      await audit(env, authed, 'circle.challenge_create', `${value.type} challenge ${challengeId} created for ${value.userId} on ${value.blockchain}`)
+      return json({ challengeId, type: value.type, blockchain: value.blockchain }, 201)
+    }
+    if (path === '/api/circle/wallets' && req.method === 'GET') {
+      const userId = (url.searchParams.get('userId') ?? '').trim()
+      if (!userId) return json({ error: 'userId query parameter is required' }, 400)
+      const mapping = await env.DB.prepare('SELECT * FROM circle_users WHERE user_id = ?').bind(userId).first<{ circle_user_id: string }>()
+      if (!mapping) {
+        return json({ error: `No Circle user is registered for userId "${userId}" — create one first with POST /api/circle/users.`, code: 'circle_user_not_found' }, 404)
+      }
+      if (!env.CIRCLE_API_KEY) {
+        return json({ error: 'CIRCLE_API_KEY is not set. Set it with: wrangler pages secret put CIRCLE_API_KEY --project-name stelix-admin.', code: 'circle_api_key_missing' }, 503)
+      }
+      const res = await circleCall(env, `/v1/w3s/wallets?userId=${encodeURIComponent(mapping.circle_user_id)}`, { method: 'GET' })
+      if (!res.ok) return json({ error: res.message, code: res.code, circleStatus: res.status }, circleStatusToHttp(res.status))
+      const wallets = (res.data as { data?: { wallets?: unknown } } | null)?.data?.wallets
+      return json({ wallets: Array.isArray(wallets) ? wallets : [], userId })
+    }
+    const circleTxMatch = /^\/api\/circle\/transactions\/([A-Za-z0-9-]+)$/.exec(path)
+    if (circleTxMatch && req.method === 'GET') {
+      if (!env.CIRCLE_API_KEY) {
+        return json({ error: 'CIRCLE_API_KEY is not set. Set it with: wrangler pages secret put CIRCLE_API_KEY --project-name stelix-admin.', code: 'circle_api_key_missing' }, 503)
+      }
+      const res = await circleCall(env, `/v1/w3s/transactions/${encodeURIComponent(circleTxMatch[1])}`, { method: 'GET' })
+      if (!res.ok) return json({ error: res.message, code: res.code, circleStatus: res.status }, circleStatusToHttp(res.status))
+      const transaction = (res.data as { data?: unknown } | null)?.data ?? null
+      return json({ transaction })
+    }
+    if (path === '/api/circle/config' && req.method === 'GET') {
+      const apiKeyConfigured = Boolean(env.CIRCLE_API_KEY)
+      const appId = await getCircleAppId(env)
+      const appIdConfigured = appId !== null
+      let circleReachable: boolean | null = null
+      let circleAppIdMatches: boolean | null = null
+      let circleError: string | null = null
+      if (apiKeyConfigured) {
+        // Harmless read: GET /v1/w3s/config/entity returns the App ID
+        // Circle associates with this API key. It tests the key without
+        // creating anything, and lets the admin see whether the saved App
+        // ID matches the one Circle reports.
+        const res = await circleCall(env, '/v1/w3s/config/entity', { method: 'GET' })
+        if (res.ok) {
+          circleReachable = true
+          const liveAppId = (res.data as { data?: { appId?: unknown } } | null)?.data?.appId
+          if (typeof liveAppId === 'string' && liveAppId !== '') {
+            circleAppIdMatches = appIdConfigured ? liveAppId === appId : null
+          }
+        } else {
+          circleReachable = false
+          circleError = res.message
+        }
+      }
+      const chains = await getChains(env)
+      const vaultDeployed = chains.some((c) => Boolean(c.vault_address))
+      const note = !apiKeyConfigured
+        ? 'CIRCLE_API_KEY is not set. Set it with: wrangler pages secret put CIRCLE_API_KEY --project-name stelix-admin.'
+        : !appIdConfigured
+          ? 'API key is set. Save your Circle App ID below (Circle Console → Web3 Services) so the mobile SDK can initialise.'
+          : !vaultDeployed
+            ? 'Circle is configured, but no StelixVault is deployed yet — lock (executeContract) challenges are refused until a vault is deployed and registered in Chain Manager.'
+            : 'Circle is configured and a vault is registered.'
+      // Never the key, never the full App ID — only a masked prefix.
+      return json({
+        configured: apiKeyConfigured && appIdConfigured,
+        appIdConfigured,
+        apiKeyConfigured,
+        arcTestnet: true,
+        appIdMasked: maskAppId(appId),
+        circleReachable,
+        circleAppIdMatches,
+        circleError,
+        vaultDeployed,
+        note,
+      })
+    }
+    if (path === '/api/admin/circle-config' && req.method === 'POST') {
+      const body = await readJson(req)
+      const appId = String(body.appId ?? '').trim()
+      if (!isValidCircleAppId(appId)) {
+        return json({ error: 'appId must be the Circle App ID — a UUID from your Circle Console (Web3 Services). It was not saved.' }, 400)
+      }
+      const existing = await env.DB.prepare('SELECT id FROM circle_config WHERE id = 1').first<{ id: number }>()
+      if (existing) {
+        await env.DB.prepare("UPDATE circle_config SET app_id = ?, updated_by = ?, updated_at = datetime('now') WHERE id = ?").bind(appId, authed, 1).run()
+      } else {
+        await env.DB.prepare('INSERT INTO circle_config (id, app_id, updated_by) VALUES (?, ?, ?)').bind(1, appId, authed).run()
+      }
+      await audit(env, authed, 'circle.config_set', `Circle App ID saved (${maskAppId(appId)}) — the App ID is public, not a secret; the API key stays a Wrangler secret`)
+      return json({ ok: true, appIdMasked: maskAppId(appId) })
     }
 
     // ---- Dashboard (live: D1 + on-chain vault balances) ----

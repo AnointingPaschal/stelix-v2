@@ -23,7 +23,24 @@
  * mnemonic, private key or password.
  */
 
+import { TimeoutError, withTimeout } from './timeout';
+
 const memory = new Map<string, string>();
+
+/** True once a native storage backend timed out in this launch — the
+ *  kv layer fell back to the in-memory map for that call. Surfaced
+ *  via console.warn at the time (never a hang) and readable here so
+ *  the UI / wallet layer can say so honestly. */
+let storageDegraded = false;
+
+export function isStorageDegraded(): boolean {
+  return storageDegraded;
+}
+
+function markDegraded(message: string): void {
+  storageDegraded = true;
+  console.warn(`[stelix] storage degraded: ${message}`);
+}
 
 /** True only inside the React Native runtime (Hermes / JSC on device). */
 export function isNativeApp(): boolean {
@@ -62,13 +79,25 @@ let asyncStorage: AsyncStorageLike | null | undefined;
 async function getAsyncStorage(): Promise<AsyncStorageLike | null> {
   if (asyncStorage !== undefined) return asyncStorage;
   try {
-    const mod = await import('@react-native-async-storage/async-storage');
+    // 10s bound: a dynamic import that never settles (on-demand Metro
+    // chunk fetch in dev) must fall through to the in-memory map with
+    // a warning, never hang the caller. Do NOT cache a timeout as
+    // null — the next call retries the import.
+    const mod = await withTimeout(
+      import('@react-native-async-storage/async-storage'),
+      10_000,
+      'AsyncStorage dynamic import',
+    );
     const store = (mod as unknown as { default?: AsyncStorageLike }).default;
     asyncStorage =
       store && typeof store.getItem === 'function' && typeof store.setItem === 'function'
         ? store
         : null;
-  } catch {
+  } catch (e) {
+    if (e instanceof TimeoutError) {
+      markDegraded('AsyncStorage import timed out after 10s — using in-memory store for this call.');
+      return null;
+    }
     asyncStorage = null;
   }
   return asyncStorage;
@@ -79,8 +108,11 @@ export async function kvGet(key: string): Promise<string | null> {
     const store = await getAsyncStorage();
     if (store) {
       try {
-        return await store.getItem(key);
-      } catch {
+        return await withTimeout(store.getItem(key), 10_000, `AsyncStorage.getItem(${key})`);
+      } catch (e) {
+        if (e instanceof TimeoutError) {
+          markDegraded(`AsyncStorage.getItem(${key}) timed out after 10s — using in-memory store.`);
+        }
         // fall through to memory
       }
     }
@@ -104,9 +136,12 @@ export async function kvSet(key: string, value: string): Promise<void> {
     const store = await getAsyncStorage();
     if (store) {
       try {
-        await store.setItem(key, value);
+        await withTimeout(store.setItem(key, value), 10_000, `AsyncStorage.setItem(${key})`);
         return;
-      } catch {
+      } catch (e) {
+        if (e instanceof TimeoutError) {
+          markDegraded(`AsyncStorage.setItem(${key}) timed out after 10s — kept in memory only for this session.`);
+        }
         // fall through to memory
       }
     }
@@ -130,8 +165,11 @@ export async function kvDelete(key: string): Promise<void> {
     const store = await getAsyncStorage();
     if (store) {
       try {
-        await store.removeItem(key);
-      } catch {
+        await withTimeout(store.removeItem(key), 10_000, `AsyncStorage.removeItem(${key})`);
+      } catch (e) {
+        if (e instanceof TimeoutError) {
+          markDegraded(`AsyncStorage.removeItem(${key}) timed out after 10s.`);
+        }
         // ignore
       }
     }
@@ -167,10 +205,13 @@ export async function wipeLocalData(): Promise<void> {
     const store = await getAsyncStorage();
     if (store && typeof store.getAllKeys === 'function' && typeof store.multiRemove === 'function') {
       try {
-        const keys = await store.getAllKeys();
+        const keys = await withTimeout(store.getAllKeys(), 10_000, 'AsyncStorage.getAllKeys()');
         const ours = keys.filter((k) => k.startsWith(prefix));
-        if (ours.length > 0) await store.multiRemove(ours);
-      } catch {
+        if (ours.length > 0) {
+          await withTimeout(store.multiRemove(ours), 10_000, 'AsyncStorage.multiRemove()');
+        }
+      } catch (e) {
+        if (e instanceof TimeoutError) markDegraded('AsyncStorage wipe timed out after 10s.');
         // fall through to the memory sweep below
       }
     }

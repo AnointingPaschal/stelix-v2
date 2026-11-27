@@ -12,6 +12,7 @@ import { Stack } from 'expo-router';
 import { StatusBar } from 'expo-status-bar';
 import { SafeAreaProvider, useSafeAreaInsets } from 'react-native-safe-area-context';
 import { AppProvider, useApp } from '../store/AppContext';
+import { CircleWalletProvider } from '../store/CircleWalletContext';
 import MaintenanceScreen from '../components/MaintenanceScreen';
 import { COLORS } from '../theme';
 
@@ -53,6 +54,7 @@ function RootNavigator() {
       <Stack.Screen name="onboarding" />
       <Stack.Screen name="create" />
       <Stack.Screen name="import" />
+      <Stack.Screen name="circle" />
       <Stack.Screen name="unlock" />
       <Stack.Screen name="(tabs)" />
       <Stack.Screen name="token/[symbol]" />
@@ -71,8 +73,10 @@ export default function RootLayout() {
   return (
     <SafeAreaProvider>
       <AppProvider>
-        <StatusBar style="dark" />
-        <RootNavigator />
+        <CircleWalletProvider>
+          <StatusBar style="dark" />
+          <RootNavigator />
+        </CircleWalletProvider>
       </AppProvider>
     </SafeAreaProvider>
   );

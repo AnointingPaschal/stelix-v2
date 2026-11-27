@@ -18,6 +18,7 @@ import { router, useLocalSearchParams } from 'expo-router';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { COLORS } from '../../theme';
 import { useApp } from '../../store/AppContext';
+import { useCircleWalletOptional } from '../../store/CircleWalletContext';
 import { getChain, VAULT_NOT_DEPLOYED_MESSAGE } from '../../lib/chains';
 import { fmtNum, fmtPrice, fmtUsd } from '../../lib/format';
 import { getSignerForChain } from '../../lib/signer';
@@ -28,6 +29,7 @@ import {
   validateLadder,
   type BreakMode,
   type BullLock,
+  type CreateLockOnChainParams,
   type LadderStage,
 } from '../../lib/vault';
 import { Btn, Card, RiskNote, SectionTitle, centeredContent } from '../../components/ui';
@@ -64,6 +66,17 @@ export default function CreateLock() {
     breakMode?: string;
   }>();
   const { tokens, chain, address, settings, addLock, addTx, refreshLocks, adminFees, appConfig } = useApp();
+  // Circle Arc wallet (if the user chose it at onboarding and it is
+  // ready): locks on Arc are then signed in the Circle PIN UI instead
+  // of with the self-custody session password. Null when the provider
+  // is absent (tests) or no Circle wallet is active — the existing
+  // self-custody flow is unchanged.
+  const circle = useCircleWalletOptional();
+  const useCircleLock =
+    circle?.ready === true &&
+    circle.activeWallet !== null &&
+    (chain.id === 'arc' || chain.id === 'arc-mainnet');
+  const [circleBusy, setCircleBusy] = useState(false);
   const insets = useSafeAreaInsets();
   // Live admin fees (source 'admin' when the admin has published fees,
   // 'default' with an honest label when not) and feature flags.
@@ -246,6 +259,14 @@ export default function CreateLock() {
       setFormError(`No exit stablecoin address is registered for ${chain.name}. The lock cannot be created yet.`);
       return;
     }
+    // Circle Arc wallet: approve + createLock in the Circle PIN UI
+    // instead of the password signing modal. The vault-not-deployed
+    // check above already refused, so a Circle lock can only run once
+    // a vault actually exists on Arc.
+    if (useCircleLock) {
+      await confirmCircleLock();
+      return;
+    }
     setSignModal({
       title: 'Confirm Lock',
       actionLabel: 'Sign & Create Lock',
@@ -270,12 +291,14 @@ export default function CreateLock() {
     });
   }
 
-  async function signLock(password: string): Promise<SignTxResult> {
-    if (!token || !token.address) throw new Error('No token to lock.');
+  /** Shared lock parameters for both signing paths (self-custody
+   *  signLock below and the Circle confirmCircleLock). Returns null
+   *  when there is no lockable token / stablecoin. */
+  function lockParams(): CreateLockOnChainParams | null {
+    if (!token || !token.address) return null;
     const stablecoin = getChain(chain.id).exitStablecoinAddress;
-    if (!stablecoin) throw new Error(`No exit stablecoin address is registered for ${chain.name}.`);
-    const signer = await getSignerForChain(password, chain.id);
-    const { txHash, lockId } = await createLockOnChain(signer, {
+    if (!stablecoin) return null;
+    return {
       chainId: chain.id,
       // Vault address from the merged admin registry: a vault registered
       // in Contract Studio is used here on the next admin sync.
@@ -293,8 +316,38 @@ export default function CreateLock() {
       autoSell: preview.autoSell,
       slippageBps,
       minReceiveUsd: preview.minReceiveUsd,
-    });
+    };
+  }
+
+  async function signLock(password: string): Promise<SignTxResult> {
+    const params = lockParams();
+    if (!params) throw new Error('No token to lock.');
+    const signer = await getSignerForChain(password, chain.id);
+    const { txHash, lockId } = await createLockOnChain(signer, params);
     return { hash: txHash, blockNumber: null, lockId };
+  }
+
+  /** Circle Arc lock: approve + createLock as two user-approved Circle
+   *  contract-execution challenges (Circle PIN UI). Refuses honestly
+   *  when no vault is deployed — lib/circleVault.ts returns the
+   *  not-deployed reason before any challenge is created. */
+  async function confirmCircleLock(): Promise<void> {
+    if (!circle) return;
+    const params = lockParams();
+    if (!params) {
+      setFormError('No token to lock.');
+      return;
+    }
+    setCircleBusy(true);
+    setFormError('');
+    try {
+      const txHash = await circle.createVaultLock(params);
+      await onLockSigned({ hash: txHash, blockNumber: null, lockId: null });
+    } catch (e) {
+      setFormError(e instanceof Error ? e.message : 'Circle lock failed. No lock was created.');
+    } finally {
+      setCircleBusy(false);
+    }
   }
 
   async function onLockSigned(res: SignTxResult) {
@@ -478,6 +531,14 @@ export default function CreateLock() {
               <Text style={styles.reviewTitle}>Review your lock</Text>
               <ReviewRow label="Token" value={`${fmtNum(amt)} ${token?.symbol ?? symbol} (${fmtUsd(amt * entryPrice)})`} />
               <ReviewRow label="Chain" value={`${chain.name}${chain.testnet ? ' (testnet)' : ''}`} />
+              <ReviewRow
+                label="Wallet"
+                value={
+                  useCircleLock && circle?.activeWallet
+                    ? `Circle Arc · ${circle.activeWallet.address.slice(0, 6)}…${circle.activeWallet.address.slice(-4)}`
+                    : `Self-custody · ${address.slice(0, 6)}…${address.slice(-4)}`
+                }
+              />
               <ReviewRow label="Vault contract" value={vaultStatus.deployed ? vaultStatus.address : 'Not deployed yet — testnet deploy required'} />
               <ReviewRow label="Unlock date" value={new Date(unlockTime).toLocaleDateString('en-GB', { day: 'numeric', month: 'long', year: 'numeric' })} />
               <ReviewRow label="Target" value={targetPrice ? `${target}x · ${fmtPrice(targetPrice)}` : 'None — date lock'} />
@@ -491,7 +552,11 @@ export default function CreateLock() {
               <ReviewRow label="Network fee" value="Shown by the wallet before signing" />
             </Card>
             <Text style={styles.sentence}>{lockSummarySentence(preview, exitLabel)}</Text>
-            <Text style={styles.hint}>Review the terms above, then confirm in the signing sheet — your session password authorises the lock.</Text>
+            {useCircleLock ? (
+              <Text style={styles.hint}>Review the terms above, then confirm — the Circle PIN UI will ask you to approve the token approval and the lock, one at a time. Nothing is submitted until you approve both.</Text>
+            ) : (
+              <Text style={styles.hint}>Review the terms above, then confirm in the signing sheet — your session password authorises the lock.</Text>
+            )}
           </>
         )}
 
@@ -502,7 +567,14 @@ export default function CreateLock() {
           {step < 4 ? (
             <Btn label="Continue" onPress={next} style={styles.navBtn} />
           ) : (
-            <Btn label="Confirm Lock" variant="mint" onPress={() => void confirm()} style={styles.navBtn} />
+            <Btn
+              label={useCircleLock ? (circleBusy ? 'Waiting for Circle approval…' : 'Confirm with Circle') : 'Confirm Lock'}
+              variant="mint"
+              onPress={() => void confirm()}
+              disabled={circleBusy}
+              loading={circleBusy}
+              style={styles.navBtn}
+            />
           )}
         </View>
         <RiskNote />

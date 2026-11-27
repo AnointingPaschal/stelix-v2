@@ -19,7 +19,15 @@ ADMIN_EMAIL = "ozoemenapaschal09@gmail.com"
 # ADMIN_PASSWORD_HASH (pbkdf2-sha256$iterations$salt$key), ADMIN_SESSION_SECRET (login — already set),
 # CONFIG_SIGNING_SECRET (HMAC key for signed app config; publish refuses without it),
 # KEEPER_WORKER_URL + KEEPER_RUN_KEY (keeper Worker base URL + run key; Run Now reports "keeper not live yet" until set),
-# EXPLORER_API_KEY (optional, for explorer source verification).
+# EXPLORER_API_KEY (optional, for explorer source verification),
+# CIRCLE_API_KEY (Circle W3S API key for User-Controlled Wallets on Arc — required for /api/circle/*).
+# The Circle App ID is PUBLIC, not a secret: it is saved in D1 circle_config
+# from the admin Circle page (POST /api/admin/circle-config), never as a secret.
+# App ID supplied by the user 2026-11-27: d15deb9f-8d3c-5c06-be01-de05897d30ea
+# (also the default in apps/admin/src/lib/circle.ts DEFAULT_CIRCLE_APP_ID and
+# seeded by migration 0010_circle.sql for fresh D1 databases). NOT yet
+# confirmed against Circle — the key still returns HTTP 403 on the entity
+# config read, so GET /api/circle/config has not verified the match yet.
 # No deployer private key is ever stored in the admin: testnet deploys are
 # broadcast by the Foundry flow with a testnet-only key; the admin only
 # registers a verified address after eth_getCode + explorer checks.

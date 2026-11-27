@@ -12,7 +12,9 @@ import { router } from 'expo-router';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { COLORS } from '../theme';
 import { Btn, RiskNote, centeredContent } from '../components/ui';
-import { hasWallet, importWallet, isValidMnemonic } from '../lib/wallet';
+import { hasWallet, importWallet, isValidMnemonic, IMPORT_STEP_LABELS } from '../lib/wallet';
+import type { ImportStep } from '../lib/wallet';
+import { isStorageDegraded } from '../lib/storage';
 import { useApp } from '../store/AppContext';
 
 type Method = 'seed' | 'key';
@@ -28,6 +30,12 @@ export default function ImportWallet() {
   const [confirm, setConfirm] = useState('');
   const [error, setError] = useState('');
   const [busy, setBusy] = useState(false);
+  // Current import step, shown under the button while busy so the
+  // ~10–30s KDF on a phone reads as progress, not a dead spinner.
+  // importWallet also has a 90s overall timeout that rejects with the
+  // step name, so busy can never stick forever (2026-11-27 hang fix).
+  const [step, setStep] = useState<ImportStep | null>(null);
+  const [degraded, setDegraded] = useState(false);
   // Importing REPLACES the wallet stored on this device — there is no
   // multi-wallet support. The old screen never said so: a user tapping
   // "Add / Import Wallet" from Home could silently lose access to
@@ -38,7 +46,11 @@ export default function ImportWallet() {
   }, []);
 
   async function handleImport() {
+    // Btn already disables while loading; this guard also stops a
+    // second run from any other trigger (double-tap race).
+    if (busy) return;
     setError('');
+    setDegraded(false);
     if (method === 'seed') {
       const words = secret.trim().split(/\s+/);
       if (words.length < 12 || !isValidMnemonic(secret)) {
@@ -58,16 +70,23 @@ export default function ImportWallet() {
       return;
     }
     setBusy(true);
+    setStep('deriving-address');
     try {
-      const address = await importWallet(secret, password, name);
+      const address = await importWallet(secret, password, name, {
+        onProgress: (s) => setStep(s),
+        // Default 90s overall timeout lives in importWallet; on expiry
+        // it throws `Import timed out at <step>` into this catch.
+      });
       setAddress(address);
       setOnboarded(true);
       setUnlocked(true);
       router.replace('/(tabs)');
     } catch (e) {
       setError(`Import failed: ${e instanceof Error ? e.message : 'That seed phrase or private key could not be used. Check it and try again.'}`);
+      if (isStorageDegraded()) setDegraded(true);
     } finally {
       setBusy(false);
+      setStep(null);
     }
   }
 
@@ -128,7 +147,14 @@ export default function ImportWallet() {
         />
         <View style={styles.spacer} />
         {error ? <Text style={styles.error}>{error}</Text> : null}
+        {degraded ? (
+          <Text style={styles.warn}>
+            Storage was slow on this device, so the wallet was saved to the app&apos;s fallback store instead of the
+            system keychain. Your wallet still works — if this keeps happening, restart the app and try again.
+          </Text>
+        ) : null}
         <Btn label="Import & Secure" onPress={handleImport} loading={busy} />
+        {busy && step ? <Text style={styles.step}>{IMPORT_STEP_LABELS[step]}</Text> : null}
         <RiskNote />
       </ScrollView>
     </KeyboardAvoidingView>
@@ -157,6 +183,7 @@ const styles = StyleSheet.create({
   multiline: { minHeight: 96, textAlignVertical: 'top' },
   root: { backgroundColor: COLORS.bg, flex: 1 },
   spacer: { height: 14 },
+  step: { color: COLORS.textMuted, fontSize: 12, marginTop: 10, textAlign: 'center' },
   sub: { color: COLORS.textMuted, fontSize: 12, lineHeight: 17, marginTop: 4 },
   title: { color: COLORS.text, fontSize: 18, fontWeight: '800' },
   toggle: { backgroundColor: COLORS.bgMuted, borderRadius: 12, flexDirection: 'row', gap: 6, marginTop: 14, padding: 4 },

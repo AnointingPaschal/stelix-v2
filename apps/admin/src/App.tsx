@@ -14,6 +14,7 @@ import Config from './pages/Config'
 import Support from './pages/Support'
 import ContractAudit from './pages/ContractAudit'
 import Maintenance from './pages/Maintenance'
+import Circle from './pages/Circle'
 import Audit from './pages/Audit'
 export default function App() {
   return <Routes>
@@ -32,6 +33,7 @@ export default function App() {
       <Route path="/maintenance" element={<Maintenance />} />
       <Route path="/support" element={<Support />} />
       <Route path="/contract-audit" element={<ContractAudit />} />
+      <Route path="/circle" element={<Circle />} />
       <Route path="/audit" element={<Audit />} />
     </Route>
     <Route path="*" element={<Navigate to="/dashboard" replace />} />
