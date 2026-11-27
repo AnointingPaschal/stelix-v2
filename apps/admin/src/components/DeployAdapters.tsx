@@ -38,6 +38,39 @@ export default function DeployAdapters({ network, explorerUrl, onDeployed }: Pro
   const isMainnet = network.env === 'mainnet'
   const hasWallet = typeof window !== 'undefined' && Boolean(window.ethereum)
 
+  // MetaMask (EIP-3085) requires nativeCurrency.decimals to be 18 when
+  // adding a chain, even though Arc's gas token is USDC with 6 decimals
+  // on-chain. The 18 here is only what MetaMask accepts for the chain
+  // record; it does not change the on-chain USDC (6 decimals) gas.
+  // Fixed 2026-11-27 after the user's screenshot: wallet_addEthereumChain
+  // failed with "Expected the number 18 for 'nativeCurrency.decimals'…
+  // Received: 6". Also: if MetaMask is already on Arc Testnet, do not
+  // switch or add at all — just connect.
+  const ensureNetwork = async (provider: BrowserProvider) => {
+    const net = await provider.getNetwork()
+    if (Number(net.chainId) === network.chainId) return
+    try {
+      await provider.send('wallet_switchEthereumChain', [{ chainId: `0x${network.chainId.toString(16)}` }])
+    } catch (e) {
+      const code = (e as { code?: number })?.code
+      if (code !== 4902) {
+        // Switch failed for another reason (e.g. user rejected, or the
+        // chain is already added under a different RPC). Re-check: if
+        // MetaMask is now on the right chain, carry on.
+        const after = await provider.getNetwork()
+        if (Number(after.chainId) === network.chainId) return
+        throw e
+      }
+      await provider.send('wallet_addEthereumChain', [{
+        chainId: `0x${network.chainId.toString(16)}`,
+        chainName: network.name,
+        nativeCurrency: { name: 'USDC', symbol: 'USDC', decimals: 18 },
+        rpcUrls: [network.rpcUrl],
+        blockExplorerUrls: [network.explorerUrl],
+      }])
+    }
+  }
+
   const connect = async () => {
     setError('')
     if (!hasWallet) { setError('No wallet found in this browser. Install MetaMask (or another injected wallet) and try again, or use the Foundry command below.'); return }
@@ -47,20 +80,7 @@ export default function DeployAdapters({ network, explorerUrl, onDeployed }: Pro
       await provider.send('eth_requestAccounts', [])
       const signer = await provider.getSigner()
       const address = await signer.getAddress()
-      const net = await provider.getNetwork()
-      if (Number(net.chainId) !== network.chainId) {
-        try {
-          await provider.send('wallet_switchEthereumChain', [{ chainId: `0x${network.chainId.toString(16)}` }])
-        } catch {
-          await provider.send('wallet_addEthereumChain', [{
-            chainId: `0x${network.chainId.toString(16)}`,
-            chainName: network.name,
-            nativeCurrency: { name: 'USDC', symbol: 'USDC', decimals: 6 },
-            rpcUrls: [network.rpcUrl],
-            blockExplorerUrls: [network.explorerUrl],
-          }])
-        }
-      }
+      await ensureNetwork(provider)
       setWallet(address)
       setLog([`Connected ${address} on ${network.name} (chain ${network.chainId}). Fund it with test USDC from https://faucet.circle.com (Arc Testnet) before deploying.`])
     } catch (e) { setError(e instanceof Error ? e.message : 'Could not connect wallet.') }
@@ -73,6 +93,7 @@ export default function DeployAdapters({ network, explorerUrl, onDeployed }: Pro
     setBusy(true)
     try {
       const provider = new BrowserProvider(window.ethereum as never)
+      await ensureNetwork(provider)
       const signer = await provider.getSigner()
       const deployer = await signer.getAddress()
       const feedArt = (adaptersArtifact as { contracts: Record<string, { abi: InterfaceAbi; bytecode: string }> }).contracts.UniswapV3TwapFeed
@@ -125,7 +146,8 @@ export default function DeployAdapters({ network, explorerUrl, onDeployed }: Pro
       <p className="field-hint">
         USDC: <span className="kbd">{network.stablecoinAddress}</span><br />
         Uniswap V3 router: <span className="kbd">{network.dexRouter}</span> ({network.dexRouterKind})<br />
-        Deployer / adapter owner: {wallet || 'your connected wallet — it becomes the owner of both adapters, transfer ownership to the vault owner later if you want'}
+        Deployer / adapter owner: {wallet || 'your connected wallet — it becomes the owner of both adapters, transfer ownership to the vault owner later if you want'}<br />
+        If MetaMask is already on Arc Testnet, just tap Connect wallet again — it will not try to add the chain a second time.
       </p>
       {!hasWallet && <p className="field-hint">No injected wallet in this browser. Use MetaMask on a computer, or the Foundry command below.</p>}
       <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
