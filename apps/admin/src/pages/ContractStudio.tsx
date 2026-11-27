@@ -205,6 +205,7 @@ export default function ContractStudio() {
   // The verified testnet deployment that gates a mainnet deploy lives
   // under the testnet counterpart row ("arc" for "arc-mainnet").
   const verifiedTestnet = deploys.some((d) => d.chain_id === testnetChainIdFor(effectiveChainId) && d.env === 'testnet' && d.verification_status === 'verified')
+  const deployedMainnet = deploys.find((d) => d.chain_id === effectiveChainId && d.env === 'mainnet')
   const mainnetReady = auditGatePass && (verifiedTestnet || testnetPassed) && smokeAttested
   // Mainnet vault lock: the gate must pass AND the typed confirmation
   // naming this network must match. The Worker enforces the same gate
@@ -582,7 +583,12 @@ export default function ContractStudio() {
               {verifiedTestnet ? ' Verified testnet deployment on this chain: yes.' : ' Verified testnet deployment on this chain: not yet.'}
             </p>
             {env === 'mainnet' && (
-              <p className="field-hint"><b>Mainnet is real money.</b> No vault is deployed on {networkName} yet and no independent audit exists yet. This deploy is not one-click: it needs a passing audit, a verified testnet deployment, a recorded small-value smoke test, and the typed confirmation below.</p>
+              <p className="field-hint"><b>Mainnet is real money.</b>{' '}
+                {deployedMainnet
+                  ? <>A vault is already deployed on {networkName} at <span className="mono">{deployedMainnet.address}</span>.</>
+                  : <>No vault is deployed on {networkName} yet and no independent audit exists yet.</>}{' '}
+                This deploy is not one-click: it needs a passing audit, a verified testnet deployment, a recorded small-value smoke test, and the typed confirmation below.
+              </p>
             )}
             <label className="check-row"><input type="checkbox" checked={auditGatePass} disabled />Audit passed (automated with zero open critical/high, or independent audit recorded)</label>
             <label className="check-row"><input type="checkbox" checked={verifiedTestnet || testnetPassed} onChange={(e) => setTestnetPassed(e.target.checked)} />Testnet lock → target → auto-sell → USDT received flow passed</label>

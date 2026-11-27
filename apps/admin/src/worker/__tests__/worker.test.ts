@@ -533,6 +533,32 @@ describe('Worker API (live endpoints, no sample data)', () => {
     expect((deployments.body.deployments as unknown[]).length).toBe(1)
   })
 
+  it('deploy register: re-registering the same vault with the same values succeeds without the RPC', async () => {
+    globalThis.fetch = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input)
+      if (url.includes('explorer')) return new Response(JSON.stringify({ status: '1', result: [{ SourceCode: '' }] }), { status: 200 })
+      let method = ''
+      try { method = (JSON.parse(String(init?.body ?? '{}')) as { method?: string }).method ?? '' } catch { method = '' }
+      if (method === 'eth_getCode') {
+        return new Response(JSON.stringify({ jsonrpc: '2.0', id: 1, result: '0x6080604052' }), { status: 200 })
+      }
+      return new Response(JSON.stringify({ jsonrpc: '2.0', id: 1, result: '0x' + '0'.repeat(64) }), { status: 200 })
+    }) as unknown as typeof fetch
+    const body = { ...DEPLOY_PARAMS, address: '0x8888888888888888888888888888888888888888', sourceHash: '0b5e90fcf6bc5d0592ccecd1aa41e83fbc880ef844c3ad4eaee9adcecc6f0646' }
+    const first = await call(env, '/api/admin/deploy/register', { method: 'POST', token, body })
+    expect(first.status).toBe(201)
+    // The RPC now fails on every call — a re-register must not need it.
+    globalThis.fetch = vi.fn(async () => { throw new Error('fetch failed') }) as unknown as typeof fetch
+    const again = await call(env, '/api/admin/deploy/register', { method: 'POST', token, body })
+    expect(again.status).toBe(200)
+    expect(again.body.verificationStatus).toBe('already-registered')
+    const deployments = await call(env, '/api/admin/deployments', { token })
+    expect((deployments.body.deployments as unknown[]).length).toBe(1)
+    // Same address, different constructor values: refuse, do not overwrite.
+    const different = await call(env, '/api/admin/deploy/register', { method: 'POST', token, body: { ...body, keeper: '0x9999999999999999999999999999999999999999' } })
+    expect(different.status).toBe(400)
+  })
+
   it('deploy register: mainnet is gated without audit/testnet/smoke evidence', async () => {
     const res = await call(env, '/api/admin/deploy/register', {
       method: 'POST', token,

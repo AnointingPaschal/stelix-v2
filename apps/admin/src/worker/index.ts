@@ -432,20 +432,22 @@ async function getCircleAppId(env: Env): Promise<string | null> {
 }
 
 async function rpcCall(rpcUrl: string, method: string, params: unknown[]): Promise<unknown> {
-  // Reads only (eth_getCode / eth_call), so a single retry is safe. The
-  // Arc mainnet RPC answered in 34 ms from the Workers runtime in a
-  // 2026-11-27 probe, but the mainnet vault registration at ~20:10 WAT
-  // failed on a one-off RPC hiccup — without a retry the whole save
-  // failed and the user had to tap Register again.
+  // Reads only (eth_getCode / eth_call), so retries are safe. The Arc
+  // mainnet RPC answers in ~35–60 ms from the Workers runtime when
+  // probed, yet the mainnet vault registration failed on the RPC check
+  // twice on 2026-11-27 (~20:10 and ~20:23 WAT) — the check is flaky
+  // even when the RPC is healthy, so it gets three attempts with
+  // back-off instead of one.
   let lastError: unknown = null
-  for (let attempt = 0; attempt < 2; attempt++) {
-    if (attempt > 0) await new Promise((r) => setTimeout(r, 500))
+  const delays = [500, 1500]
+  for (let attempt = 0; attempt < 3; attempt++) {
+    if (attempt > 0) await new Promise((r) => setTimeout(r, delays[attempt - 1]))
     try {
       const r = await fetchWithTimeout(rpcUrl, {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
         body: JSON.stringify({ jsonrpc: '2.0', id: 1, method, params }),
-      })
+      }, 10000)
       if (!r.ok) throw new Error(`RPC ${method} failed: HTTP ${r.status}`)
       const body = (await r.json()) as { result?: unknown; error?: { message?: string } }
       if (body.error) throw new Error(`RPC ${method} error: ${body.error.message ?? 'unknown'}`)
@@ -1898,6 +1900,32 @@ export default {
           return json({ error: `Typed confirmation must read exactly: ${mainnetConfirmPhrase(chain.name)}` }, 403)
         }
         if (bypassed) await audit(env, authed, 'studio.deploy_register_bypass', `StelixVault mainnet registration for ${chain.name} with the gate bypassed.`)
+      }
+      // Already registered? A re-register of the same vault with the same
+      // constructor values is a no-op confirmation — it must NOT depend
+      // on the chain RPC. The mainnet vault was registered directly in
+      // D1 on 2026-11-27 after the auto-save failed on a transient RPC
+      // error, and tapping "Deploy to mainnet" afterwards kept failing
+      // on the RPC check even though nothing was left to save.
+      const existing = await env.DB.prepare('SELECT parameters_json FROM deployments WHERE chain_id = ? AND address = ?').bind(params.chainId, params.address).first<{ parameters_json: string }>()
+      if (existing) {
+        let same = false
+        try {
+          const stored = JSON.parse(existing.parameters_json) as Record<string, unknown>
+          const fields = ['owner', 'keeper', 'router', 'priceFeed', 'penaltyRecipient', 'feeRecipient'] as const
+          const p = params as unknown as Record<string, unknown>
+          same = fields.every((k) => String(stored[k] ?? '').toLowerCase() === String(p[k] ?? '').toLowerCase())
+            && Number(stored.autoSellFeeBps) === params.autoSellFeeBps
+        } catch { same = false }
+        if (!same) return json({ error: 'This address is already registered on this chain with different constructor values. Deploy a new vault or register a different address.' }, 400)
+        await env.DB.prepare('UPDATE chains SET vault_address = ?, updated_at = datetime(\'now\') WHERE id = ?').bind(params.address, params.chainId).run()
+        await bumpSync(env)
+        await audit(env, authed, 'studio.deploy_register', `StelixVault ${params.env} re-registered on ${chain.name} at ${params.address} (already in the database).`)
+        return json({
+          ok: true, chain: chain.name, address: params.address, verificationStatus: 'already-registered',
+          note: 'This vault was already registered — no on-chain check was needed.',
+          explorerUrl: `${chain.explorer_url.replace(/\/$/, '')}/address/${params.address}`,
+        })
       }
       const rpcUrl = (chain.rpc_urls.split(',')[0] ?? '').trim()
       let code = '0x'
