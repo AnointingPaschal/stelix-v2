@@ -2,9 +2,9 @@
  * Unit tests for the Circle UCW client (src/lib/circle.ts).
  * Pure config gating, support decisions, challenge payload shapes and
  * the admin-Worker API client. The native SDK is NEVER loaded here —
- * loadCircleSdk is exercised only with an injected fake loader, and
- * probeCircleSupport only with injected detectors, so Expo Go gating
- * is tested without touching a native module.
+ * loadCircleSdk is a stub that always returns null (Expo Go fix
+ * 2026-11-27), and probeCircleSupport only with injected detectors,
+ * so Expo Go gating is tested without touching a native module.
  * Run: npm test
  */
 import {
@@ -150,22 +150,22 @@ describe('probeCircleSupport (injected detectors — Expo Go gating never crashe
   });
 });
 
-describe('loadCircleSdk (injected loader)', () => {
-  it('returns the SDK when the loader resolves a module with init + execute', async () => {
-    const fake = { init: jest.fn(), execute: jest.fn() };
-    const sdk = await loadCircleSdk(async () => ({ WalletSdk: fake }));
-    expect(sdk).toBe(fake);
-  });
-
-  it('returns null when the loader throws (missing native module)', async () => {
-    const sdk = await loadCircleSdk(async () => {
-      throw new Error('Cannot find native module ProgrammablewalletRnSdk');
-    });
+describe('loadCircleSdk (stubbed for Expo Go, 2026-11-27)', () => {
+  it('always returns null and never calls the loader', async () => {
+    // The real dynamic import crashed Expo Go on launch: Metro
+    // preloads the SDK and its top-level requireNativeModule throws
+    // before any try/catch. The loader is accepted for signature
+    // compatibility and ignored — even a fake SDK is never returned.
+    const loader = jest.fn(async () => ({
+      WalletSdk: { init: jest.fn(), execute: jest.fn() },
+    }));
+    const sdk = await loadCircleSdk(loader);
     expect(sdk).toBeNull();
+    expect(loader).not.toHaveBeenCalled();
   });
 
-  it('returns null when the module has no usable SDK', async () => {
-    const sdk = await loadCircleSdk(async () => ({}));
+  it('returns null when called with no loader', async () => {
+    const sdk = await loadCircleSdk();
     expect(sdk).toBeNull();
   });
 });

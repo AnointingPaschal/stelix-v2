@@ -20,10 +20,23 @@ Solana) is untouched — Circle is an additional option for Arc only.
    `src/lib/circle.ts` (`DEFAULT_CIRCLE_APP_ID`) and in `app.json`
    `expo.extra.circleAppId`. An App ID is a public identifier, not a
    secret. `EXPO_PUBLIC_CIRCLE_APP_ID` still overrides it when set. Do
-   NOT invent any other App ID. (The Circle API key was also just
-   updated — a separate worker is re-verifying it with
-   `GET /v1/w3s/config/entity` and checking `data.appId` matches this
-   App ID. The key itself is server-only and never appears here.)
+   NOT invent any other App ID.
+   **API key — BLOCKED (2026-11-27, diagnosed, no code fix).** Both the
+   original and the updated Mainnet Standard key return HTTP 403
+   `{"code":403,"message":"Forbidden"}` on `GET /v1/w3s/config/entity`,
+   and identically on `publicKey` and `list-users`. Per Circle's own
+   error docs a 403 means the key is recognised but "does not have
+   access to the requested endpoint" — most likely a Restricted key
+   without Wallets permission, or an entity-level Wallets entitlement
+   gate. A bad/truncated key would be 401, not 403. Entity secret is
+   Developer-Controlled-only and is NOT the cause (its missing-secret
+   error is a different 403, code 156016). Testnet/mainnet host mix-up
+   is ruled out (Wallets always uses `api.circle.com`; a chain mismatch
+   is a 400). Fix is in Console: verify the key is Standard, or
+   Restricted with Wallets at least Read; if both keys are Standard,
+   ask Circle support whether the entity is enabled for Programmable
+   Wallets. Until `config` returns 200 with `data.appId` matching the
+   App ID above, Circle is unconfirmed — do not claim it works.
 2. **Backend endpoints on the admin Worker** (`https://stelix-admin.pages.dev`,
    being built in parallel — do NOT assume they exist):
    - `POST /api/circle/users` → `{ userId, userToken, encryptionKey }`

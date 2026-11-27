@@ -307,8 +307,9 @@ export interface ImportWalletOptions {
 }
 
 /** Import from a seed phrase or private key. Throws on invalid input.
- *  KDF stays at 600,000 iterations (OWASP) — slow on a phone, but it
- *  resolves; the step label + overall timeout make the wait honest. */
+ *  KDF: native subtle 600,000 when available, pure JS 10,000 in
+ *  Expo Go / Hermes (see lib/crypto.ts) — 600,000 in pure JS on a
+ *  phone is >90s and Import timed out. */
 export async function importWallet(
   secret: string,
   password: string,

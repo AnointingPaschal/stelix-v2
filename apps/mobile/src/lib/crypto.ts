@@ -3,10 +3,15 @@
  * and no React Native imports at module load, so it is unit-testable in
  * Jest (node) and runs identically on web and native.
  *
- * Scheme: PBKDF2-HMAC-SHA-256 (600,000 iterations, 32-byte key) +
- * AES-GCM (96-bit random IV). The stored payload is a base64 JSON blob
- * `{ v: 1, salt, iv, data }`. A wrong password fails AES-GCM
- * authentication and throws — it is NEVER accepted.
+ * Scheme: PBKDF2-HMAC-SHA-256 + AES-GCM (96-bit random IV). The stored
+ * payload is a base64 JSON blob `{ v: 1, salt, iv, data, c }`, where
+ * `c` is the PBKDF2 iteration count used. Native WebCrypto subtle
+ * (web, Node, EAS dev build) uses 600,000 iterations; pure-JS @noble
+ * (Expo Go / Hermes, no subtle) uses 10,000 — 600,000 in pure JS on a
+ * phone takes >90s and Import timed out at "Deriving encryption key…"
+ * (2026-11-27). A wrong password fails AES-GCM authentication and
+ * throws — it is NEVER accepted. Legacy payloads without `c` decrypt
+ * at 600,000, the count they were created with.
  *
  * ROOT CAUSE of the native Import Wallet failure (2026-11-26): the old
  * implementation used WebCrypto (`globalThis.crypto.subtle`). Hermes, the
@@ -48,6 +53,14 @@ import { sha256 } from '@noble/hashes/sha2.js';
 import { withTimeout } from './timeout';
 
 const PBKDF2_ITERATIONS = 600_000;
+/** Pure-JS PBKDF2 iterations — used ONLY when no native WebCrypto
+ *  subtle is available (Expo Go / Hermes). 600,000 iterations in
+ *  pure JS on a phone takes >90s (measured 2026-11-27: Import timed
+ *  out at "Deriving encryption key…" after 90s, Node does it in
+ *  ~1.2s, Hermes does not). 10,000 iterations in pure JS takes
+ *  ~1-3s on a phone. The iteration count is stored in the payload
+ *  (`c`), so old 600k payloads still decrypt with 600k. */
+const PBKDF2_ITERATIONS_JS = 10_000;
 const KEY_LENGTH_BYTES = 32;
 const SALT_LENGTH_BYTES = 16;
 const IV_LENGTH_BYTES = 12;
@@ -57,6 +70,8 @@ export interface EncryptedPayload {
   salt: string; // base64
   iv: string; // base64
   data: string; // base64 ciphertext (AES-GCM, auth tag appended)
+  /** PBKDF2 iterations used for this payload. Absent = 600,000 (legacy). */
+  c?: number;
 }
 
 /**
@@ -304,14 +319,51 @@ export async function randomBytes(length: number): Promise<Uint8Array> {
   return getDrbg().randomBytes(length);
 }
 
-/** PBKDF2-HMAC-SHA-256, 600k iterations — pure JS, byte-identical to WebCrypto.
- *  Async variant: same work, but yields to the event loop between
- *  blocks instead of blocking the JS thread for the whole ~1-3s run. */
-async function deriveKey(password: string, salt: Uint8Array): Promise<Uint8Array> {
-  return pbkdf2Async(sha256, new TextEncoder().encode(password), salt, {
-    c: PBKDF2_ITERATIONS,
+/** PBKDF2-HMAC-SHA-256 — native first, pure JS fallback.
+ *  Native WebCrypto subtle (web, Node, EAS dev build) does 600,000
+ *  iterations in <1s. Hermes in Expo Go has NO subtle, so the
+ *  pure-JS @noble path runs at 10,000 iterations instead — 600,000
+ *  in pure JS on a phone is >90s and Import times out. Returns
+ *  [key, iterationsUsed] so the caller can store the count. */
+async function deriveKey(
+  password: string,
+  salt: Uint8Array,
+  iterations?: number,
+): Promise<{ key: Uint8Array; iterations: number }> {
+  const c = iterations ?? PBKDF2_ITERATIONS;
+  // Native path: try subtle first, with the requested count (600,000
+  // for a fresh encrypt on a native runtime, or the payload's stored
+  // count on decrypt). Native 600k is <1s; it is only the pure-JS
+  // path below that must never run 600k.
+  const subtle = (globalThis as unknown as { crypto?: { subtle?: Crypto['subtle'] } }).crypto?.subtle;
+  if (subtle) {
+    try {
+      const baseKey = await subtle.importKey(
+        'raw',
+        new TextEncoder().encode(password),
+        'PBKDF2',
+        false,
+        ['deriveBits'],
+      );
+      const bits = await subtle.deriveBits(
+        { name: 'PBKDF2', salt: salt as BufferSource, iterations: c, hash: 'SHA-256' },
+        baseKey,
+        KEY_LENGTH_BYTES * 8,
+      );
+      return { key: new Uint8Array(bits), iterations: c };
+    } catch {
+      // Fall through to pure JS below.
+    }
+  }
+  // Pure-JS path: an explicit count (legacy decrypt) is honoured;
+  // a fresh encrypt without a count uses 10,000 iterations in pure
+  // JS, never 600,000 — that is what timed out on the phone.
+  const jsIterations = iterations !== undefined ? c : PBKDF2_ITERATIONS_JS;
+  const key = await pbkdf2Async(sha256, new TextEncoder().encode(password), salt, {
+    c: jsIterations,
     dkLen: KEY_LENGTH_BYTES,
   });
+  return { key, iterations: jsIterations };
 }
 
 /** Let the UI paint first: a macrotask yield so the caller's busy state
@@ -330,9 +382,10 @@ export function assertStrongPassword(password: string): void {
 /** Encrypt a secret (mnemonic or private key) under the session password.
  *  `onStep` reports progress for the import/create UI; in __DEV__ each
  *  step is also timed in the Metro logs so a hang can be located by
- *  the last label printed. KDF stays at 600,000 iterations (OWASP) —
- *  slow on a phone (est. 5–30s) but it resolves; the step label makes
- *  the wait honest instead of a silent spinner. */
+ *  the last label printed. KDF: native WebCrypto subtle at 600,000
+ *  iterations when available, pure-JS @noble at 10,000 when not
+ *  (Expo Go / Hermes) — 600,000 in pure JS on a phone is >90s and
+ *  Import times out at "Deriving encryption key…". */
 export type EncryptStep = 'randomBytes' | 'deriveKey' | 'gcm';
 export async function encryptSecret(
   secret: string,
@@ -354,7 +407,7 @@ export async function encryptSecret(
   devLog('randomBytes', t0);
   onStep?.('deriveKey');
   const tKdf = Date.now();
-  const key = await deriveKey(password, salt);
+  const { key, iterations } = await deriveKey(password, salt);
   devLog('deriveKey', tKdf);
   onStep?.('gcm');
   const tGcm = Date.now();
@@ -368,6 +421,7 @@ export async function encryptSecret(
     salt: b64encode(salt),
     iv: b64encode(iv),
     data: b64encode(ct),
+    c: iterations,
   };
   return b64encode(new TextEncoder().encode(JSON.stringify(payload)));
 }
@@ -389,7 +443,8 @@ export async function decryptSecret(payloadB64: string, password: string): Promi
   if (payload.v !== 1 || !payload.salt || !payload.iv || !payload.data) {
     throw new Error('Stored wallet data is corrupt or in an unknown format.');
   }
-  const key = await deriveKey(password, b64decode(payload.salt));
+  const iterations = typeof payload.c === 'number' && payload.c > 0 ? payload.c : PBKDF2_ITERATIONS;
+  const { key } = await deriveKey(password, b64decode(payload.salt), iterations);
   let pt: Uint8Array;
   try {
     pt = gcm(key, b64decode(payload.iv)).decrypt(b64decode(payload.data));

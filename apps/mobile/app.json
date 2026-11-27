@@ -22,15 +22,6 @@
       "expo-router",
       "expo-secure-store",
       [
-        "@circle-fin/w3s-pw-react-native-sdk/plugins/withCopyFiles",
-        {
-          "sourceDir": "prebuild-sync-src",
-          "targetDir": ".",
-          "overwrite": true
-        }
-      ],
-      "@circle-fin/w3s-pw-react-native-sdk/plugins/podfile-modifier",
-      [
         "expo-local-authentication",
         {
           "faceIDPermission": "Allow $(PRODUCT_NAME) to use Face ID to unlock your wallet and sign transactions."

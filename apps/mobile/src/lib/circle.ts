@@ -21,18 +21,17 @@
  * The Circle RN SDK (@circle-fin/w3s-pw-react-native-sdk) is a native
  * module — `requireNativeModule('ProgrammablewalletRnSdk')` runs at
  * import time — and Expo Go does not ship it. A STATIC import anywhere
- * in the app graph would crash Expo Go on launch. So:
- *   - This file has NO static import of the SDK (only a TYPE import,
- *     which is erased at compile time) and NO static import of
- *     expo-constants.
- *   - The SDK is loaded ONLY by loadCircleSdk(), a dynamic import with
- *     a 10s bound, called only after probeCircleSupport() has already
- *     ruled out web and Expo Go. On Expo Go / web it is never loaded
- *     at all, so the app launches exactly as before with Circle
- *     disabled and an honest message.
- *   - Circle works ONLY in an EAS release APK / development build
- *     (which includes the native module), NOT in Expo Go Termux
- *     testing. The UI must say that everywhere Circle appears.
+ * in the app graph would crash Expo Go on launch, and a DYNAMIC
+ * import does NOT save it either: Metro preloads bundled modules, so
+ * the SDK's top-level requireNativeModule ran on launch and crashed
+ * Expo Go on 2026-11-27, before any try/catch could run. The package
+ * is therefore UNINSTALLED and metro.config.js blockLists it, and
+ * loadCircleSdk() below is a stub that NEVER imports it and always
+ * returns null. Circle works ONLY in an EAS release APK / development
+ * build (which includes the native module) — re-install the package,
+ * restore its app.json plugins, and restore the dynamic import in
+ * loadCircleSdk() ONLY for that build. The UI must say that
+ * everywhere Circle appears.
  *
  * Wallet model: EOA first (cheaper, broad, gas is USDC on Arc). SCA /
  * Gas Station is NOT built — labelled "not yet built" in the UI and
@@ -53,8 +52,11 @@
  */
 import { getAdminApiBase } from './adminChains';
 import { isNativeApp } from './storage';
-import { TimeoutError, withTimeout } from './timeout';
-import type { IWalletSdk } from '@circle-fin/w3s-pw-react-native-sdk';
+import { withTimeout } from './timeout';
+// No import of @circle-fin/w3s-pw-react-native-sdk here — not even a
+// type import. Metro preloads the package in Expo Go and its
+// top-level requireNativeModule('ProgrammablewalletRnSdk') throws on
+// launch. The SDK type is defined locally below instead.
 
 // ---------------------------------------------------------------------------
 // Config
@@ -212,56 +214,56 @@ export function clearExpoGoCache(): void {
 }
 
 // ---------------------------------------------------------------------------
-// Lazy native SDK loader — the ONLY place the SDK is imported (value)
+// Native SDK loader — STUBBED OUT for Expo Go (2026-11-27)
 // ---------------------------------------------------------------------------
 
-/** The loaded Circle SDK, or null when the native module is absent
- *  (Expo Go / web / a build without the module). Never throws. */
-export type CircleSdk = Pick<IWalletSdk, 'init' | 'execute' | 'setBiometricsPin'>;
+/** Structural shape of the Circle SDK, defined locally — no SDK import.
+ *  `execute` is the real SDK's callback style (userToken,
+ *  encryptionKey, challengeIds, onSuccess, onError), as used by
+ *  src/store/CircleWalletContext.tsx — NOT a promise. */
+export interface CircleExecuteResult {
+  result: {
+    status: string;
+    data?: { txHash?: string; signedTransaction?: string };
+  };
+}
+export interface CircleSdk {
+  init: (config: { endpoint: string; appId: string }) => Promise<void>;
+  execute: (
+    userToken: string,
+    encryptionKey: string,
+    challengeIds: string[],
+    onSuccess: (result: CircleExecuteResult) => void,
+    onError: (err: { message?: string }) => void,
+  ) => void;
+  setBiometricsPin: (userToken: string, encryptionKey: string) => Promise<unknown>;
+}
 
 let sdkPromise: Promise<CircleSdk | null> | null = null;
 
 /**
- * Dynamically import the Circle SDK and verify its native module
- * actually loaded. A missing native module makes the import reject
- * (requireNativeModule throws) — that rejection is caught here and
- * reported as null, never a crash. 10s bound: a Metro chunk fetch that
- * never settles is treated exactly like a missing module.
+ * STUB — NEVER dynamically imports the Circle SDK.
  *
- * `loader` is an injectable override for tests — production passes
- * none and the real dynamic import runs.
+ * The SDK's JS calls requireNativeModule('ProgrammablewalletRnSdk')
+ * at module load, Metro preloads bundled modules, and Expo Go does
+ * not ship that native module, so the app crashed on launch with
+ * "Cannot find native module 'ProgrammablewalletRnSdk'" (2026-11-27)
+ * even though the import was dynamic and wrapped in try/catch — the
+ * crash happened at module evaluation, before the catch could run.
+ * The package is uninstalled and blockListed in metro.config.js.
+ * This stub always returns null, so probeCircleSupport() reports
+ * 'sdk-missing' / 'expo-go' and Circle stays disabled with an honest
+ * message. Re-enable the real dynamic import ONLY in an EAS dev /
+ * release build, where the native module is actually bundled.
+ * `loader` is accepted for signature compatibility and ignored.
  */
 export function loadCircleSdk(
   loader?: () => Promise<unknown>,
 ): Promise<CircleSdk | null> {
+  void loader;
   if (sdkPromise) return sdkPromise;
-  const run = (async (): Promise<CircleSdk | null> => {
-    try {
-      const mod = await withTimeout(
-        loader ? loader() : import('@circle-fin/w3s-pw-react-native-sdk'),
-        10_000,
-        'Circle SDK dynamic import',
-      );
-      const sdk = (mod as { WalletSdk?: unknown }).WalletSdk as
-        | CircleSdk
-        | undefined;
-      if (
-        !sdk ||
-        typeof sdk.init !== 'function' ||
-        typeof sdk.execute !== 'function'
-      ) {
-        return null;
-      }
-      return sdk;
-    } catch (e) {
-      if (e instanceof TimeoutError) {
-        console.warn('[stelix] Circle SDK unavailable: dynamic import timed out after 10s — Circle stays disabled.');
-      }
-      return null;
-    }
-  })();
-  sdkPromise = run;
-  return run;
+  sdkPromise = Promise.resolve(null);
+  return sdkPromise;
 }
 
 /** Test escape hatch for the SDK loader cache. */

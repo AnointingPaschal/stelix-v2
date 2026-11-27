@@ -135,6 +135,36 @@ describe('PBKDF2/AES-GCM wallet encryption', () => {
     await expect(decryptSecret(enc, PASSWORD)).resolves.toBe(secret);
   });
 
+  it('with NO crypto.subtle (pure-JS path) encrypts at 10,000 iterations and decrypts', async () => {
+    // This is the Expo Go / Hermes path that timed out at 90s when it
+    // ran 600,000 pure-JS iterations. With no subtle, encrypt must
+    // store c=10_000, and decrypt must honour that stored count.
+    const restore = stubGlobalCrypto({
+      getRandomValues: <T extends Uint8Array<ArrayBuffer>>(arr: T): T =>
+        nodeCrypto.getRandomValues(arr),
+    });
+    try {
+      const enc = await encryptSecret(SECRET, PASSWORD);
+      const payload = JSON.parse(Buffer.from(enc, 'base64').toString('utf8')) as {
+        c?: number;
+      };
+      expect(payload.c).toBe(10_000);
+      await expect(decryptSecret(enc, PASSWORD)).resolves.toBe(SECRET);
+      await expect(decryptSecret(enc, 'wrong-password-1234')).rejects.toThrow(/Wrong password/);
+    } finally {
+      restore();
+    }
+  });
+
+  it('with native subtle, encrypt stores c=600,000 and decrypts', async () => {
+    const enc = await encryptSecret(SECRET, PASSWORD);
+    const payload = JSON.parse(Buffer.from(enc, 'base64').toString('utf8')) as {
+      c?: number;
+    };
+    expect(payload.c).toBe(600_000);
+    await expect(decryptSecret(enc, PASSWORD)).resolves.toBe(SECRET);
+  });
+
   it('decrypts payloads encrypted by the legacy WebCrypto build (v1 format is unchanged)', async () => {
     const legacy = await legacyWebCryptoEncrypt(SECRET, PASSWORD);
     await expect(decryptSecret(legacy, PASSWORD)).resolves.toBe(SECRET);
