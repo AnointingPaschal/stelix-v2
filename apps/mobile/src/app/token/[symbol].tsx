@@ -33,12 +33,14 @@ import {
   candlesMatchPrice,
   computeSafetyScore,
   fetchCandlesForTfWithMeta,
+  fetchCoinGeckoCandles,
   fetchCoinGeckoPrice,
   fetchDexScreenerPairs,
   fetchDexScreenerToken,
   fetchGoPlusSecurity,
   fetchTokenMarketData,
   indicatorsFromCandles,
+  isStablecoinSymbol,
   wrappedNativeAddress,
   type Candle,
   type GoPlusSecurity,
@@ -96,6 +98,12 @@ export default function TokenDetail() {
   const storeToken = ref.storeToken;
   const chainId = ref.chainId;
   const address = ref.address;
+  // Stablecoin (USDC on Arc is the native gas asset, not a DEX pair
+  // token): no pair feed, no pool liquidity, no GoPlus honeypot data.
+  // Its chart comes from CoinGecko market_chart (~$1 flat line) and
+  // its Safety Score is the "Stablecoin" state, never "Insufficient
+  // data". See lib/prices.ts isStablecoinSymbol.
+  const isStablecoin = isStablecoinSymbol(sym);
   // Native assets have no contract address: market data + candles come
   // from the wrapped twin (WBNB for BNB, …) — same price, real pair.
   const marketAddress = address || wrappedNativeAddress(chainId) || '';
@@ -222,7 +230,29 @@ export default function TokenDetail() {
     let cancelled = false;
     if (!pairsReady) return; // market/pairs still loading — keep the skeleton
     if (!pairAddress) {
-      setCandlesLoading(false); // no pair exists at all: honest empty state
+      // No pair at all (USDC on Arc has no DEX pair): fall back to
+      // CoinGecko market_chart USD history — a flat ~$1 line for a
+      // stablecoin — instead of leaving "No chart data yet". The
+      // CoinGecko fallback inside fetchCandlesForTfWithMeta never
+      // runs here because that function is only called with a pair.
+      if (coingeckoId) {
+        if (candlesRef.current.length === 0) setCandlesLoading(true);
+        else setCandlesUpdating(true);
+        void fetchCoinGeckoCandles(coingeckoId, tf).then((cg) => {
+          if (cancelled) return;
+          if (cg.length > 0) {
+            setCandles(cg);
+            setCandlesStale(false);
+            setCandleMeta({ baseAddress: marketAddress || null, quoteAddress: null, baseMatches: true });
+          } else {
+            setCandlesStale(candlesRef.current.length === 0);
+          }
+          setCandlesLoading(false);
+          setCandlesUpdating(false);
+        });
+      } else {
+        setCandlesLoading(false); // no pair exists at all: honest empty state
+      }
       return;
     }
     if (candlesRef.current.length === 0) setCandlesLoading(true);
@@ -607,6 +637,12 @@ export default function TokenDetail() {
               height={showMacd ? 250 : 210}
               loading={candlesLoading}
               updating={candlesUpdating}
+              emptyTitle={isStablecoin ? `${sym} is a stablecoin` : undefined}
+              emptySub={
+                isStablecoin
+                  ? `Price is ~$1.00 by design — no trading chart${coingeckoId ? ', and the CoinGecko price history is unavailable right now' : ''}.`
+                  : undefined
+              }
             />
           )}
 
@@ -628,7 +664,11 @@ export default function TokenDetail() {
           </View>
           <Text style={[styles.liveNote, liveState !== 'live' && styles.liveNoteWarn]}>{liveLabel}</Text>
           {candlesStale && !candlesLoading && !chartScaleMismatch ? (
-            <Text style={styles.liveNote}>No candles from the pair feed yet — the chart will appear once candles arrive.</Text>
+            <Text style={styles.liveNote}>
+              {isStablecoin
+                ? `${sym} is a stablecoin — price is ~$1.00 by design, no trading chart.`
+                : 'No candles from the pair feed yet — the chart will appear once candles arrive.'}
+            </Text>
           ) : null}
         </Card>
 
@@ -644,7 +684,7 @@ export default function TokenDetail() {
               </View>
             </View>
           ) : (
-            <SafetyScoreCard safety={shownSafety} holderCount={security?.holderCount ?? null} />
+            <SafetyScoreCard safety={shownSafety} holderCount={security?.holderCount ?? null} stablecoin={isStablecoin} />
           )}
         </Card>
 

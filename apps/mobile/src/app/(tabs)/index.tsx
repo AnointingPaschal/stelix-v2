@@ -470,26 +470,13 @@ export default function Home() {
           style={styles.walletRow}
           onPress={() => {
             setWalletsOpen(false);
-            router.push('/import');
+            router.push('/wallet-setup');
           }}
         >
           <View style={styles.walletAdd}>
             <Text style={styles.walletAddText}>+</Text>
           </View>
-          <Text style={styles.walletName}>Switch Wallet</Text>
-          <ChevronRight size={16} color={COLORS.textMuted} />
-        </Pressable>
-        <Pressable
-          style={styles.walletRow}
-          onPress={() => {
-            setWalletsOpen(false);
-            router.push('/create');
-          }}
-        >
-          <View style={styles.walletAdd}>
-            <Text style={styles.walletAddText}>+</Text>
-          </View>
-          <Text style={styles.walletName}>Create New Wallet</Text>
+          <Text style={styles.walletName}>Import / Create wallet</Text>
           <ChevronRight size={16} color={COLORS.textMuted} />
         </Pressable>
         <Text style={styles.sheetHint}>Tap the wallet to copy its address.</Text>

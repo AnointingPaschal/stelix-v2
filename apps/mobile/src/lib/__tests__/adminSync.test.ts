@@ -11,6 +11,7 @@ import { CHAINS } from '../chains';
 import { mergeAdminChains, type AdminChainRow } from '../adminChains';
 import {
   clearAdminSyncCache,
+  collapseArcPair,
   resolveModeChange,
   fetchAdminSync,
   filterChainsByMode,
@@ -217,28 +218,51 @@ describe('maintenance mode', () => {
 describe('network mode (admin testnet/mainnet switch)', () => {
   // Merged chains as the wallet sees them with the live admin rows:
   // arc (testnet, paired) + arc-mainnet (mainnet, active, paired).
+  // The picker NEVER shows arc-mainnet as a separate entry: Arc is
+  // collapsed to one 'arc' entry whose variant comes from the admin
+  // mode (collapseArcPair, 2026-11-27). The tests below pin that.
   const merged = mergeAdminChains(CHAINS, [chainRow(), arcMainnetRow()]);
   const arc = merged.find((c) => c.id === 'arc')!;
   const arcMainnet = merged.find((c) => c.id === 'arc-mainnet')!;
 
-  it('testnet mode shows testnet chains only; mainnet mode shows mainnet chains only; null shows all', () => {
-    expect(filterChainsByMode(merged, 'testnet').map((c) => c.id)).toEqual(['arc']);
-    expect(filterChainsByMode(merged, 'mainnet').map((c) => c.id)).toEqual([
-      'arc-mainnet', 'bnb', 'base', 'ethereum', 'polygon', 'solana',
-    ]);
-    expect(filterChainsByMode(merged, null).map((c) => c.id)).toEqual(merged.map((c) => c.id));
+  it('Arc collapses to one entry: testnet variant by default, mainnet variant only in mainnet mode', () => {
+    for (const mode of [null, 'testnet'] as const) {
+      const collapsed = collapseArcPair(merged, mode);
+      expect(collapsed.map((c) => c.id)).not.toContain('arc-mainnet');
+      const a = collapsed.find((c) => c.id === 'arc')!;
+      expect(a.chainId).toBe(5042002);
+      expect(a.testnet).toBe(true);
+    }
+    const main = collapseArcPair(merged, 'mainnet');
+    expect(main.map((c) => c.id)).not.toContain('arc-mainnet');
+    const a = main.find((c) => c.id === 'arc')!;
+    expect(a.chainId).toBe(5042);
+    expect(a.testnet).toBe(false);
+    expect(a.vaultContract).toBeNull(); // mode switch never deploys a vault
   });
 
-  it('admin flips to Mainnet: the wallet switches Arc testnet to its Arc Mainnet pair', () => {
+  it('testnet mode shows testnet chains only; mainnet mode shows mainnet chains only (Arc once, as mainnet); null shows all with Arc testnet only', () => {
+    expect(filterChainsByMode(merged, 'testnet').map((c) => c.id)).toEqual(['arc']);
+    expect(filterChainsByMode(merged, 'mainnet').map((c) => c.id)).toEqual([
+      'arc', 'bnb', 'base', 'ethereum', 'polygon', 'solana',
+    ]);
+    expect(filterChainsByMode(merged, 'mainnet').find((c) => c.id === 'arc')?.chainId).toBe(5042);
+    expect(filterChainsByMode(merged, null).map((c) => c.id)).toEqual(
+      merged.map((c) => c.id).filter((id) => id !== 'arc-mainnet'),
+    );
+  });
+
+  it('admin flips to Mainnet: the wallet switches Arc testnet to the Arc Mainnet variant (same id, chain 5042)', () => {
     const next = pickChainForMode(merged, arc, 'mainnet');
-    expect(next?.id).toBe('arc-mainnet');
+    expect(next?.id).toBe('arc');
     expect(next?.chainId).toBe(5042);
     const d = resolveModeChange({
       currentMode: 'testnet', nextMode: 'mainnet', transactionActive: false,
       chains: merged, currentChain: arc,
     });
     expect(d.deferred).toBe(false);
-    expect(d.chain?.id).toBe('arc-mainnet');
+    expect(d.chain?.id).toBe('arc');
+    expect(d.chain?.chainId).toBe(5042);
     expect(d.notice).toBe('Switched to Mainnet by admin');
   });
 
@@ -249,6 +273,7 @@ describe('network mode (admin testnet/mainnet switch)', () => {
     });
     expect(d.deferred).toBe(false);
     expect(d.chain?.id).toBe('arc');
+    expect(d.chain?.chainId).toBe(5042002);
     expect(d.notice).toBe('Switched to Testnet by admin');
   });
 
@@ -272,13 +297,16 @@ describe('network mode (admin testnet/mainnet switch)', () => {
     expect(d.notice).toBeNull();
   });
 
-  it('clearing the mode back to null shows all networks with a notice', () => {
+  it('clearing the mode back to null moves Arc Mainnet back to Arc testnet with a notice', () => {
     const d = resolveModeChange({
       currentMode: 'mainnet', nextMode: null, transactionActive: false,
       chains: merged, currentChain: arcMainnet,
     });
     expect(d.deferred).toBe(false);
-    expect(d.chain).toBeNull();
+    // 'arc-mainnet' is not a picker entry any more: clearing the mode
+    // returns the user to the single Arc entry, testnet variant.
+    expect(d.chain?.id).toBe('arc');
+    expect(d.chain?.chainId).toBe(5042002);
     expect(d.notice).toMatch(/all networks/);
   });
 

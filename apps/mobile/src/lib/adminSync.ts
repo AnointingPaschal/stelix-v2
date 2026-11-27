@@ -441,15 +441,46 @@ export function isTestnetChain(c: ChainConfig): boolean {
 }
 
 /**
+ * Arc is ONE chain in the picker, never two. The registry keeps both
+ * variants — 'arc' (testnet 5042002) and 'arc-mainnet' (mainnet 5042) —
+ * as source data, but the user must never be able to pick Arc Mainnet
+ * in the app. Which variant the single 'Arc' entry uses comes ONLY
+ * from the admin network_mode: 'mainnet' => the mainnet variant,
+ * anything else (null = admin never set a mode, or 'testnet') => the
+ * testnet variant (testnet-first default). The picker therefore shows
+ * exactly one Arc row, labelled with the mode it is on and "set by
+ * admin". The mainnet variant still has vaultContract null, so vault
+ * actions on Arc Mainnet still refuse honestly — the mode switch
+ * never deploys a vault or bypasses the mainnet gate.
+ */
+export function collapseArcPair(chains: ChainConfig[], mode: NetworkMode): ChainConfig[] {
+  const testnet = chains.find((c) => c.id === 'arc');
+  const mainnet = chains.find((c) => c.id === 'arc-mainnet');
+  if (!testnet || !mainnet) return [...chains];
+  const variant = mode === 'mainnet' ? mainnet : testnet;
+  const arc: ChainConfig = {
+    ...variant,
+    id: 'arc',
+    name: 'Arc',
+    isDefault: testnet.isDefault ?? mainnet.isDefault,
+    pairedChainId: 'arc-mainnet',
+  };
+  return chains.filter((c) => c.id !== 'arc-mainnet').map((c) => (c.id === 'arc' ? arc : c));
+}
+
+/**
  * Chains visible under a mode. null (admin never chose) = all chains,
  * exactly as before. 'testnet' = testnet chains only; 'mainnet' = mainnet
  * chains only. The per-chain `active` flag still applies on top — this
- * only filters by testnet/mainnet.
+ * only filters by testnet/mainnet. Arc is collapsed to ONE entry first
+ * (see collapseArcPair): mode null/testnet => Arc testnet, mode mainnet
+ * => Arc mainnet, never both in the list.
  */
 export function filterChainsByMode(chains: ChainConfig[], mode: NetworkMode): ChainConfig[] {
-  if (mode === null) return [...chains];
+  const collapsed = collapseArcPair(chains, mode);
+  if (mode === null) return [...collapsed];
   const wantTestnet = mode === 'testnet';
-  return chains.filter((c) => isTestnetChain(c) === wantTestnet);
+  return collapsed.filter((c) => isTestnetChain(c) === wantTestnet);
 }
 
 /**
@@ -464,8 +495,21 @@ export function pickChainForMode(
   mode: NetworkMode,
 ): ChainConfig | null {
   const visible = filterChainsByMode(chains, mode).filter((c) => c.active);
-  if (visible.some((c) => c.id === current.id)) return null;
-  const pair = current.pairedChainId ? visible.find((c) => c.id === current.pairedChainId) : undefined;
+  // Arc is collapsed to one 'arc' entry: a current chain of
+  // 'arc-mainnet' (picked before this change) is the Arc MAINNET
+  // variant, so it only "fits" when the visible Arc entry is also
+  // the mainnet variant (same chain id) — an id-only check would
+  // wrongly say the mainnet chain already fits testnet mode.
+  const currentVariant = current.id === 'arc-mainnet' ? { ...current, id: 'arc' } : current;
+  if (
+    visible.some(
+      (c) => c.id === currentVariant.id && c.chainId === currentVariant.chainId && c.testnet === currentVariant.testnet,
+    )
+  ) {
+    return null;
+  }
+  const pairId = current.pairedChainId === 'arc-mainnet' ? 'arc' : current.pairedChainId;
+  const pair = pairId ? visible.find((c) => c.id === pairId) : undefined;
   if (pair) return pair;
   return visible.find((c) => c.isDefault) ?? visible[0] ?? null;
 }

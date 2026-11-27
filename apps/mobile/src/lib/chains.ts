@@ -22,8 +22,10 @@
  *   - Arc Testnet explorer: https://explorer.testnet.arc.io
  *   - Native gas asset: USDC, 6 decimals (NOT 18)
  * Arc MAINNET (chain id 5042, live 2026-09-16) is registered below as
- * `arc-mainnet` with active: false — DISABLED in the wallet until a
- * mainnet deployment is explicitly approved. Chain id 5042 is verified
+ * `arc-mainnet` — registry source data ONLY, never a picker entry.
+ * The picker shows ONE 'Arc' entry whose variant is chosen by the
+ * admin network_mode (see collapseArcPair in lib/adminSync.ts):
+ * testnet variant until the admin sets mainnet mode.
  * against docs.arc.io ("Connect to Arc" and "RPC endpoints", checked
  * 2026-11-27: mainnet 5042 / testnet 5042002, RPC
  * https://rpc.mainnet.arc.io, explorer https://explorer.arc.io) and

@@ -361,7 +361,9 @@ export function OptionSheet({
 
 /** Network picker — ACTIVE chains from the merged admin registry that
  *  match the admin's network mode (Testnet / Mainnet / all when the admin
- *  has never set a mode), Arc first (default). The picker can never
+ *  has never set a mode), Arc first (default). Arc appears ONCE: its
+ *  testnet/mainnet variant is chosen by the admin mode (see
+ *  collapseArcPair in lib/adminSync.ts), never by the user. The picker can never
  *  override the admin mode: it only lists chains the mode allows, and
  *  says so. A chain added in admin appears here after a refresh. */
 export function NetworkSheet({ visible, onClose }: { visible: boolean; onClose: () => void }) {
@@ -381,7 +383,7 @@ export function NetworkSheet({ visible, onClose }: { visible: boolean; onClose: 
       options={chains.map((c) => ({
         key: c.id,
         label: c.name,
-        sub: `${c.testnet ? 'Testnet' : 'Mainnet'} · Native: ${c.nativeSymbol}${c.isDefault ? ' · Default' : ''}${c.vaultContract ? '' : ' · Vault not deployed'}${c.dexRouter ? ' · Router verified' : ''}`,
+        sub: `${c.testnet ? 'Testnet' : 'Mainnet'} · Native: ${c.nativeSymbol}${c.isDefault ? ' · Default' : ''}${c.vaultContract ? '' : ' · Vault not deployed'}${c.dexRouter ? ' · Router verified' : ''}${c.id === 'arc' ? ` · ${c.testnet ? 'Testnet' : 'Mainnet'} — set by admin` : ''}`,
         selected: chain.id === c.id,
       }))}
       onSelect={(id) => {
@@ -391,8 +393,8 @@ export function NetworkSheet({ visible, onClose }: { visible: boolean; onClose: 
       footer={
         <Text style={styles.sheetHint}>
           {networkMode === null
-            ? 'Showing all networks — the admin has not set a Testnet / Mainnet mode yet.'
-            : `Showing ${networkMode === 'testnet' ? 'Testnet' : 'Mainnet'} networks only — set by the admin. The picker cannot override the admin mode.`}
+            ? 'Arc is on Testnet until the admin sets Mainnet mode — the picker cannot choose Arc Mainnet. Showing all networks — the admin has not set a Testnet / Mainnet mode yet.'
+            : `Showing ${networkMode === 'testnet' ? 'Testnet' : 'Mainnet'} networks only — set by the admin. Arc follows the admin mode. The picker cannot override the admin mode.`}
         </Text>
       }
     />

@@ -54,6 +54,7 @@ function RootNavigator() {
       <Stack.Screen name="onboarding" />
       <Stack.Screen name="create" />
       <Stack.Screen name="import" />
+      <Stack.Screen name="wallet-setup" />
       <Stack.Screen name="circle" />
       <Stack.Screen name="unlock" />
       <Stack.Screen name="(tabs)" />

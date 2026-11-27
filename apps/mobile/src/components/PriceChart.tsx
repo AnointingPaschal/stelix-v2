@@ -45,6 +45,10 @@ export interface AdvancedChartProps {
   /** True while a refetch for a new series is in flight over the old
    *  candles: shows a small "Updating…" badge, never a blank chart. */
   updating?: boolean;
+  /** Override for the empty state (stablecoins have no pair feed — see
+   *  the parent: the generic "No chart data yet" would read as broken). */
+  emptyTitle?: string;
+  emptySub?: string;
 }
 
 const W = 360;
@@ -94,6 +98,8 @@ export function PriceChart({
   height = 220,
   loading = false,
   updating = false,
+  emptyTitle = 'No chart data yet',
+  emptySub = 'Candles will appear once the pair feed returns data.',
 }: AdvancedChartProps) {
   const [measuredW, setMeasuredW] = useState(W);
   const [visibleCount, setVisibleCount] = useState(60);
@@ -246,8 +252,8 @@ export function PriceChart({
     }
     return (
       <View style={[styles.empty, { height }]}>
-        <Text style={styles.emptyText}>No chart data yet</Text>
-        <Text style={styles.emptySub}>Candles will appear once the pair feed returns data.</Text>
+        <Text style={styles.emptyText}>{emptyTitle}</Text>
+        <Text style={styles.emptySub}>{emptySub}</Text>
       </View>
     );
   }

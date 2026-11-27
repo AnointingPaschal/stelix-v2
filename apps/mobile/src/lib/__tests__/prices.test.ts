@@ -1,4 +1,6 @@
 /** Price indicators + safety score — real-data-only rules. */
+import * as fs from 'fs';
+import * as path from 'path';
 import {
   bucketPricesToCandles,
   candlesMatchPrice,
@@ -8,6 +10,7 @@ import {
   fetchCandlesForTfWithMeta,
   fetchCandlesWithMeta,
   indicatorsFromCandles,
+  isStablecoinSymbol,
   lastEma,
   parseOhlcv,
   type Candle,
@@ -214,5 +217,35 @@ describe('GeckoTerminal OHLCV — token-aware price scale (BNB bug)', () => {
     const geckoCalls = seen.filter((u) => u.includes('geckoterminal'));
     expect(geckoCalls).toHaveLength(6);
     expect(geckoCalls.some((u) => u.includes(manyPairs[6].slice(2)))).toBe(false);
+  });
+});
+
+describe('stablecoins — USDC/USDT are not scored like DEX tokens', () => {
+  it('isStablecoinSymbol recognises USDC/USDT/DAI and rejects DEX tokens', () => {
+    expect(isStablecoinSymbol('USDC')).toBe(true);
+    expect(isStablecoinSymbol('usdt')).toBe(true);
+    expect(isStablecoinSymbol('DAI')).toBe(true);
+    expect(isStablecoinSymbol('GTAN')).toBe(false);
+    expect(isStablecoinSymbol('WKC')).toBe(false);
+    expect(isStablecoinSymbol('BNB')).toBe(false);
+    expect(isStablecoinSymbol(null)).toBe(false);
+    expect(isStablecoinSymbol(undefined)).toBe(false);
+  });
+
+  it('Token Detail wires the stablecoin state: chart falls back to CoinGecko and the safety card gets stablecoin=true', () => {
+    const detail = fs.readFileSync(
+      path.resolve(__dirname, '..', '..', 'app', 'token', '[symbol].tsx'),
+      'utf8',
+    );
+    expect(detail).toContain('isStablecoinSymbol(sym)');
+    expect(detail).toContain('fetchCoinGeckoCandles(coingeckoId, tf)');
+    expect(detail).toContain('stablecoin={isStablecoin}');
+    expect(detail).toContain('Price is ~$1.00 by design');
+    const card = fs.readFileSync(
+      path.resolve(__dirname, '..', '..', 'components', 'SafetyScoreCard.tsx'),
+      'utf8',
+    );
+    expect(card).toContain('Pegged to USD');
+    expect(card).toContain('Not applicable for a stablecoin');
   });
 });

@@ -42,10 +42,60 @@ const GAUGE_C = 2 * Math.PI * GAUGE_R;
 export function SafetyScoreCard({
   safety,
   holderCount,
+  stablecoin = false,
 }: {
   safety: SafetyScore | null;
   holderCount?: number | null;
+  /** True for a known stablecoin (USDC/USDT/…): there is no honeypot
+   *  or mint risk to score and no pool liquidity to measure, so the
+   *  gauge is hidden and the chips read "N/A" — never "No data" as
+   *  if the app failed to fetch. Normal DEX tokens must NOT pass this. */
+  stablecoin?: boolean;
 }) {
+  if (stablecoin) {
+    const chips: SafetyChip[] = [
+      { key: 'liq', label: 'Liquidity', value: 'N/A', icon: Droplets, tone: 'unknown' },
+      { key: 'vol', label: '24h Volume', value: 'N/A', icon: BarChart3, tone: 'unknown' },
+      { key: 'mc', label: 'Market Cap', value: 'N/A', icon: PieChart, tone: 'unknown' },
+      { key: 'hp', label: 'Honeypot', value: 'N/A', icon: ShieldQuestion, tone: 'unknown' },
+      { key: 'holders', label: 'Holders', value: 'N/A', icon: Users, tone: 'unknown' },
+      { key: 'mint', label: 'Mint Authority', value: 'N/A', icon: KeyRound, tone: 'unknown' },
+    ];
+    return (
+      <View>
+        <View style={styles.top}>
+          <View style={styles.gaugeWrap}>
+            <Svg width={GAUGE_SIZE} height={GAUGE_SIZE}>
+              <Circle cx={GAUGE_SIZE / 2} cy={GAUGE_SIZE / 2} r={GAUGE_R} stroke={COLORS.bgMuted} strokeWidth={7} fill="none" />
+            </Svg>
+            <View style={styles.gaugeCenter}>
+              <Text style={styles.gaugeNum}>—</Text>
+              <Text style={styles.gaugeOf}>/ 100</Text>
+            </View>
+          </View>
+          <View style={styles.topRight}>
+            <Chip label="Stablecoin" tone="mint" />
+            <Text style={styles.note}>Pegged to USD · no honeypot / mint risk applies here.</Text>
+          </View>
+        </View>
+        <View style={styles.grid}>
+          {chips.map((c) => {
+            const Icon = c.icon;
+            return (
+              <View key={c.key} style={styles.chip}>
+                <View style={[styles.chipIcon, { backgroundColor: COLORS.bgMuted }]}>
+                  <Icon size={15} color={COLORS.textMuted} />
+                </View>
+                <Text style={styles.chipLabel}>{c.label}</Text>
+                <Text style={[styles.chipValue, styles.chipNoData]} numberOfLines={1}>{c.value}</Text>
+              </View>
+            );
+          })}
+        </View>
+        <Text style={styles.note}>Not applicable for a stablecoin — the checks above only apply to DEX-traded tokens.</Text>
+      </View>
+    );
+  }
   const score = safety?.score ?? null;
   const tone = score === null ? 'muted' : score >= 80 ? 'mint' : score >= 50 ? 'amber' : 'red';
   const gaugeColor = tone === 'mint' ? COLORS.mint : tone === 'amber' ? COLORS.amber : tone === 'red' ? COLORS.red : COLORS.border;

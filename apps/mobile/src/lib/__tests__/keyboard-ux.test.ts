@@ -1,6 +1,7 @@
 /**
  * Keyboard UX audit — regression test for the 2026-11-27 fixes:
- * (1) Switch Wallet must offer Create New Wallet, not only Import;
+ * (1) the Wallets sheet has ONE Import / Create wallet entry, opening
+ *     a page with exactly two buttons (Create new / Import existing);
  * (2) the keyboard must never cover the input being typed in any modal,
  *     sheet or input screen; (3) the Import Token contract-address
  *     textbox must stay visible while typing.
@@ -32,21 +33,26 @@ const INPUT_SCREENS = [
   'src/app/token/[symbol].tsx',
 ];
 
-describe('keyboard UX: Switch Wallet offers Create New Wallet', () => {
-  it('Home Wallets sheet has a Create New Wallet row routing to /create', () => {
+describe('keyboard UX: Wallets sheet has one Import / Create wallet entry', () => {
+  it('Home Wallets sheet has a single "Import / Create wallet" row routing to /wallet-setup, and no Switch/Create rows', () => {
     const text = src('src/app/(tabs)/index.tsx');
-    expect(text).toContain('Create New Wallet');
-    expect(text).toMatch(/router\.push\('\/create'\)/);
+    expect(text).toContain('Import / Create wallet');
+    expect(text).toMatch(/router\.push\('\/wallet-setup'\)/);
+    expect(text).not.toContain('Switch Wallet');
+    expect(text).not.toContain('Create New Wallet');
   });
 
-  it('the Switch Wallet (Import) row is still present', () => {
-    const text = src('src/app/(tabs)/index.tsx');
-    expect(text).toContain('Switch Wallet');
+  it('the wallet-setup page has exactly two buttons: Create new wallet (-> /create) and Import existing wallet (-> /import)', () => {
+    expect(fs.existsSync(path.join(APP, 'wallet-setup.tsx'))).toBe(true);
+    const text = src('src/app/wallet-setup.tsx');
+    expect(text).toContain('Create new wallet');
+    expect(text).toMatch(/router\.push\('\/create'\)/);
+    expect(text).toContain('Import existing wallet');
     expect(text).toMatch(/router\.push\('\/import'\)/);
   });
 
   it('both options carry the same replace-current-wallet warning', () => {
-    const text = src('src/app/(tabs)/index.tsx');
+    const text = src('src/app/wallet-setup.tsx');
     expect(text).toMatch(/Creating a new wallet or switching wallets replaces the current wallet/);
     expect(text).toMatch(/back up its seed phrase first/);
   });

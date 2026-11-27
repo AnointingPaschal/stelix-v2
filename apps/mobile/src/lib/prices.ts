@@ -569,6 +569,26 @@ export const COINGECKO_IDS_BY_SYMBOL: Record<string, string> = {
   USDT: 'tether',
 };
 
+/**
+ * Stablecoins — and why they get special treatment on Token Detail.
+ * USDC on Arc is the NATIVE gas asset, not a DEX-traded pair token:
+ * there is no pair feed, no pool liquidity and no GoPlus honeypot /
+ * mint data for it, so the generic "Insufficient data — /100" and
+ * "No chart data yet" labels are honest but read as broken. A
+ * stablecoin's price is ~$1.00 by design (its chart is a flat line
+ * from CoinGecko market_chart, not pair candles) and honeypot / mint
+ * risk does not apply the way it does to a DEX token — the Safety
+ * Score card says so instead of showing "No data" six times. This
+ * applies ONLY to these symbols; normal DEX tokens keep the real
+ * GoPlus safety score, and a real token with no data still gets an
+ * honest insufficient-data state.
+ */
+export const STABLECOIN_SYMBOLS = new Set(['USDC', 'USDT', 'DAI', 'EURC', 'USDE', 'FDUSD', 'TUSD', 'USDP']);
+
+export function isStablecoinSymbol(symbol: string | null | undefined): boolean {
+  return !!symbol && STABLECOIN_SYMBOLS.has(symbol.trim().toUpperCase());
+}
+
 // ---------------------------------------------------------------------------
 // GoPlus token security (no key) — honeypot / mint authority / holders.
 // Verified live from this VM on 2026-11-26:
