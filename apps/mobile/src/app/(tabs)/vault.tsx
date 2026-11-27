@@ -10,7 +10,8 @@ import { Clock, Lock, RefreshCw, Unlock } from 'lucide-react-native';
 import { COLORS } from '../../theme';
 import { useApp } from '../../store/AppContext';
 import { fmtNum, fmtUsd } from '../../lib/format';
-import { Btn, Card, EmptyState, RiskNote, SectionTitle, centeredContent } from '../../components/ui';
+import { tokenDetailRoute } from '../../lib/tokenResolve';
+import { Btn, BottomSheet, Card, EmptyState, RiskNote, SectionTitle, centeredContent } from '../../components/ui';
 import { LockCard } from '../../components/TokenRow';
 
 export default function VaultHub() {
@@ -18,6 +19,12 @@ export default function VaultHub() {
   const insets = useSafeAreaInsets();
 
   const [refreshing, setRefreshing] = useState(false);
+  const [pickerOpen, setPickerOpen] = useState(false);
+  // Only ERC-20 tokens can be locked — the vault locks token contracts,
+  // never the native asset (it has no contract address). The lock itself
+  // is set on the token's own detail screen, so Create Lock just picks
+  // the token and opens its page.
+  const lockableTokens = tokens.filter((t) => !t.isSpam && t.address !== '');
   // Live price from the store (null = no live price — contributes $0, never
   // a placeholder price).
   const priceOf = (symbol: string) => tokens.find((t) => t.symbol === symbol)?.price ?? null;
@@ -100,7 +107,7 @@ export default function VaultHub() {
           title="No locks yet"
           body="Create your first lock from a token — pick a date, a price target, or both."
           actionLabel="Create Lock"
-          onAction={() => router.push('/vault/create')}
+          onAction={() => setPickerOpen(true)}
         />
       ) : (
         [...grouped.entries()].map(([symbol, ls]) => (
@@ -123,9 +130,29 @@ export default function VaultHub() {
           ))}
         </>
       )}
-      <Btn label="Create Lock" variant="mint" onPress={() => router.push('/vault/create')} style={styles.createBtn} />
+      <Btn label="Create Lock" variant="mint" onPress={() => setPickerOpen(true)} style={styles.createBtn} />
       {vaultNote ? <Text style={styles.vaultNote}>{vaultNote}</Text> : null}
       <RiskNote />
+
+      <BottomSheet visible={pickerOpen} onClose={() => setPickerOpen(false)} title="Choose a token to lock">
+        {lockableTokens.length === 0 ? (
+          <Text style={styles.pickerEmpty}>No lockable tokens yet — receive an ERC-20 token first. The native asset cannot be locked.</Text>
+        ) : (
+          lockableTokens.map((t) => (
+            <Pressable
+              key={`${t.chainId}:${t.symbol}`}
+              style={styles.pickerRow}
+              onPress={() => {
+                setPickerOpen(false);
+                router.push(tokenDetailRoute({ symbol: t.symbol, address: t.address, chainId: t.chainId }));
+              }}
+            >
+              <Text style={styles.pickerSym}>{t.symbol}</Text>
+              <Text style={styles.pickerBal}>{fmtNum(t.balance, 4)} {t.symbol}</Text>
+            </Pressable>
+          ))
+        )}
+      </BottomSheet>
     </ScrollView>
   );
 }
@@ -151,6 +178,10 @@ const styles = StyleSheet.create({
   miniStat: { backgroundColor: COLORS.navySoft, borderRadius: 12, flex: 1, padding: 10 },
   miniStats: { flexDirection: 'row', gap: 8 },
   miniValue: { color: '#fff', fontSize: 16, fontWeight: '800', marginTop: 2 },
+  pickerBal: { color: COLORS.textMuted, fontSize: 12, fontWeight: '700' },
+  pickerEmpty: { color: COLORS.textMuted, fontSize: 13, lineHeight: 19, paddingVertical: 8 },
+  pickerRow: { alignItems: 'center', borderBottomColor: COLORS.border, borderBottomWidth: 1, flexDirection: 'row', justifyContent: 'space-between', paddingVertical: 12 },
+  pickerSym: { color: COLORS.text, fontSize: 15, fontWeight: '800' },
   refreshBtn: { backgroundColor: '#fff', marginTop: 12 },
   root: { backgroundColor: COLORS.bg, flex: 1 },
   step: {

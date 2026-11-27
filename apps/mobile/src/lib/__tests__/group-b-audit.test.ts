@@ -39,7 +39,7 @@ const GROUP_B_SCREENS = [
   'app/send.tsx',
   'app/receive.tsx',
   'app/(tabs)/vault.tsx',
-  'app/vault/create.tsx',
+  'app/token/[symbol].tsx',
   'app/vault/[id].tsx',
   'app/(tabs)/settings.tsx',
   'app/settings.tsx',
@@ -56,7 +56,6 @@ const SCROLL_SCREENS = [
   'app/send.tsx',
   'app/receive.tsx',
   'app/(tabs)/vault.tsx',
-  'app/vault/create.tsx',
   'app/vault/[id].tsx',
   'app/settings.tsx',
   'app/discipline.tsx',
@@ -81,7 +80,6 @@ describe('safe-area: every screen clears the status bar / notch and the gesture 
     'app/send.tsx',
     'app/receive.tsx',
     'app/(tabs)/vault.tsx',
-    'app/vault/create.tsx',
     'app/vault/[id].tsx',
     'app/settings.tsx',
     'app/discipline.tsx',
@@ -240,7 +238,7 @@ describe('launchpad stays out of the wallet; signing stays in the modal', () => 
   });
 
   it('send and vault screens still render the shared signing modal only', () => {
-    for (const f of ['app/send.tsx', 'app/vault/create.tsx', 'app/vault/[id].tsx']) {
+    for (const f of ['app/send.tsx', 'app/token/[symbol].tsx', 'app/vault/[id].tsx']) {
       expect(read(f)).toContain('<SignTransactionModal');
       expect(read(f)).toContain('getSignerForChain(password,');
       expect(read(f)).not.toContain('Session password (to sign)');

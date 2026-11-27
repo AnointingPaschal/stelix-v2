@@ -20,7 +20,7 @@
  *  resolve market data + candles through their wrapped twin. Anything
  *  unavailable shows "—" / "No data", never an invented value. */
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { Animated, KeyboardAvoidingView, Platform, Pressable, ScrollView, StyleSheet, Switch, Text, TextInput, View, useWindowDimensions } from 'react-native';
+import { Animated, KeyboardAvoidingView, Platform, Pressable, ScrollView, StyleSheet, Text, TextInput, View, useWindowDimensions } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { router, useLocalSearchParams } from 'expo-router';
 import * as Clipboard from 'expo-clipboard';
@@ -50,9 +50,26 @@ import {
 } from '../../lib/prices';
 import { bucketMsFor, lastMacd, mergeLivePrice, type ChartTimeframe } from '../../lib/chart';
 import { resolveTokenRef } from '../../lib/tokenResolve';
-import { getChain } from '../../lib/chains';
+import { getChain, VAULT_NOT_DEPLOYED_MESSAGE } from '../../lib/chains';
+import { getSignerForChain } from '../../lib/signer';
+import {
+  createLockOnChain,
+  lockSummarySentence,
+  minReceivePerStageUsd,
+  validateLadder,
+  type BreakMode,
+  type BullLock,
+  type CreateLockOnChainParams,
+  type LadderStage,
+} from '../../lib/vault';
+import { useCircleWalletOptional } from '../../store/CircleWalletContext';
+import {
+  SignTransactionModal,
+  type SignTxRequest,
+  type SignTxResult,
+} from '../../components/SignTransactionModal';
 import { fmtDate, fmtNum, fmtPct, fmtPrice, fmtUsd } from '../../lib/format';
-import { Btn, Card, Chip, RiskNote, SectionTitle } from '../../components/ui';
+import { Btn, BottomSheet, Card, Chip, RiskNote, SectionTitle } from '../../components/ui';
 import { PriceChart, type ChartType } from '../../components/PriceChart';
 import { SafetyScoreCard } from '../../components/SafetyScoreCard';
 import { TokenLogo } from '../../components/TokenLogo';
@@ -79,7 +96,7 @@ export default function TokenDetail() {
     address?: string;
     chainId?: string;
   }>();
-  const { tokens, locks, chain: activeChain } = useApp();
+  const { tokens, locks, chain: activeChain, address: walletAddress, settings, addLock, addTx, refreshLocks, adminFees, appConfig } = useApp();
   const { width } = useWindowDimensions();
   const insets = useSafeAreaInsets();
   // 320–430px phones keep the compact v1 layout; 768px+ centres the
@@ -449,7 +466,12 @@ export default function TokenDetail() {
     }
   }
 
-  // --- Create Discipline (Bull Lock) state ---
+  // --- Create Discipline (Bull Lock) — all inline on this screen ---
+  // There is no separate lock wizard any more: amount, duration, target
+  // and exit plan are set in the card below, "Review & Lock" opens the
+  // review sheet, and confirming opens the signing modal. Same rules as
+  // the old 4-step wizard, same signing path (SignTransactionModal),
+  // no session-password field on this page.
   const [amount, setAmount] = useState('');
   const [days, setDays] = useState(30);
   const [customDays, setCustomDays] = useState('60');
@@ -457,46 +479,311 @@ export default function TokenDetail() {
   const [target, setTarget] = useState<number | null>(3);
   const [customPrice, setCustomPrice] = useState('');
   const [ladderOn, setLadderOn] = useState(false);
-  const [trailing, setTrailing] = useState<number | null>(null);
-  const [noEarlyBreak, setNoEarlyBreak] = useState(true);
+  const [ladder, setLadder] = useState<LadderStage[]>([
+    { multiple: 2, percent: 25, status: 'pending' },
+    { multiple: 3, percent: 25, status: 'pending' },
+    { multiple: 5, percent: 25, status: 'pending' },
+    { multiple: 10, percent: 25, status: 'pending' },
+  ]);
+  const [trailing, setTrailing] = useState<number | null>(1500);
+  const [autoSell, setAutoSell] = useState(true);
+  const [breakMode, setBreakMode] = useState<BreakMode>('immutable');
+  const [reviewOpen, setReviewOpen] = useState(false);
+  const [signModal, setSignModal] = useState<SignTxRequest | null>(null);
+  const [circleBusy, setCircleBusy] = useState(false);
   // Inline validation error for the lock form. Never Alert.alert here:
   // on react-native-web it is an empty no-op, so the user would see
   // nothing — the same failure mode as the old Create/Import screens.
   const [lockError, setLockError] = useState<string | null>(null);
 
+  const circle = useCircleWalletOptional();
+  const useCircleLock =
+    circle?.ready === true &&
+    circle.activeWallet !== null &&
+    (activeChain.id === 'arc' || activeChain.id === 'arc-mainnet');
+  // Live fee config and feature flags (same source the wizard used).
+  const fees = adminFees.fees;
+  const slippageBps = Math.round(fees.defaultSlippagePct * 100);
+  const feeLabel = `${fees.autoSellFeePct}%`;
+  const autoSellAllowed = appConfig?.flags.bullLockAutoSell !== false;
+  const trailingAllowed = appConfig?.flags.trailingStop !== false;
+  // Trailing-stop options offered by the admin, e.g. 'Off, 10%, 15%, 20%'.
+  const trailingOptions = useMemo(() => {
+    const parsed = fees.trailingStopOptions
+      .split(',')
+      .map((s) => s.trim())
+      .map((s) => {
+        if (/^off$/i.test(s)) return { label: 'Off', v: null as number | null };
+        const m = /^(\d+(?:\.\d+)?)%$/.exec(s);
+        return m ? { label: s, v: Math.round(parseFloat(m[1]) * 100) } : null;
+      })
+      .filter((o): o is { label: string; v: number | null } => o !== null);
+    return parsed.length > 0 ? parsed : [
+      { label: 'Off', v: null as number | null },
+      { label: '10%', v: 1000 },
+      { label: '15%', v: 1500 },
+      { label: '20%', v: 2000 },
+    ];
+  }, [fees.trailingStopOptions]);
+  // Vault deployment comes from the MERGED admin registry (chain.vaultContract),
+  // not the built-in registry: a vault registered in Contract Studio shows
+  // as deployed here on the next admin sync, with no app rebuild.
+  const vaultStatus = activeChain.vaultContract
+    ? { deployed: true as const, address: activeChain.vaultContract, message: '' }
+    : { deployed: false as const, address: null as string | null, message: VAULT_NOT_DEPLOYED_MESSAGE };
+
   const lockDays = days === 0 ? parseInt(customDays, 10) || 0 : days;
   const unlockDate = new Date(Date.now() + lockDays * 86_400_000);
-  const targetPrice = target === null ? null : customPrice ? parseFloat(customPrice) || null : price !== null ? price * target : null;
+  const unlockTime = Date.now() + lockDays * 86_400_000;
+  const spendable = Math.max(0, balance - locked);
+  const entryPrice = price ?? 0;
+  const amt = parseFloat(amount) || 0;
+  const targetMultiple = unlockMode === 'price' ? target : null;
+  const targetPrice = targetMultiple === null ? null : customPrice ? parseFloat(customPrice) || null : price !== null ? price * targetMultiple : null;
   const exitLabel = tokenChain.exitStablecoinLabel;
+  const ladderError = ladderOn ? validateLadder(ladder) : null;
+  // A malformed custom price used to parse to NaN, then `|| null`
+  // silently dropped the target — the lock became date-only with no
+  // warning. Validate it instead.
+  const customPriceError =
+    targetMultiple !== null && customPrice.trim() !== '' && !(parseFloat(customPrice) > 0)
+      ? 'Enter a valid custom target price (a number above 0).'
+      : null;
+  // Minimum receive per stage, from the real stage value (see
+  // lib/vault.ts minReceivePerStageUsd) — never a hardcoded $100.
+  const minReceiveUsd = minReceivePerStageUsd({
+    amount: amt,
+    entryPrice,
+    targetPrice,
+    ladder,
+    ladderOn,
+    slippageBps,
+  });
 
+  const preview: BullLock = useMemo(
+    () => ({
+      id: `LCK-${Date.now()}`,
+      chainId: activeChain.id,
+      tokenSymbol: sym,
+      tokenAddress: address,
+      amount: amt,
+      amountRemaining: amt,
+      entryPrice,
+      unlockTime,
+      targetPrice,
+      targetMultiple,
+      ladder: ladderOn ? ladder : [],
+      trailingStopBps: trailingAllowed ? trailing : null,
+      peakPrice: entryPrice,
+      breakMode,
+      penaltyBps: breakMode === 'penalty' ? Math.round(fees.defaultPenaltyPct * 100) : 0,
+      autoSell: targetPrice !== null ? autoSellAllowed && autoSell : false,
+      slippageBps,
+      minReceiveUsd,
+      status: 'active',
+      createdAt: Date.now(),
+    }),
+    [amt, activeChain.id, sym, address, entryPrice, unlockTime, targetPrice, targetMultiple, ladderOn, ladder, trailing, trailingAllowed, breakMode, fees.defaultPenaltyPct, slippageBps, minReceiveUsd],
+  );
+
+  /** "Review & Lock": validates the form, then opens the review sheet.
+   *  Nothing is signed here. */
   function reviewLock() {
-    const amt = parseFloat(amount) || 0;
     setLockError(null);
-    if (amt <= 0 || amt > balance) {
-      setLockError(`Enter an amount up to your spendable ${fmtNum(balance)} ${sym}.`);
+    if (amt <= 0 || amt > spendable) {
+      setLockError(`Enter an amount up to your spendable ${fmtNum(spendable)} ${sym}. Locked funds cannot be locked twice.`);
       return;
     }
     if (lockDays <= 0) {
       setLockError('Choose a lock duration.');
       return;
     }
+    // Admin lock limits (live fee config): the USD value of the lock
+    // must sit inside the admin's min / max.
+    const usdValue = amt * entryPrice;
+    if (entryPrice > 0 && usdValue < fees.minLockUsd) {
+      setLockError(`This lock would be ${fmtUsd(usdValue)} — below the minimum lock of ${fmtUsd(fees.minLockUsd)}.`);
+      return;
+    }
+    if (entryPrice > 0 && usdValue > fees.maxLockUsd) {
+      setLockError(`This lock would be ${fmtUsd(usdValue)} — above the maximum lock of ${fmtUsd(fees.maxLockUsd)}.`);
+      return;
+    }
+    if (ladderError) {
+      setLockError(ladderError);
+      return;
+    }
+    if (customPriceError) {
+      setLockError(customPriceError);
+      return;
+    }
     if (unlockMode === 'price' && (price === null || !targetPrice || targetPrice <= price)) {
       setLockError('Set a price target above the current price (live price unavailable right now).');
       return;
     }
-    router.push({
-      pathname: '/vault/create',
-      params: {
-        symbol: sym,
-        amount,
-        days: String(lockDays),
-        target: unlockMode === 'price' && target ? String(target) : '',
-        customPrice: unlockMode === 'price' ? customPrice : '',
-        ladder: ladderOn ? '1' : '0',
-        trailing: trailing ? String(trailing) : '',
-        breakMode: noEarlyBreak ? 'immutable' : 'penalty',
-      },
+    setReviewOpen(true);
+  }
+
+  /** Review sheet Confirm: validates everything again, then opens the
+   *  signing modal (or the Circle PIN UI on Arc). Nothing is signed
+   *  here — the modal collects the session password (or biometrics)
+   *  and calls signLock below. */
+  async function confirmLock() {
+    setLockError(null);
+    if (customPriceError) {
+      setLockError(customPriceError);
+      setReviewOpen(false);
+      return;
+    }
+    if (targetPrice !== null && entryPrice > 0 && targetPrice <= entryPrice) {
+      setLockError('Target price must be above the entry price — otherwise the target is already met.');
+      setReviewOpen(false);
+      return;
+    }
+    if (activeChain.kind !== 'evm') {
+      setLockError('The vault is not available on Solana — the Solana vault is an Anchor program and is not wired yet. Locks are EVM-only for now; no lock was created.');
+      setReviewOpen(false);
+      return;
+    }
+    if (!vaultStatus.deployed) {
+      setLockError(`${vaultStatus.message} (${tokenChain.name}). No on-chain lock can be created yet, and no local-only lock is recorded — a lock that was never submitted is not a lock.`);
+      setReviewOpen(false);
+      return;
+    }
+    if (!storeToken || !address) {
+      setLockError('The native asset cannot be locked — the vault locks ERC-20 tokens. Lock an imported token instead of the native asset.');
+      setReviewOpen(false);
+      return;
+    }
+    if (price === null || entryPrice <= 0) {
+      setLockError('This token has no live price, so no entry price can be recorded on-chain. Try again when a price is available.');
+      setReviewOpen(false);
+      return;
+    }
+    const stablecoin = getChain(activeChain.id).exitStablecoinAddress;
+    if (!stablecoin) {
+      setLockError(`No exit stablecoin address is registered for ${tokenChain.name}. The lock cannot be created yet.`);
+      setReviewOpen(false);
+      return;
+    }
+    // Circle Arc wallet: approve + createLock in the Circle PIN UI
+    // instead of the password signing modal. The vault-not-deployed
+    // check above already refused, so a Circle lock can only run once
+    // a vault actually exists on Arc.
+    if (useCircleLock) {
+      setReviewOpen(false);
+      await confirmCircleLock();
+      return;
+    }
+    setReviewOpen(false);
+    setSignModal({
+      title: 'Confirm Lock',
+      actionLabel: 'Sign & Create Lock',
+      fromAddress: walletAddress,
+      toAddress: vaultStatus.address,
+      toLabel: 'StelixVault contract',
+      network: `${tokenChain.name}${tokenChain.testnet ? ' (testnet)' : ''}`,
+      rows: [
+        { label: 'You lock', value: `${fmtNum(amt)} ${sym} (${fmtUsd(amt * entryPrice)})` },
+        { label: 'Unlock date', value: new Date(unlockTime).toLocaleDateString('en-GB', { day: 'numeric', month: 'long', year: 'numeric' }) },
+        { label: 'Target', value: targetPrice ? `${targetMultiple}x · ${fmtPrice(targetPrice)}` : 'None — date lock' },
+        { label: 'Exit', value: targetPrice ? (autoSell ? exitLabel : 'Unlock to wallet') : 'Unlock to wallet' },
+        { label: 'Ladder', value: ladderOn ? ladder.map((s) => `${s.percent}% @ ${s.multiple}x`).join(' · ') : 'Off' },
+        { label: 'Trailing stop', value: trailing ? `${trailing / 100}%` : 'Off' },
+        { label: 'Break mode', value: breakMode === 'immutable' ? 'Immutable — no early break' : breakMode === 'penalty' ? `Penalty break — ${fees.defaultPenaltyPct}% after 24h cooling-off` : 'Guardian break — approval + 48h delay' },
+        { label: 'Slippage', value: `${fees.defaultSlippagePct}%` },
+        { label: 'Stelix fee', value: feeLabel },
+        { label: 'Network fee', value: 'Estimated at signing' },
+      ],
+      warning: 'You approve the token spend, then the lock is created on-chain. The vault must be deployed on this chain — otherwise no lock is created.',
+      explorerBase: tokenChain.explorerUrl,
     });
+  }
+
+  /** Shared lock parameters for both signing paths (self-custody
+   *  signLock below and the Circle confirmCircleLock). Returns null
+   *  when there is no lockable token / stablecoin. */
+  function lockParams(): CreateLockOnChainParams | null {
+    if (!storeToken || !address) return null;
+    const stablecoin = getChain(activeChain.id).exitStablecoinAddress;
+    if (!stablecoin) return null;
+    return {
+      chainId: activeChain.id,
+      // Vault address from the merged admin registry: a vault registered
+      // in Contract Studio is used here on the next admin sync.
+      vaultAddress: activeChain.vaultContract,
+      tokenAddress: address,
+      tokenDecimals: storeToken.decimals ?? 18,
+      stablecoinAddress: stablecoin,
+      amount: amt,
+      unlockTime,
+      entryPriceUsd: entryPrice,
+      ladder: ladderOn ? ladder : targetMultiple !== null ? [{ multiple: targetMultiple, percent: 100 }] : [],
+      trailingStopBps: trailingAllowed ? trailing : null,
+      breakMode,
+      penaltyBps: breakMode === 'penalty' ? Math.round(fees.defaultPenaltyPct * 100) : 0,
+      autoSell: preview.autoSell,
+      slippageBps,
+      minReceiveUsd: preview.minReceiveUsd,
+    };
+  }
+
+  async function signLock(password: string): Promise<SignTxResult> {
+    const params = lockParams();
+    if (!params) throw new Error('No token to lock.');
+    const signer = await getSignerForChain(password, activeChain.id);
+    const { txHash, lockId } = await createLockOnChain(signer, params);
+    return { hash: txHash, blockNumber: null, lockId };
+  }
+
+  /** Circle Arc lock: approve + createLock as two user-approved Circle
+   *  contract-execution challenges (Circle PIN UI). Refuses honestly
+   *  when no vault is deployed — lib/circleVault.ts returns the
+   *  not-deployed reason before any challenge is created. */
+  async function confirmCircleLock(): Promise<void> {
+    if (!circle) return;
+    const params = lockParams();
+    if (!params) {
+      setLockError('No token to lock.');
+      return;
+    }
+    setCircleBusy(true);
+    setLockError(null);
+    try {
+      const txHash = await circle.createVaultLock(params);
+      await onLockSigned({ hash: txHash, blockNumber: null, lockId: null });
+    } catch (e) {
+      setLockError(e instanceof Error ? e.message : 'Circle lock failed. No lock was created.');
+    } finally {
+      setCircleBusy(false);
+    }
+  }
+
+  async function onLockSigned(res: SignTxResult) {
+    if (!storeToken) return;
+    const lock: BullLock = {
+      ...preview,
+      id: res.lockId !== null && res.lockId !== undefined ? `onchain-${activeChain.id}-${res.lockId}` : `onchain-${activeChain.id}-tx-${res.hash.slice(2, 10)}`,
+      txHash: res.hash,
+    };
+    addLock(lock);
+    addTx({
+      id: res.hash,
+      hash: res.hash,
+      kind: 'lock',
+      token: sym,
+      amount: amt,
+      amountRaw: String(amt),
+      usd: amt * entryPrice,
+      note: `Locked on-chain until ${new Date(unlockTime).toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' })}${targetMultiple ? ` or ${targetMultiple}x` : ''} · vault ${vaultStatus.deployed ? vaultStatus.address : ''}`,
+      at: Date.now(),
+      status: 'confirmed',
+      isSpam: false,
+      chainId: activeChain.id,
+      blockNumber: null,
+    });
+    await refreshLocks();
+    router.replace(`/vault/${lock.id}`);
   }
 
   if (!ref.found) {
@@ -711,7 +998,14 @@ export default function TokenDetail() {
             />
             <Text style={styles.amountSym}>{sym}</Text>
           </View>
-          <Text style={styles.discHint}>Spendable: {fmtNum(balance, 4)} {sym}</Text>
+          <Text style={styles.discHint}>Spendable: {fmtNum(spendable, 4)} {sym}</Text>
+          <View style={styles.pctRow}>
+            {[25, 50, 75, 100].map((p) => (
+              <Pressable key={p} onPress={() => setAmount(String((spendable * p) / 100))} style={styles.pctBtn}>
+                <Text style={styles.pctBtnText}>{p}%</Text>
+              </Pressable>
+            ))}
+          </View>
 
           <Text style={styles.discLabel}>Lock Duration</Text>
           <View style={styles.chips}>
@@ -764,30 +1058,86 @@ export default function TokenDetail() {
               <Text style={styles.discHint}>
                 Entry {priceText(price)} · Target {targetPrice ? fmtPrice(targetPrice) : '—'} · {exitLabel} on hit
               </Text>
-              <View style={styles.toggleRow}>
-                <Text style={styles.toggleLabel}>Profit ladder — sell 25% at 2x, 3x, 5x, 10x</Text>
-                <Switch value={ladderOn} onValueChange={setLadderOn} trackColor={{ true: COLORS.mint }} />
-              </View>
-              <Text style={styles.discLabel}>Trailing stop (after first target hit)</Text>
+
+              <Text style={styles.discLabel}>On target hit</Text>
               <View style={styles.chips}>
-                {[
-                  { label: 'Off', v: null },
-                  { label: '10%', v: 1000 },
-                  { label: '15%', v: 1500 },
-                  { label: '20%', v: 2000 },
-                ].map((o) => (
+                <Pressable onPress={() => setAutoSell(true)} style={[styles.chipBtn, autoSell && autoSellAllowed && styles.chipBtnOn]}>
+                  <Text style={[styles.chipBtnText, autoSell && autoSellAllowed && styles.chipBtnTextOn]}>auto-sell to {exitLabel} (auto-sell)</Text>
+                </Pressable>
+                <Pressable onPress={() => setAutoSell(false)} style={[styles.chipBtn, !autoSell && styles.chipBtnOn]}>
+                  <Text style={[styles.chipBtnText, !autoSell && styles.chipBtnTextOn]}>Unlock to wallet (manual)</Text>
+                </Pressable>
+              </View>
+              {!autoSellAllowed ? (
+                <Text style={styles.discHint}>Auto-sell is off — target hits unlock to your wallet instead.</Text>
+              ) : null}
+
+              <Text style={styles.discLabel}>Profit ladder</Text>
+              <View style={styles.chips}>
+                <Pressable onPress={() => setLadderOn(true)} style={[styles.chipBtn, ladderOn && styles.chipBtnOn]}>
+                  <Text style={[styles.chipBtnText, ladderOn && styles.chipBtnTextOn]}>Ladder on</Text>
+                </Pressable>
+                <Pressable onPress={() => setLadderOn(false)} style={[styles.chipBtn, !ladderOn && styles.chipBtnOn]}>
+                  <Text style={[styles.chipBtnText, !ladderOn && styles.chipBtnTextOn]}>Ladder off (sell all at target)</Text>
+                </Pressable>
+              </View>
+              {ladderOn && (
+                <View style={styles.ladderCard}>
+                  {ladder.map((s, i) => (
+                    <View key={s.multiple} style={styles.ladderRow}>
+                      <Text style={styles.ladderLabel}>{s.multiple}x</Text>
+                      <TextInput
+                        style={styles.ladderInput}
+                        keyboardType="number-pad"
+                        value={String(s.percent)}
+                        onChangeText={(v) => {
+                          const next = [...ladder];
+                          next[i] = { ...s, percent: parseInt(v, 10) || 0 };
+                          setLadder(next);
+                        }}
+                      />
+                      <Text style={styles.ladderPct}>%</Text>
+                    </View>
+                  ))}
+                  {ladderError ? <Text style={styles.lockError}>{ladderError}</Text> : null}
+                </View>
+              )}
+
+              <Text style={styles.discLabel}>Trailing stop</Text>
+              <View style={styles.chips}>
+                {trailingOptions.map((o) => (
                   <Pressable key={o.label} onPress={() => setTrailing(o.v)} style={[styles.chipBtn, trailing === o.v && styles.chipBtnOn]}>
                     <Text style={[styles.chipBtnText, trailing === o.v && styles.chipBtnTextOn]}>{o.label}</Text>
                   </Pressable>
                 ))}
               </View>
+              <Text style={styles.discHint}>
+                After any target is hit, a fall of the chosen % from the peak auto-sells the remainder {exitLabel}. Slippage
+                default {fees.defaultSlippagePct}% · minimum receive shown at review.
+                {!trailingAllowed ? ' Trailing stop is off.' : ''}
+              </Text>
             </>
           )}
 
-          <View style={styles.toggleRow}>
-            <Text style={styles.toggleLabel}>No early break — immutable until maturity</Text>
-            <Switch value={noEarlyBreak} onValueChange={setNoEarlyBreak} trackColor={{ true: COLORS.mint }} />
+          <Text style={styles.discLabel}>Break mode</Text>
+          <View style={styles.chips}>
+            <Pressable onPress={() => setBreakMode('immutable')} style={[styles.chipBtn, breakMode === 'immutable' && styles.chipBtnOn]}>
+              <Text style={[styles.chipBtnText, breakMode === 'immutable' && styles.chipBtnTextOn]}>Immutable (strongest)</Text>
+            </Pressable>
+            <Pressable onPress={() => setBreakMode('penalty')} style={[styles.chipBtn, breakMode === 'penalty' && styles.chipBtnOn]}>
+              <Text style={[styles.chipBtnText, breakMode === 'penalty' && styles.chipBtnTextOn]}>Penalty break ({fees.defaultPenaltyPct}%, 24h cooling-off)</Text>
+            </Pressable>
+            <Pressable onPress={() => setBreakMode('guardian')} style={[styles.chipBtn, breakMode === 'guardian' && styles.chipBtnOn]}>
+              <Text style={[styles.chipBtnText, breakMode === 'guardian' && styles.chipBtnTextOn]}>Guardian break (Phase 2)</Text>
+            </Pressable>
           </View>
+          <Text style={styles.discHint}>No penalty is ever charged when a price target or the maturity date triggers the exit. Penalty default is {fees.defaultPenaltyPct}%.</Text>
+          {!vaultStatus.deployed ? (
+            <Text style={styles.vaultWarn}>
+              Not deployed on this chain yet — testnet deploy required ({tokenChain.name}). No on-chain lock can be created yet, and no
+              local-only lock is recorded — a lock that was never submitted is not a lock.
+            </Text>
+          ) : null}
           <Btn label="Review & Lock" variant="secondary" onPress={reviewLock} style={styles.reviewBtn} />
           {lockError ? <Text style={styles.lockError}>{lockError}</Text> : null}
         </Card>
@@ -848,7 +1198,7 @@ export default function TokenDetail() {
           <Btn
             label={activeLock ? 'View Lock' : 'Lock'}
             variant="mint"
-            onPress={() => (activeLock ? router.push(`/vault/${activeLock.id}`) : router.push('/vault/create'))}
+            onPress={() => (activeLock ? router.push(`/vault/${activeLock.id}`) : reviewLock())}
             style={styles.actionBtn}
           />
           <Btn label="Send" onPress={() => router.push('/send')} style={styles.actionBtn} />
@@ -861,6 +1211,57 @@ export default function TokenDetail() {
           </Pressable>
         </View>
         <RiskNote />
+
+        {/* Review sheet — opens from "Review & Lock". Confirming here
+            opens the signing modal below (or the Circle PIN UI on Arc). */}
+        <BottomSheet visible={reviewOpen} onClose={() => setReviewOpen(false)} title="Review your lock">
+          <View style={styles.reviewCard}>
+            <ReviewRow label="Token" value={`${fmtNum(amt)} ${sym} (${fmtUsd(amt * entryPrice)})`} />
+            <ReviewRow label="Chain" value={`${tokenChain.name}${tokenChain.testnet ? ' (testnet)' : ''}`} />
+            <ReviewRow
+              label="Wallet"
+              value={
+                useCircleLock && circle?.activeWallet
+                  ? `Circle Arc · ${circle.activeWallet.address.slice(0, 6)}…${circle.activeWallet.address.slice(-4)}`
+                  : `Self-custody · ${walletAddress.slice(0, 6)}…${walletAddress.slice(-4)}`
+              }
+            />
+            <ReviewRow label="Vault contract" value={vaultStatus.deployed ? vaultStatus.address : 'Not deployed yet — testnet deploy required'} />
+            <ReviewRow label="Unlock date" value={new Date(unlockTime).toLocaleDateString('en-GB', { day: 'numeric', month: 'long', year: 'numeric' })} />
+            <ReviewRow label="Target" value={targetPrice ? `${targetMultiple}x · ${fmtPrice(targetPrice)}` : 'None — date lock'} />
+            <ReviewRow label="Exit" value={targetPrice ? (autoSell ? exitLabel : 'Unlock to wallet') : 'Unlock to wallet'} />
+            <ReviewRow label="Ladder" value={ladderOn ? ladder.map((s) => `${s.percent}% @ ${s.multiple}x`).join(' · ') : 'Off'} />
+            <ReviewRow label="Trailing stop" value={trailing ? `${trailing / 100}%` : 'Off'} />
+            <ReviewRow label="Break mode" value={breakMode === 'immutable' ? 'Immutable — no early break' : breakMode === 'penalty' ? `Penalty break — ${fees.defaultPenaltyPct}% after 24h cooling-off` : 'Guardian break — approval + 48h delay'} />
+            <ReviewRow label="Slippage" value={`${fees.defaultSlippagePct}%`} />
+            <ReviewRow label="Minimum receive" value={targetPrice ? fmtUsd(minReceiveUsd) : '—'} />
+            <ReviewRow label="Stelix fee" value={feeLabel} />
+            <ReviewRow label="Network fee" value="Shown by the wallet before signing" />
+          </View>
+          <Text style={styles.sentence}>{lockSummarySentence(preview, exitLabel)}</Text>
+          <Text style={styles.reviewHint}>
+            {useCircleLock
+              ? 'Review the terms above, then confirm — the Circle PIN UI will ask you to approve the token approval and the lock, one at a time. Nothing is submitted until you approve both.'
+              : 'Review the terms above, then confirm in the signing sheet — your session password authorises the lock.'}
+          </Text>
+          <Btn
+            label={useCircleLock ? (circleBusy ? 'Waiting for Circle approval…' : 'Confirm with Circle') : 'Confirm Lock'}
+            variant="mint"
+            onPress={() => void confirmLock()}
+            disabled={circleBusy}
+            loading={circleBusy}
+            style={styles.confirmBtn}
+          />
+        </BottomSheet>
+
+        <SignTransactionModal
+          visible={signModal !== null}
+          request={signModal}
+          biometricsEnabled={settings.biometrics}
+          onClose={() => setSignModal(null)}
+          onSign={signLock}
+          onSigned={(res) => void onLockSigned(res)}
+        />
       </ScrollView>
     </KeyboardAvoidingView>
   );
@@ -885,6 +1286,15 @@ function DataRow({ label, value, tone }: { label: string; value: string; tone?: 
       >
         {value}
       </Text>
+    </View>
+  );
+}
+
+function ReviewRow({ label, value }: { label: string; value: string }) {
+  return (
+    <View style={styles.reviewRow}>
+      <Text style={styles.reviewLabel}>{label}</Text>
+      <Text style={styles.reviewValue}>{value}</Text>
     </View>
   );
 }
@@ -939,7 +1349,13 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
     width: 36,
   },
+  confirmBtn: { marginTop: 14 },
   discLabel: { color: '#fff', fontSize: 12, fontWeight: '700', marginTop: 14 },
+  ladderCard: { backgroundColor: COLORS.navySoft, borderRadius: 12, marginTop: 8, paddingHorizontal: 10, paddingVertical: 4 },
+  ladderInput: { backgroundColor: COLORS.navy, borderRadius: 8, color: '#fff', fontSize: 14, padding: 8, textAlign: 'center', width: 64 },
+  ladderLabel: { color: '#fff', fontSize: 14, fontWeight: '700', width: 48 },
+  ladderPct: { color: COLORS.textOnNavyMuted, fontSize: 14 },
+  ladderRow: { alignItems: 'center', flexDirection: 'row', gap: 10, paddingVertical: 6 },
   lockError: { color: '#FCA5A5', fontSize: 13, fontWeight: '600', marginTop: 10 },
   discSub: { color: COLORS.textOnNavyMuted, fontSize: 12, marginTop: 2 },
   discTitle: { color: '#fff', fontSize: 16, fontWeight: '800' },
@@ -983,11 +1399,20 @@ const styles = StyleSheet.create({
   pillText: { color: COLORS.text, fontSize: 11, fontWeight: '700' },
   pillTextOff: { color: COLORS.textMuted },
   pills: { flexDirection: 'row', flexWrap: 'wrap', gap: 6, justifyContent: 'center', marginTop: 10 },
+  pctBtn: { alignItems: 'center', backgroundColor: COLORS.navySoft, borderRadius: 999, flex: 1, paddingVertical: 8 },
+  pctBtnText: { color: '#fff', fontSize: 12, fontWeight: '700' },
+  pctRow: { flexDirection: 'row', gap: 6, marginTop: 8 },
   price: { color: COLORS.mintDark, flexShrink: 1, fontSize: 16, fontWeight: '800' },
   priceRow: { alignItems: 'center', flexDirection: 'row', gap: 6 },
   reviewBtn: { backgroundColor: '#fff', marginTop: 14 },
+  reviewCard: { backgroundColor: COLORS.navy, borderRadius: 12, marginTop: 10, padding: 12 },
+  reviewHint: { color: COLORS.textMuted, fontSize: 12, lineHeight: 17, marginTop: 10 },
+  reviewLabel: { color: COLORS.textOnNavyMuted, flexShrink: 0, fontSize: 12 },
+  reviewRow: { flexDirection: 'row', justifyContent: 'space-between', paddingVertical: 5 },
+  reviewValue: { color: '#fff', flexShrink: 1, fontSize: 12, fontWeight: '700', marginLeft: 12, textAlign: 'right' },
   root: { backgroundColor: COLORS.bg, flex: 1 },
   rsiLabel: { color: COLORS.textMuted, fontSize: 12, fontWeight: '700' },
+  sentence: { color: COLORS.text, fontSize: 14, fontWeight: '700', lineHeight: 20, marginTop: 14 },
   rsiRow: { alignItems: 'center', borderTopColor: COLORS.border, borderTopWidth: 1, flexDirection: 'row', justifyContent: 'space-between', marginTop: 8, paddingTop: 8 },
   rsiValue: { color: COLORS.text, fontSize: 12, fontWeight: '700' },
   safetySkelLines: { flex: 1, gap: 8 },
@@ -1018,16 +1443,7 @@ const styles = StyleSheet.create({
   tfTextOn: { color: COLORS.text },
   tfs: { alignItems: 'center', flex: 1, flexDirection: 'row', justifyContent: 'center' },
   title: { color: COLORS.text, fontSize: 16, fontWeight: '800' },
-  toggleLabel: { color: '#fff', flex: 1, fontSize: 12, fontWeight: '600', lineHeight: 17 },
-  toggleRow: {
-    alignItems: 'center',
-    backgroundColor: COLORS.navySoft,
-    borderRadius: 12,
-    flexDirection: 'row',
-    gap: 8,
-    marginTop: 10,
-    padding: 10,
-  },
   typeSeg: { backgroundColor: COLORS.bgMuted, borderRadius: 999, flexDirection: 'row', padding: 2 },
   unlockLine: { color: COLORS.textOnNavyMuted, fontSize: 12, marginTop: 8 },
+  vaultWarn: { color: '#FCA5A5', fontSize: 12, fontWeight: '600', lineHeight: 17, marginTop: 10 },
 });

@@ -26,7 +26,6 @@ const INPUT_SCREENS = [
   'src/app/import.tsx',
   'src/app/send.tsx',
   'src/app/(tabs)/swap.tsx',
-  'src/app/vault/create.tsx',
   'src/app/settings.tsx',
   'src/app/unlock.tsx',
   'src/app/(tabs)/discover.tsx',

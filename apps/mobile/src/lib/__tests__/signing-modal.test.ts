@@ -20,7 +20,7 @@ function read(rel: string): string {
 const ONCHAIN_SCREENS = [
   'app/send.tsx',
   'app/(tabs)/swap.tsx',
-  'app/vault/create.tsx',
+  'app/token/[symbol].tsx',
   'app/vault/[id].tsx',
 ];
 
