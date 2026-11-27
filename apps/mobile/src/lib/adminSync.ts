@@ -524,15 +524,20 @@ export interface ModeChangeDecision {
 }
 
 /**
- * Pure decision for an admin mode flip, used by AppContext and unit-tested.
+ * Pure decision for a mode flip, used by AppContext and unit-tested.
  *
  * - Same mode as now: nothing to do.
  * - A transaction is in progress (signing modal open): DEFER. The mode
  *   is not applied and the chain is not switched; the caller stores the
  *   pending mode and applies it when the transaction finishes or is
  *   cancelled. The user is never switched mid-transaction.
- * - Otherwise: apply now, move to the pair/default chain of the new mode
- *   when the current chain does not fit, and report the notice to show.
+ * - Otherwise: apply now and move to the pair/default chain of the new
+ *   mode when the current chain does not fit.
+ *
+ * The switch is silent: notice is always null. The app never tells the
+ * user about the admin, the mode source, or how the switch works — the
+ * network simply changes (the picker and the Testnet/Mainnet badge show
+ * the new state).
  *
  * Safety guard: switching mode never deploys anything and never bypasses
  * the mainnet gate — on a mainnet chain with no vault, locks/swaps still
@@ -548,13 +553,7 @@ export function resolveModeChange(args: {
   if (args.nextMode === args.currentMode) return { deferred: false, chain: null, notice: null };
   if (args.transactionActive) return { deferred: true, chain: null, notice: null };
   const chain = pickChainForMode(args.chains, args.currentChain, args.nextMode);
-  const notice =
-    args.nextMode === 'mainnet'
-      ? 'Switched to Mainnet by admin'
-      : args.nextMode === 'testnet'
-        ? 'Switched to Testnet by admin'
-        : 'Admin cleared the network mode — showing all networks';
-  return { deferred: false, chain, notice };
+  return { deferred: false, chain, notice: null };
 }
 
 /** Merge helper for the API-down path: built-ins minus persisted

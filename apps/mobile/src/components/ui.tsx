@@ -383,7 +383,7 @@ export function NetworkSheet({ visible, onClose }: { visible: boolean; onClose: 
       options={chains.map((c) => ({
         key: c.id,
         label: c.name,
-        sub: `${c.testnet ? 'Testnet' : 'Mainnet'} · Native: ${c.nativeSymbol}${c.isDefault ? ' · Default' : ''}${c.vaultContract ? '' : ' · Vault not deployed'}${c.dexRouter ? ' · Router verified' : ''}${c.id === 'arc' ? ` · ${c.testnet ? 'Testnet' : 'Mainnet'} — set by admin` : ''}`,
+        sub: `${c.testnet ? 'Testnet' : 'Mainnet'} · Native: ${c.nativeSymbol}${c.isDefault ? ' · Default' : ''}${c.vaultContract ? '' : ' · Vault not deployed'}${c.dexRouter ? ' · Router verified' : ''}`,
         selected: chain.id === c.id,
       }))}
       onSelect={(id) => {
@@ -393,8 +393,8 @@ export function NetworkSheet({ visible, onClose }: { visible: boolean; onClose: 
       footer={
         <Text style={styles.sheetHint}>
           {networkMode === null
-            ? 'Arc is on Testnet until the admin sets Mainnet mode — the picker cannot choose Arc Mainnet. Showing all networks — the admin has not set a Testnet / Mainnet mode yet.'
-            : `Showing ${networkMode === 'testnet' ? 'Testnet' : 'Mainnet'} networks only — set by the admin. Arc follows the admin mode. The picker cannot override the admin mode.`}
+            ? 'Arc is on Testnet. Showing all networks.'
+            : `Showing ${networkMode === 'testnet' ? 'Testnet' : 'Mainnet'} networks only.`}
         </Text>
       }
     />

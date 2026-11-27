@@ -265,7 +265,7 @@ describe('network mode (admin testnet/mainnet switch)', () => {
     expect(d.deferred).toBe(false);
     expect(d.chain?.id).toBe('arc');
     expect(d.chain?.chainId).toBe(5042);
-    expect(d.notice).toBe('Switched to Mainnet by admin');
+    expect(d.notice).toBeNull();
   });
 
   it('admin flips back to Testnet: the wallet switches Arc Mainnet back to Arc testnet', () => {
@@ -276,7 +276,7 @@ describe('network mode (admin testnet/mainnet switch)', () => {
     expect(d.deferred).toBe(false);
     expect(d.chain?.id).toBe('arc');
     expect(d.chain?.chainId).toBe(5042002);
-    expect(d.notice).toBe('Switched to Testnet by admin');
+    expect(d.notice).toBeNull();
   });
 
   it('no switch is needed when the current chain already fits the new mode', () => {
@@ -286,7 +286,7 @@ describe('network mode (admin testnet/mainnet switch)', () => {
     });
     expect(d.deferred).toBe(false);
     expect(d.chain).toBeNull();
-    expect(d.notice).toBe('Switched to Mainnet by admin');
+    expect(d.notice).toBeNull();
   });
 
   it('a mode flip mid-transaction is deferred, not applied', () => {
@@ -299,7 +299,7 @@ describe('network mode (admin testnet/mainnet switch)', () => {
     expect(d.notice).toBeNull();
   });
 
-  it('clearing the mode back to null moves Arc Mainnet back to Arc testnet with a notice', () => {
+  it('clearing the mode back to null moves Arc Mainnet back to Arc testnet, silently', () => {
     const d = resolveModeChange({
       currentMode: 'mainnet', nextMode: null, transactionActive: false,
       chains: merged, currentChain: arcMainnet,
@@ -309,7 +309,7 @@ describe('network mode (admin testnet/mainnet switch)', () => {
     // returns the user to the single Arc entry, testnet variant.
     expect(d.chain?.id).toBe('arc');
     expect(d.chain?.chainId).toBe(5042002);
-    expect(d.notice).toMatch(/all networks/);
+    expect(d.notice).toBeNull();
   });
 
   it('same mode twice is a no-op', () => {

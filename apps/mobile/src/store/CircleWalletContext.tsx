@@ -178,9 +178,7 @@ export function CircleWalletProvider({ children }: { children: React.ReactNode }
       setBackendConfigured(cfg ? cfg.configured : null);
       if (cfg && !cfg.configured && probe.status === 'ready') {
         setStatus('not-configured');
-        setStatusMessage(
-          'Set up Circle in admin — the Circle backend reports it is not configured yet.',
-        );
+        setStatusMessage('Circle is not configured yet.');
       }
     } finally {
       setChecking(false);
@@ -285,7 +283,7 @@ export function CircleWalletProvider({ children }: { children: React.ReactNode }
         list[0] ??
         null;
       if (!created) {
-        throw new Error('Circle wallet challenge completed, but no wallet was returned. Check the admin Worker logs.');
+        throw new Error('Circle wallet challenge completed, but no wallet was returned. Please try again later.');
       }
       return created;
     } catch (e) {

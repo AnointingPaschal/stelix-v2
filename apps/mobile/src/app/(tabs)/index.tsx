@@ -62,7 +62,7 @@ interface ImportPreview {
 }
 
 export default function Home() {
-  const { address, chain, tokens, locks, refreshAll, refreshBalances, announcements, maintenance, signingBlocked, dismissAnnouncement, adminTokens, adminTokensSynced, networkMode, modeNotice, dismissModeNotice } = useApp();
+  const { address, chain, tokens, locks, refreshAll, refreshBalances, announcements, maintenance, signingBlocked, dismissAnnouncement, adminTokens, adminTokensSynced, networkMode } = useApp();
   const { width } = useWindowDimensions();
   const insets = useSafeAreaInsets();
   // 320–430px phones keep the compact v1 layout; 768px+ centres the
@@ -271,24 +271,6 @@ export default function Home() {
           <ChevronDown size={14} color={COLORS.textMuted} />
         </Pressable>
       </View>
-
-      {modeNotice ? (
-        <View style={styles.modeBanner}>
-          <View style={styles.announceHead}>
-            <Text style={styles.modeBannerText} numberOfLines={2}>{modeNotice}</Text>
-            <Pressable onPress={dismissModeNotice} hitSlop={8}>
-              <Text style={styles.announceDismiss}>✕</Text>
-            </Pressable>
-          </View>
-          <Text style={styles.modeBannerSub}>
-            {networkMode === 'mainnet'
-              ? 'Mainnet networks only. Locks and swaps still need a deployed vault and a verified router on each mainnet chain — the mode switch does not deploy anything.'
-              : networkMode === 'testnet'
-                ? 'Testnet networks only.'
-                : 'All networks are shown.'}
-          </Text>
-        </View>
-      ) : null}
 
       {signingBlocked && maintenance.scope === 'wallet' ? (
         <View style={styles.maintBanner}>
@@ -634,16 +616,6 @@ const styles = StyleSheet.create({
     marginBottom: 12,
     padding: 12,
   },
-  modeBanner: {
-    backgroundColor: '#ECFDF5',
-    borderColor: '#A7F3D0',
-    borderRadius: 12,
-    borderWidth: 1,
-    marginBottom: 12,
-    padding: 12,
-  },
-  modeBannerText: { color: COLORS.navy, flex: 1, fontSize: 14, fontWeight: '800' },
-  modeBannerSub: { color: COLORS.text, fontSize: 13, lineHeight: 18, marginTop: 4 },
   announceHead: { alignItems: 'center', flexDirection: 'row', justifyContent: 'space-between' },
   announceTitle: { color: COLORS.navy, flex: 1, fontSize: 14, fontWeight: '800' },
   announceDismiss: { color: COLORS.textMuted, fontSize: 14, fontWeight: '700', paddingHorizontal: 4 },

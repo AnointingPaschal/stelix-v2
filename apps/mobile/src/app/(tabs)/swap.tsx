@@ -611,8 +611,8 @@ export default function Swap() {
               label="Stelix auto-sell fee (locks only)"
               value={
                 adminFees.source === 'admin'
-                  ? `${adminFees.fees.autoSellFeePct}% (set by admin${adminFees.version !== null ? ` v${adminFees.version}` : ''}) — not charged on swaps`
-                  : 'No admin fee published — 0% (app default, locks only)'
+                  ? `${adminFees.fees.autoSellFeePct}% — not charged on swaps`
+                  : '0% (locks only)'
               }
             />
             <QuoteRow

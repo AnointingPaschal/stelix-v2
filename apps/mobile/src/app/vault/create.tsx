@@ -78,14 +78,10 @@ export default function CreateLock() {
     (chain.id === 'arc' || chain.id === 'arc-mainnet');
   const [circleBusy, setCircleBusy] = useState(false);
   const insets = useSafeAreaInsets();
-  // Live admin fees (source 'admin' when the admin has published fees,
-  // 'default' with an honest label when not) and feature flags.
+  // Live fee config and feature flags.
   const fees = adminFees.fees;
   const slippageBps = Math.round(fees.defaultSlippagePct * 100);
-  const feeLabel =
-    adminFees.source === 'admin'
-      ? `${fees.autoSellFeePct}% (set by admin${adminFees.version !== null ? ` v${adminFees.version}` : ''})`
-      : `${fees.autoSellFeePct}% — no admin fee published yet (app default)`;
+  const feeLabel = `${fees.autoSellFeePct}%`;
   const autoSellAllowed = appConfig?.flags.bullLockAutoSell !== false;
   const trailingAllowed = appConfig?.flags.trailingStop !== false;
   // Trailing-stop options offered by the admin, e.g. 'Off, 10%, 15%, 20%'.
@@ -206,11 +202,11 @@ export default function CreateLock() {
       // limit change in admin is explainable here.
       const usdValue = amt * entryPrice;
       if (entryPrice > 0 && usdValue < fees.minLockUsd) {
-        setFormError(`This lock would be ${fmtUsd(usdValue)} — below the minimum lock of ${fmtUsd(fees.minLockUsd)}${adminFees.source === 'admin' ? ' set by the admin' : ' (no admin fee published yet — app default)'}.`);
+        setFormError(`This lock would be ${fmtUsd(usdValue)} — below the minimum lock of ${fmtUsd(fees.minLockUsd)}.`);
         return;
       }
       if (entryPrice > 0 && usdValue > fees.maxLockUsd) {
-        setFormError(`This lock would be ${fmtUsd(usdValue)} — above the maximum lock of ${fmtUsd(fees.maxLockUsd)}${adminFees.source === 'admin' ? ' set by the admin' : ' (no admin fee published yet — app default)'}.`);
+        setFormError(`This lock would be ${fmtUsd(usdValue)} — above the maximum lock of ${fmtUsd(fees.maxLockUsd)}.`);
         return;
       }
     }
@@ -282,7 +278,7 @@ export default function CreateLock() {
         { label: 'Ladder', value: ladderOn ? ladder.map((s) => `${s.percent}% @ ${s.multiple}x`).join(' · ') : 'Off' },
         { label: 'Trailing stop', value: trailing ? `${trailing / 100}%` : 'Off' },
         { label: 'Break mode', value: breakMode === 'immutable' ? 'Immutable — no early break' : breakMode === 'penalty' ? `Penalty break — ${fees.defaultPenaltyPct}% after 24h cooling-off` : 'Guardian break — approval + 48h delay' },
-        { label: 'Slippage', value: `${fees.defaultSlippagePct}%${adminFees.source === 'admin' ? ' (set by admin)' : ' (app default — no admin fee published yet)'}` },
+        { label: 'Slippage', value: `${fees.defaultSlippagePct}%` },
         { label: 'Stelix fee', value: feeLabel },
         { label: 'Network fee', value: 'Estimated at signing' },
       ],
@@ -476,7 +472,7 @@ export default function CreateLock() {
               <Btn label="Unlock to wallet (manual)" variant={!autoSell ? 'primary' : 'ghost'} onPress={() => setAutoSell(false)} style={styles.wideBtn} />
             </View>
             {!autoSellAllowed ? (
-              <Text style={styles.hint}>Auto-sell is switched off by the admin — target hits unlock to your wallet instead.</Text>
+              <Text style={styles.hint}>Auto-sell is off — target hits unlock to your wallet instead.</Text>
             ) : null}
             <SectionTitle title="Profit ladder" />
             <View style={styles.pills}>
@@ -513,7 +509,7 @@ export default function CreateLock() {
             <Text style={styles.hint}>
               After any target is hit, a fall of the chosen % from the peak auto-sells the remainder {exitLabel}. Slippage
               default {fees.defaultSlippagePct}% · minimum receive shown at review.
-              {!trailingAllowed ? ' Trailing stop is switched off by the admin.' : ''}
+              {!trailingAllowed ? ' Trailing stop is off.' : ''}
             </Text>
             <SectionTitle title="Break mode" />
             <View style={styles.pills}>
@@ -521,7 +517,7 @@ export default function CreateLock() {
               <Btn label={`Penalty break (${fees.defaultPenaltyPct}%, 24h cooling-off)`} variant={breakMode === 'penalty' ? 'primary' : 'ghost'} onPress={() => setBreakMode('penalty')} style={styles.wideBtn} />
               <Btn label="Guardian break (Phase 2)" variant={breakMode === 'guardian' ? 'primary' : 'ghost'} onPress={() => setBreakMode('guardian')} style={styles.wideBtn} />
             </View>
-            <Text style={styles.hint}>No penalty is ever charged when a price target or the maturity date triggers the exit. Penalty default is {fees.defaultPenaltyPct}%{adminFees.source === 'admin' ? ' (set by admin)' : ' (app default — no admin fee published yet)'}.</Text>
+            <Text style={styles.hint}>No penalty is ever charged when a price target or the maturity date triggers the exit. Penalty default is {fees.defaultPenaltyPct}%.</Text>
           </>
         )}
 
@@ -546,7 +542,7 @@ export default function CreateLock() {
               <ReviewRow label="Ladder" value={ladderOn ? ladder.map((s) => `${s.percent}% @ ${s.multiple}x`).join(' · ') : 'Off'} />
               <ReviewRow label="Trailing stop" value={trailing ? `${trailing / 100}%` : 'Off'} />
               <ReviewRow label="Break mode" value={breakMode === 'immutable' ? 'Immutable — no early break' : breakMode === 'penalty' ? `Penalty break — ${fees.defaultPenaltyPct}% after 24h cooling-off` : 'Guardian break — approval + 48h delay'} />
-              <ReviewRow label="Slippage" value={`${fees.defaultSlippagePct}%${adminFees.source === 'admin' ? ' (set by admin)' : ' (app default — no admin fee published yet)'}`} />
+              <ReviewRow label="Slippage" value={`${fees.defaultSlippagePct}%`} />
               <ReviewRow label="Minimum receive" value={targetPrice ? fmtUsd(minReceiveUsd) : '—'} />
               <ReviewRow label="Stelix fee" value={feeLabel} />
               <ReviewRow label="Network fee" value="Shown by the wallet before signing" />

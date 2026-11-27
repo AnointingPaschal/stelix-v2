@@ -152,10 +152,10 @@ export default function CircleWalletScreen() {
           </View>
           <Text style={styles.status}>{circle.statusMessage}</Text>
           {circle.backendConfigured === false ? (
-            <Text style={styles.warn}>The admin backend reports Circle is not configured yet.</Text>
+            <Text style={styles.warn}>Circle is not configured yet.</Text>
           ) : null}
           {circle.backendConfigured === true ? (
-            <Text style={styles.ok}>The admin backend reports Circle is configured.</Text>
+            <Text style={styles.ok}>Circle is configured.</Text>
           ) : null}
         </Card>
 

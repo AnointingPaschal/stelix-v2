@@ -139,16 +139,12 @@ interface AppState {
   adminLastSyncAt: number | null;
   /** Monotonic sync version from the server, or null before first sync. */
   adminSyncVersion: number | null;
-  /** Admin's global network mode: 'testnet' | 'mainnet' | null (never set
-   *  = all networks). The admin is the source of truth — the wallet's
-   *  network picker cannot override it. */
+  /** Global network mode from the server: 'testnet' | 'mainnet' | null
+   *  (never set = all networks). The server is the source of truth —
+   *  the wallet's network picker cannot override it. */
   networkMode: NetworkMode;
-  /** Notice shown after an admin mode flip ("Switched to Mainnet by
-   *  admin"), or null. Dismissible. */
-  modeNotice: string | null;
-  dismissModeNotice: () => void;
   /** True while a signing modal is open (a transaction flow is in
-   *  progress). An admin mode flip during this time is deferred until
+   *  progress). A mode flip during this time is deferred until
    *  the flow finishes or is cancelled — never mid-transaction. */
   transactionActive: boolean;
   setTransactionActive: (v: boolean) => void;
@@ -211,7 +207,6 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
   const [adminSyncVersion, setAdminSyncVersion] = useState<number | null>(null);
   const [dismissedIds, setDismissedIds] = useState<number[]>([]);
   const [networkMode, setNetworkMode] = useState<NetworkMode>(null);
-  const [modeNotice, setModeNotice] = useState<string | null>(null);
   const [transactionActive, setTransactionActiveState] = useState(false);
   const chainRef = useRef(chain);
   useEffect(() => {
@@ -283,7 +278,6 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
       if (effectiveMode !== networkModeRef.current) {
         networkModeRef.current = effectiveMode;
         setNetworkMode(effectiveMode);
-        if (decision.notice) setModeNotice(decision.notice);
       }
       if (decision.chain) {
         setChainState(decision.chain);
@@ -351,8 +345,6 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
       pendingModeRef.current = null;
     }
   }, [transactionActive, refreshAdmin]);
-
-  const dismissModeNotice = useCallback(() => setModeNotice(null), []);
 
   // Live polling while the app is open: every ADMIN_POLL_INTERVAL_MS,
   // skipped while backgrounded. Foregrounding triggers an immediate sync
@@ -637,7 +629,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
       adminFees, announcements: visibleAnnouncements, appConfig, adminTokens, adminTokensSynced,
       maintenance, signingBlocked, maintenanceBlocksApp: maintenanceBlocksAppValue,
       adminLastSyncAt, adminSyncVersion, dismissAnnouncement,
-      networkMode, modeNotice, dismissModeNotice, transactionActive, setTransactionActive,
+      networkMode, transactionActive, setTransactionActive,
       tokens, locks, history, allHistory, notifications, settings,
       discipline,
       loading, hydrated, error, balancesError, historyError, vaultNote, showDust,
@@ -648,7 +640,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     [onboarded, unlocked, address, solanaAddress, chainAddress, chain, availableChains, refreshChains, refreshAdmin,
      adminFees, visibleAnnouncements, appConfig, adminTokens, adminTokensSynced,
      maintenance, signingBlocked, maintenanceBlocksAppValue, adminLastSyncAt, adminSyncVersion, dismissAnnouncement,
-     networkMode, modeNotice, dismissModeNotice, transactionActive, setTransactionActive,
+     networkMode, transactionActive, setTransactionActive,
      tokens, locks, history, allHistory, notifications, settings,
      discipline, loading, hydrated, error, balancesError, historyError, vaultNote, showDust,
      setChain, addLock, updateLock, addTx, markNotificationsRead, updateSettings,
