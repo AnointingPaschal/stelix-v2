@@ -4,7 +4,7 @@ import source from '../contracts/StelixVault.sol?raw'
 import { SOLC_PINNED } from '../lib/types'
 import { ARC_TESTNET, arcNetworkFor } from '../lib/arcNetworks'
 import { mainnetConfirmPhrase, testnetChainIdFor, validateDeployParams } from '../lib/deployParams'
-import { api, type AuditGate, type CompileResult, type MultisigRow } from '../lib/api'
+import { api, type AuditGate, type CompileResult, type DeployPresetRow, type MultisigRow } from '../lib/api'
 import type { Chain } from '../lib/types'
 import { LiveNote, PageHeader, SectionTitle } from '../components/ui'
 
@@ -40,6 +40,8 @@ export default function ContractStudio() {
   const [smokeAttested, setSmokeAttested] = useState(false)
   const [smokeNote, setSmokeNote] = useState('')
   const [deploys, setDeploys] = useState<Deployment[]>([])
+  const [presets, setPresets] = useState<DeployPresetRow[]>([])
+  const [presetsLoaded, setPresetsLoaded] = useState(false)
   const [multisigs, setMultisigs] = useState<MultisigRow[]>([])
   const [gate, setGate] = useState<AuditGate | null>(null)
   const [prepareCmd, setPrepareCmd] = useState('')
@@ -93,6 +95,14 @@ export default function ContractStudio() {
     return ids.map((id) => ({ id, name: fromApi.get(id) ?? FAMILY_NAMES[id] ?? id }))
   }, [chains])
 
+  const presetFor = (chainId: string, e: 'testnet' | 'mainnet') =>
+    presets.find((p) => p.chain_id === chainId && p.env === e) ?? null
+  const paramsFromPreset = (p: DeployPresetRow) => ({
+    owner: p.owner, keeper: p.keeper, router: p.router, priceFeed: p.price_feed,
+    penaltyRecipient: p.penalty_recipient, feeRecipient: p.fee_recipient,
+    autoSellFeeBps: String(p.auto_sell_fee_bps),
+  })
+
   const load = () => {
     api.getChains().then((c) => {
       setChains(c)
@@ -100,10 +110,21 @@ export default function ContractStudio() {
       if (c.length > 0 && !fams.has(chainFamily)) setChainFamily('arc')
     }).catch(() => undefined)
     api.getDeployments().then((d) => setDeploys(d.deployments)).catch(() => undefined)
+    api.getDeployPresets().then((p) => { setPresets(p); setPresetsLoaded(true) }).catch(() => setPresetsLoaded(true))
     api.getMultisigs().then(setMultisigs).catch(() => undefined)
     api.getAuditGate().then(setGate).catch(() => undefined)
   }
   useEffect(load, [])
+
+  // Fill the 7 fields from the saved preset for the selected network,
+  // once presets have loaded. A preset is per (chain, env), so testnet
+  // values are never carried to mainnet.
+  useEffect(() => {
+    if (!presetsLoaded) return
+    const p = presetFor(effectiveChainId, env)
+    if (p) setParams(paramsFromPreset(p))
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [presetsLoaded])
 
   // One universal multisig for all EVM chains (2026-11-27): a deployed
   // (on-chain verified) Safe is the vault Owner on EVERY EVM chain, so
@@ -122,7 +143,8 @@ export default function ContractStudio() {
   const mainnetReady = auditGatePass && (verifiedTestnet || testnetPassed) && smokeAttested
 
   /** Switching chain or Arc network clears the 7 constructor fields and
-   *  every confirmation: testnet values are never silently carried to
+   *  every confirmation, then fills them from the saved preset for that
+   *  network if one exists: testnet values are never silently carried to
    *  mainnet, and each network must be re-confirmed on its own. */
   const selectNetwork = (family: string, nextArcEnv?: 'testnet' | 'mainnet') => {
     const nextEnv = family === 'arc' ? (nextArcEnv ?? arcEnv) : 'testnet'
@@ -130,7 +152,10 @@ export default function ContractStudio() {
     setChainFamily(family)
     if (family === 'arc' && nextArcEnv) setArcEnv(nextArcEnv)
     if (changed) {
-      setParams(EMPTY_PARAMS)
+      const nextChainId = family === 'arc' ? arcNetworkFor(nextEnv).id : family
+      const nextEnv2: 'testnet' | 'mainnet' = family === 'arc' && nextEnv === 'testnet' ? 'testnet' : 'mainnet'
+      const p = presetFor(nextChainId, nextEnv2)
+      setParams(p ? paramsFromPreset(p) : EMPTY_PARAMS)
       setConfirmText('')
       setTestnetPassed(false)
       setSmokeAttested(false)
@@ -139,7 +164,9 @@ export default function ContractStudio() {
       setTxHash('')
       setError('')
       const label = family === 'arc' ? arcNetworkFor(nextEnv).name : (FAMILY_NAMES[family] ?? family)
-      setNotice(`Switched to ${label}. Constructor parameters cleared — re-enter and confirm all 7 for this network; testnet values are never carried to mainnet.`)
+      setNotice(p
+        ? `Switched to ${label}. Constructor parameters filled from your saved preset for ${nextChainId} (${nextEnv2}).`
+        : `Switched to ${label}. Constructor parameters cleared — re-enter and confirm all 7 for this network; testnet values are never carried to mainnet.`)
     }
   }
 
@@ -296,6 +323,11 @@ export default function ContractStudio() {
               <p className="field-hint">Mainnet only — the registry holds no verified testnet for {networkName}, so no testnet is offered here. Add a testnet chain in Chain Manager to enable a testnet flow for it.</p>
             )}
             <label>Constructor parameters — StelixVault(owner, keeper, router, priceFeed, penaltyRecipient, feeRecipient, autoSellFeeBps)</label>
+            {presetFor(effectiveChainId, env) ? (
+              <p className="field-hint">Filled from your saved preset for {effectiveChainId} ({env}){presetFor(effectiveChainId, env)?.label ? ` — ${presetFor(effectiveChainId, env)?.label}` : ''}. <a href="/deploy-presets">Edit the preset</a> instead of re-typing here.</p>
+            ) : (
+              <p className="field-hint">No saved preset for {effectiveChainId} ({env}) yet — <a href="/deploy-presets">save one in Deploy Presets</a> and it will fill in here next time.</p>
+            )}
             <input placeholder="Owner (multisig recommended)" value={params.owner} onChange={(e) => setParams({ ...params, owner: e.target.value })} />
             {deployedMultisigs.length > 0 ? (
               <>
@@ -347,7 +379,7 @@ export default function ContractStudio() {
             {env === 'mainnet' && <p className="field-hint">Mainnet registration is in the Mainnet gate card below — it stays gated and needs the typed confirmation naming {networkName}.</p>}
           </div>
           <div className="card">
-            <SectionTitle icon={<ShieldAlert />}>Mainnet gate — {networkName}</SectionTitle>
+            <SectionTitle icon={<ShieldAlert />}>Mainnet gate</SectionTitle>
             <p className="muted">
               Audit gate: {gate === null ? 'loading…' : auditGatePass ? 'passed (passing automated audit with zero open critical/high findings, or a recorded passing independent audit)' : 'NOT passed — see Contract Audit.'}
               {verifiedTestnet ? ' Verified testnet deployment on this chain: yes.' : ' Verified testnet deployment on this chain: not yet.'}

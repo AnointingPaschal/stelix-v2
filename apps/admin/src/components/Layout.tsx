@@ -2,7 +2,7 @@ import { useEffect, useState } from 'react'
 import { NavLink, Outlet, useLocation, useNavigate } from 'react-router-dom'
 import {
   Activity, ChevronsLeft, ChevronsRight, Coins, LayoutDashboard, Link2, LogOut,
-  Megaphone, Menu, Percent, Code2, Rocket, ScrollText, Search, Settings, ShieldCheck, Users, Wallet, Wrench, X,
+  Megaphone, Menu, Percent, Code2, Rocket, ScrollText, Search, Settings, Settings2, ShieldCheck, Users, Wallet, Wrench, X,
 } from 'lucide-react'
 import type { LucideIcon } from 'lucide-react'
 import { api } from '../lib/api'
@@ -10,6 +10,7 @@ import { api } from '../lib/api'
 const links: { to: string; label: string; icon: LucideIcon }[] = [
   { to: '/dashboard', label: 'Dashboard', icon: LayoutDashboard },
   { to: '/studio', label: 'Contract Studio', icon: Code2 },
+  { to: '/deploy-presets', label: 'Deploy Presets', icon: Settings2 },
   { to: '/multisig', label: 'Multisig Creator', icon: Users },
   { to: '/launchpad', label: 'Launchpad Manager', icon: Rocket },
   { to: '/chains', label: 'Chain Manager', icon: Link2 },

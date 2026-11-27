@@ -253,6 +253,13 @@ const putJson = async <T,>(path: string, data: unknown): Promise<T> => {
   return r.json() as Promise<T>
 }
 
+export interface DeployPresetRow {
+  id: number; chain_id: string; env: 'testnet' | 'mainnet'; label: string
+  owner: string; keeper: string; router: string; price_feed: string
+  penalty_recipient: string; fee_recipient: string; auto_sell_fee_bps: number
+  updated_by: string; updated_at: string
+}
+
 export const api = {
   async getDashboard(): Promise<DashboardData> {
     return live<DashboardData>('/api/admin/dashboard')
@@ -429,6 +436,23 @@ export const api = {
   },
   async getDeployments(): Promise<{ deployments: { id: number; chain_id: string; address: string; tx_hash: string | null; compiler_version: string; verification_status: string; env: string; created_at: string }[] }> {
     return live('/api/admin/deployments')
+  },
+  /** Deploy presets — saved constructor values, one per (chain, env),
+   *  pulled into Contract Studio so the 7 fields are never re-typed. */
+  async getDeployPresets(): Promise<DeployPresetRow[]> {
+    const d = await live<{ presets: DeployPresetRow[] }>('/api/admin/deploy-presets')
+    return d.presets
+  },
+  async saveDeployPreset(data: { chainId: string; env: 'testnet' | 'mainnet'; label?: string; owner?: string; keeper?: string; router?: string; priceFeed?: string; penaltyRecipient?: string; feeRecipient?: string; autoSellFeeBps?: number }): Promise<{ ok: boolean }> {
+    return post('/api/admin/deploy-presets', data)
+  },
+  async deleteDeployPreset(chainId: string, env: 'testnet' | 'mainnet'): Promise<{ ok: boolean }> {
+    const r = await fetch(`/api/admin/deploy-presets?chainId=${encodeURIComponent(chainId)}&env=${env}`, { method: 'DELETE', credentials: 'same-origin' })
+    if (!r.ok) {
+      const body = (await r.json().catch(() => ({}))) as { error?: string }
+      throw new Error(body.error ?? `Delete failed: ${r.status}`)
+    }
+    return r.json() as Promise<{ ok: boolean }>
   },
   async attestSmoke(chainId: string, note: string): Promise<{ ok: boolean }> {
     return post('/api/admin/deploy/gate/attest', { chainId, kind: 'smoke', note })

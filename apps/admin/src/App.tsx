@@ -4,6 +4,7 @@ import Login from './pages/Login'
 import Launchpad from './pages/Launchpad'
 import Dashboard from './pages/Dashboard'
 import ContractStudio from './pages/ContractStudio'
+import DeployPresets from './pages/DeployPresets'
 import Multisig from './pages/Multisig'
 import Chains from './pages/Chains'
 import Tokens from './pages/Tokens'
@@ -22,6 +23,7 @@ export default function App() {
     <Route element={<Layout />}>
       <Route path="/dashboard" element={<Dashboard />} />
       <Route path="/studio" element={<ContractStudio />} />
+      <Route path="/deploy-presets" element={<DeployPresets />} />
       <Route path="/multisig" element={<Multisig />} />
       <Route path="/launchpad" element={<Launchpad />} />
       <Route path="/chains" element={<Chains />} />

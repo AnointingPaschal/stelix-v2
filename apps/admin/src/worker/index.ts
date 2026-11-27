@@ -63,6 +63,7 @@ import { runStaticAudit, sha256Hex, type AuditFinding } from '../lib/auditCheck'
 import { validateFeePayload, type FeeConfig } from '../lib/fees'
 import { buildCircleChallengeRequest, CIRCLE_API_BASE, isValidCircleAppId, maskAppId, parseCircleError, validateCircleChallengeInput } from '../lib/circle'
 import { isAddress, isTxHash, mainnetConfirmPhrase, testnetChainIdFor, validateDeployParams } from '../lib/deployParams'
+import { validateDeployPreset } from '../lib/deployPresets'
 import { validateMultisigInput } from '../lib/multisig'
 import { validateChainInput, type ChainInput } from '../lib/chainValidation'
 import artifact from '../contracts/StelixVault.artifact.json'
@@ -1805,6 +1806,40 @@ export default {
     if (path === '/api/admin/deployments' && req.method === 'GET') {
       const { results } = await env.DB.prepare('SELECT * FROM deployments ORDER BY created_at DESC, id DESC LIMIT 50').all()
       return json({ deployments: results ?? [] })
+    }
+    // ---- Deploy Presets (migration 0012) ----
+    // Saved constructor values, one per (chain_id, env), filled in from
+    // the Deploy Presets page and pulled into Contract Studio. Partial
+    // presets are allowed (router / priceFeed blank until the V3
+    // adapters are deployed); any non-blank address must be valid.
+    if (path === '/api/admin/deploy-presets' && req.method === 'GET') {
+      const { results } = await env.DB.prepare('SELECT * FROM deploy_presets ORDER BY chain_id, env').all()
+      return json({ presets: results ?? [] })
+    }
+    if (path === '/api/admin/deploy-presets' && req.method === 'POST') {
+      const body = await readJson(req)
+      const { preset, errors } = validateDeployPreset(body)
+      if (!preset) return json({ error: 'invalid deploy preset', details: errors }, 400)
+      await env.DB.prepare(
+        `INSERT INTO deploy_presets (chain_id, env, label, owner, keeper, router, price_feed, penalty_recipient, fee_recipient, auto_sell_fee_bps, updated_by, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
+         ON CONFLICT(chain_id, env) DO UPDATE SET
+           label = excluded.label, owner = excluded.owner, keeper = excluded.keeper,
+           router = excluded.router, price_feed = excluded.price_feed,
+           penalty_recipient = excluded.penalty_recipient, fee_recipient = excluded.fee_recipient,
+           auto_sell_fee_bps = excluded.auto_sell_fee_bps, updated_by = excluded.updated_by,
+           updated_at = datetime('now')`,
+      ).bind(preset.chainId, preset.env, preset.label, preset.owner, preset.keeper, preset.router, preset.priceFeed, preset.penaltyRecipient, preset.feeRecipient, preset.autoSellFeeBps, authed).run()
+      await audit(env, authed, 'studio.preset_save', `Deploy preset saved for ${preset.chainId} (${preset.env})`)
+      return json({ ok: true, preset }, 201)
+    }
+    if (path === '/api/admin/deploy-presets' && req.method === 'DELETE') {
+      const chainId = (url.searchParams.get('chainId') ?? '').trim()
+      const envParam = url.searchParams.get('env') ?? ''
+      if (!chainId || (envParam !== 'testnet' && envParam !== 'mainnet')) return json({ error: 'chainId and env (testnet/mainnet) are required' }, 400)
+      await env.DB.prepare('DELETE FROM deploy_presets WHERE chain_id = ? AND env = ?').bind(chainId, envParam).run()
+      await audit(env, authed, 'studio.preset_delete', `Deploy preset deleted for ${chainId} (${envParam})`)
+      return json({ ok: true })
     }
     if (path === '/api/admin/deploy/gate/attest' && req.method === 'POST') {
       const body = await readJson(req)
