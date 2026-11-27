@@ -3,6 +3,7 @@ import { Download, KeyRound, ShieldCheck, Users } from 'lucide-react'
 import { api } from '../lib/api'
 import type { AuditEntry } from '../lib/types'
 import { LiveNote, PageHeader, SectionTitle } from '../components/ui'
+import { AlertModal } from '../components/AlertModal'
 
 export default function Audit() {
   const [rows, setRows] = useState<AuditEntry[]>([])
@@ -34,7 +35,7 @@ export default function Audit() {
         pill={<LiveNote />}
       />
       {error && <p className="muted">{error}</p>}
-      {notice && <div className="notice ok"><ShieldCheck /><span>{notice}</span></div>}
+      <AlertModal kind="success" message={notice} onClose={() => setNotice('')} />
       <div className="card">
         <SectionTitle icon={<ShieldCheck />}>Audit log</SectionTitle>
         {rows.length === 0 ? (

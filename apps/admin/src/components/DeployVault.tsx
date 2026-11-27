@@ -23,6 +23,7 @@ import { BadgeCheck, ShieldAlert, Wallet } from 'lucide-react'
 import vaultArtifact from '../contracts/StelixVault.artifact.json'
 import { validateDeployParams } from '../lib/deployParams'
 import type { DeployNetwork } from '../lib/evmNetworks'
+import { AlertModal } from './AlertModal'
 
 declare global {
   interface Window { ethereum?: unknown }
@@ -175,7 +176,7 @@ export default function DeployVault({ chainId, network, explorerUrl, params, loc
       {network.env === 'mainnet' && !locked && (
         <div className="notice alert"><ShieldAlert /><span><b>Mainnet is real money.</b> The gate passed and the typed confirmation matches, so this deploy is unlocked. Check the 7 constructor values above one more time before you sign — the vault is non-upgradeable, and a wrong owner, keeper, router or price feed cannot be fixed without redeploying.</span></div>
       )}
-      {error && <div className="notice alert"><ShieldAlert /><span>{error}</span></div>}
+      <AlertModal kind="error" message={error} onClose={() => setError('')} />
       <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
         <button className="btn ghost" onClick={connect} disabled={busy}><Wallet />{wallet ? `Connected: ${wallet.slice(0, 6)}…${wallet.slice(-4)}` : 'Connect wallet'}</button>
         <button className="btn mint" onClick={deploy} disabled={busy || locked || !wallet}>{busy ? 'Deploying…' : 'Deploy vault from admin'}</button>

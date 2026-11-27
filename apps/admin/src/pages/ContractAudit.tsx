@@ -6,6 +6,7 @@ import source from '../contracts/StelixVault.sol?raw'
 import { api, type AuditGate } from '../lib/api'
 import type { AuditFinding, AuditRun, ExternalAudit } from '../lib/types'
 import { LiveNote, PageHeader, SectionTitle } from '../components/ui'
+import { AlertModal } from '../components/AlertModal'
 
 const sevBadge = (s: string) =>
   s === 'critical' ? 'b-red' : s === 'high' ? 'b-red' : s === 'medium' ? 'b-amber' : s === 'low' ? 'b-blue' : 'b-grey'
@@ -25,6 +26,7 @@ export default function ContractAudit() {
   const [gate, setGate] = useState<AuditGate | null>(null)
   const [error, setError] = useState('')
   const [notice, setNotice] = useState('')
+  const [confirmDeleteId, setConfirmDeleteId] = useState<number | null>(null)
   const [busy, setBusy] = useState(false)
   const [ext, setExt] = useState({ auditor: '', auditDate: '', scope: '', verdict: 'pass', reportUrl: '', reportRef: '' })
 
@@ -75,7 +77,6 @@ export default function ContractAudit() {
   }
 
   const deleteExternal = async (id: number) => {
-    if (!window.confirm('Delete this independent audit record?')) return
     try {
       await api.deleteExternalAudit(id)
       setNotice('Independent audit record deleted.')
@@ -102,8 +103,15 @@ export default function ContractAudit() {
         <ShieldAlert />
         <span><b>Automated audit is NOT a substitute for an independent human audit.</b> The checker below finds known dangerous patterns in the exact source, but it cannot reason about economic attacks, oracle design or business logic the way a human auditor can. Mainnet still needs a real independent audit before real user funds are at risk.</span>
       </div>
-      {error && <div className="notice alert"><AlertTriangle /><span>{error}</span></div>}
-      {notice && <div className="notice ok"><CheckCircle2 /><span>{notice}</span></div>}
+      <AlertModal kind="error" message={error} onClose={() => setError('')} />
+      <AlertModal kind="success" message={notice} onClose={() => setNotice('')} />
+      <AlertModal
+        kind="confirm"
+        message={confirmDeleteId !== null ? 'Delete this independent audit record?' : null}
+        confirmLabel="Delete"
+        onConfirm={() => { if (confirmDeleteId !== null) void deleteExternal(confirmDeleteId) }}
+        onClose={() => setConfirmDeleteId(null)}
+      />
 
       <div className="card">
         <SectionTitle icon={<ShieldCheck />}>
@@ -196,7 +204,7 @@ export default function ContractAudit() {
                     {a.report_ref && <span> · Ref: {a.report_ref}</span>}
                   </p>
                 </div>
-                <div className="row-end"><button className="btn ghost" onClick={() => deleteExternal(a.id)}>Delete</button></div>
+                <div className="row-end"><button className="btn ghost" onClick={() => setConfirmDeleteId(a.id)}>Delete</button></div>
               </div>
             ))
           )}

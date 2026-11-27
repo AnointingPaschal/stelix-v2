@@ -3,6 +3,7 @@ import { BadgeCheck, Coins, Hourglass, Rocket, Users, Wallet, X } from 'lucide-r
 import { api, type LaunchesFeed } from '../lib/api'
 import type { LaunchContributionRow, LaunchRow } from '../lib/types'
 import { LiveNote, PageHeader, SectionTitle, StatCard } from '../components/ui'
+import { AlertModal } from '../components/AlertModal'
 
 const microToUsd = (micro: string): number => Number(micro) / 1_000_000
 const fmtUsd = (n: number): string => `$${n.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
@@ -127,8 +128,8 @@ export default function Launchpad() {
         sub="Free fixed-price token sales on Arc testnet — no Stelix launch fee, gas only. Launches are recorded here only after they exist on-chain; approval lists them in the mobile app. Liquidity lock is pending Arc DEX confirmation until a liquidity manager is set."
         pill={<LiveNote />}
       />
-      {error && <div className="notice alert"><X /><span>{error}</span></div>}
-      {notice && <div className="notice ok"><BadgeCheck /><span>{notice}</span></div>}
+      <AlertModal kind="error" message={error} onClose={() => setError('')} />
+      <AlertModal kind="success" message={notice} onClose={() => setNotice('')} />
 
       <div className="grid stats">
         <StatCard icon={<Rocket />} label="Launches recorded" value={String(launches.length)} />

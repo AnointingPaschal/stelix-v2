@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react'
 import { CheckCircle2, KeyRound, RefreshCw, ShieldCheck, Wallet, Wrench } from 'lucide-react'
 import { api, type CircleConfigStatus } from '../lib/api'
 import { LiveNote, PageHeader, SectionTitle } from '../components/ui'
+import { AlertModal } from '../components/AlertModal'
 
 function StatusRow({ label, ok, detail }: { label: string; ok: boolean | null; detail: string }) {
   const text = ok === null ? 'Not checked' : ok ? 'Yes' : 'No'
@@ -56,8 +57,8 @@ export default function Circle() {
         sub="Circle User-Controlled Wallets on Arc — the optional Arc wallet next to self-custody. Non-custodial MPC: the backend creates a challenge, the mobile SDK executes it, and the user approves with their PIN. The backend never holds a user key share and never signs for a user."
         pill={<LiveNote />}
       />
-      {error && <div className="notice alert"><ShieldCheck /><span>{error}</span></div>}
-      {notice && <div className="notice ok"><CheckCircle2 /><span>{notice}</span></div>}
+      <AlertModal kind="error" message={error} onClose={() => setError('')} />
+      <AlertModal kind="success" message={notice} onClose={() => setNotice('')} />
 
       <div className="grid grid2">
         <div className="card">

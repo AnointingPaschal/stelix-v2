@@ -3,6 +3,7 @@ import { BadgeCheck, Coins, Gauge, Percent, Search, Star, Timer, Trash2, X } fro
 import { api } from '../lib/api'
 import type { Chain } from '../lib/types'
 import { LiveNote, PageHeader, SectionTitle, StatCard } from '../components/ui'
+import { AlertModal } from '../components/AlertModal'
 
 type RegistryToken = { id: number; symbol: string; chain: string; address: string; decimals: number; verified: boolean; featured: boolean }
 type SearchHit = { symbol: string; name: string; chain: string; address: string; priceUsd: number | null; dex: string; pairUrl: string | null; source: string }
@@ -12,6 +13,7 @@ export default function Tokens() {
   const [chains, setChains] = useState<Chain[]>([])
   const [error, setError] = useState('')
   const [notice, setNotice] = useState('')
+  const [confirmRemove, setConfirmRemove] = useState<RegistryToken | null>(null)
   const [q, setQ] = useState('')
   const [hits, setHits] = useState<SearchHit[]>([])
   const [searching, setSearching] = useState(false)
@@ -48,7 +50,6 @@ export default function Tokens() {
   }
 
   const removeToken = async (t: RegistryToken) => {
-    if (!window.confirm(`Remove ${t.symbol} (${t.chain}) from the registry?`)) return
     setError('')
     try {
       await api.removeToken(t.id)
@@ -65,8 +66,15 @@ export default function Tokens() {
         sub="Featured / verified token lists per chain, default slippage and impact limits, router addresses, token safety overrides. User-imported tokens are unaffected. Live prices come from DexScreener."
         pill={<LiveNote />}
       />
-      {error && <div className="notice alert"><Search /><span>{error}</span></div>}
-      {notice && <div className="notice ok"><BadgeCheck /><span>{notice}</span></div>}
+      <AlertModal kind="error" message={error} onClose={() => setError('')} />
+      <AlertModal kind="success" message={notice} onClose={() => setNotice('')} />
+      <AlertModal
+        kind="confirm"
+        message={confirmRemove ? `Remove ${confirmRemove.symbol} (${confirmRemove.chain}) from the registry?` : null}
+        confirmLabel="Remove"
+        onConfirm={() => { if (confirmRemove) void removeToken(confirmRemove) }}
+        onClose={() => setConfirmRemove(null)}
+      />
       <div className="grid stats">
         <StatCard icon={<Percent />} label="Default slippage" value="1.5%" />
         <StatCard icon={<Gauge />} label="Max price impact" value="5%" />
@@ -135,7 +143,7 @@ export default function Tokens() {
                     <td data-label="Decimals">{t.decimals}</td>
                     <td data-label="Verified">{t.verified ? <span className="badge b-green">Yes</span> : <span className="badge b-grey">No</span>}</td>
                     <td data-label="Featured">{t.featured ? <span className="badge b-mint"><Star />Yes</span> : <span className="badge b-grey">No</span>}</td>
-                    <td data-label="Remove"><button className="btn ghost" aria-label={`Remove ${t.symbol}`} onClick={() => removeToken(t)}><Trash2 /></button></td>
+                    <td data-label="Remove"><button className="btn ghost" aria-label={`Remove ${t.symbol}`} onClick={() => setConfirmRemove(t)}><Trash2 /></button></td>
                   </tr>
                 ))}
               </tbody>

@@ -10,6 +10,7 @@ import DeployAdapters from '../components/DeployAdapters'
 import DeployVault, { type VaultParams } from '../components/DeployVault'
 import type { Chain } from '../lib/types'
 import { LiveNote, PageHeader, SectionTitle } from '../components/ui'
+import { AlertModal } from '../components/AlertModal'
 
 type Deployment = { id: number; chain_id: string; address: string; tx_hash: string | null; compiler_version: string; verification_status: string; env: string; created_at: string }
 
@@ -350,8 +351,8 @@ export default function ContractStudio() {
         sub={`Write / edit, compile, test-deploy and mainnet-deploy StelixVault. Pinned compiler: solc ${SOLC_PINNED}. The admin never holds a deployer key: testnet deploys are signed by your connected wallet in the browser (or broadcast by the Foundry flow), and the Worker only registers an address after verifying on-chain code and explorer source status.`}
         pill={<LiveNote />}
       />
-      {error && <div className="notice alert"><ShieldAlert /><span>{error}</span></div>}
-      {notice && <div className="notice ok"><BadgeCheck /><span>{notice}</span></div>}
+      <AlertModal kind="error" message={error} onClose={() => setError('')} />
+      <AlertModal kind="success" message={notice} onClose={() => setNotice('')} />
       <div className="notice alert">
         <ShieldAlert />
         <span><b>Mainnet deploy is gated:</b> audit status, testnet flow passed, small-value smoke test, typed confirmation naming the network. Arc was testnet-first because no mainnet vault is deployed yet and no independent audit exists yet. Existing locks stay under their original contract — improvements ship as a new deployment for new locks only.</span>

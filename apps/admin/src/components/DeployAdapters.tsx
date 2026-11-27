@@ -24,6 +24,7 @@ import { BrowserProvider, ContractFactory, type InterfaceAbi } from 'ethers'
 import { BadgeCheck, ShieldAlert, Wallet } from 'lucide-react'
 import adaptersArtifact from '../contracts/adapters.artifact.json'
 import type { DeployNetwork } from '../lib/evmNetworks'
+import { AlertModal } from './AlertModal'
 
 declare global {
   interface Window { ethereum?: unknown }
@@ -227,7 +228,7 @@ export default function DeployAdapters({ network, explorerUrl, onDeployed }: Pro
       {isMainnet && (
         <div className="notice alert"><ShieldAlert /><span><b>Mainnet is real money.</b> Your wallet pays real {network.nativeSymbol} gas for these deploys, and the feed and adapter are permanent contracts on {network.name}. The adapters hold no user funds — the vault itself is the gated part — but check the addresses above before you sign: {network.stablecoin} {network.stablecoinAddress} · router {network.dexRouter}.</span></div>
       )}
-      {error && <div className="notice alert"><ShieldAlert /><span>{error}</span></div>}
+      <AlertModal kind="error" message={error} onClose={() => setError('')} />
       <p className="field-hint">
         {network.stablecoin}: <span className="kbd">{network.stablecoinAddress}</span> ({network.stablecoinDecimals} decimals)<br />
         {network.routerKind === 'v2' ? 'V2 router (no adapter needed)' : 'Uniswap V3 router'}: <span className="kbd">{network.dexRouter}</span> ({network.dexRouterKind})<br />

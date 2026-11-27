@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react'
 import { CheckCircle2, ShieldCheck, Wrench } from 'lucide-react'
 import { api } from '../lib/api'
 import { LiveNote, PageHeader, SectionTitle } from '../components/ui'
+import { AlertModal } from '../components/AlertModal'
 
 export default function Maintenance() {
   const [enabled, setEnabled] = useState(false)
@@ -49,8 +50,8 @@ export default function Maintenance() {
         sub="Pause the wallet from here. The wallet polls the admin every ~45s, so a change lands within one poll interval. This page itself is never blocked by maintenance, so it can always be switched off."
         pill={<LiveNote />}
       />
-      {error && <div className="notice alert"><ShieldCheck /><span>{error}</span></div>}
-      {notice && <div className="notice ok"><CheckCircle2 /><span>{notice}</span></div>}
+      <AlertModal kind="error" message={error} onClose={() => setError('')} />
+      <AlertModal kind="success" message={notice} onClose={() => setNotice('')} />
       <div className="card">
         <SectionTitle icon={<Wrench />}>Maintenance</SectionTitle>
         <p className="muted">

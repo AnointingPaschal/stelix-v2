@@ -3,6 +3,7 @@ import { CheckCircle2, Percent, Save, ShieldCheck, SlidersHorizontal } from 'luc
 import { api } from '../lib/api'
 import { DEFAULT_FEES, validateFeePayload, type FeeConfig } from '../lib/fees'
 import { LiveNote, PageHeader, SectionTitle } from '../components/ui'
+import { AlertModal } from '../components/AlertModal'
 
 export default function Fees() {
   const [fees, setFees] = useState<FeeConfig>(DEFAULT_FEES)
@@ -48,8 +49,8 @@ export default function Fees() {
         sub="Stelix fee settings, min / max lock amounts, penalty defaults, TWAP window, trailing-stop options. Changes are versioned and shown in the app review screen. Fees are snapshotted per lock at creation — changing them never affects existing locks."
         pill={<LiveNote />}
       />
-      {error && <div className="notice alert"><ShieldCheck /><span>{error}</span></div>}
-      {notice && <div className="notice ok"><CheckCircle2 /><span>{notice}</span></div>}
+      <AlertModal kind="error" message={error} onClose={() => setError('')} />
+      <AlertModal kind="success" message={notice} onClose={() => setNotice('')} />
       {meta && <p className="muted">{meta}</p>}
       <div className="grid grid2">
         <div className="card">

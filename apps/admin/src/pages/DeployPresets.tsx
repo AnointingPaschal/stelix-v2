@@ -3,6 +3,7 @@ import { BadgeCheck, Save, Settings2, ShieldAlert, Trash2 } from 'lucide-react'
 import { api, type DeployPresetRow } from '../lib/api'
 import { validateDeployPreset } from '../lib/deployPresets'
 import { LiveNote, PageHeader, SectionTitle } from '../components/ui'
+import { AlertModal } from '../components/AlertModal'
 
 const CHAIN_OPTIONS = [
   { id: 'arc', name: 'Arc' },
@@ -24,6 +25,7 @@ export default function DeployPresets() {
   const [form, setForm] = useState(EMPTY)
   const [error, setError] = useState('')
   const [notice, setNotice] = useState('')
+  const [confirmRemove, setConfirmRemove] = useState<DeployPresetRow | null>(null)
   const [busy, setBusy] = useState(false)
 
   const load = () => {
@@ -58,7 +60,6 @@ export default function DeployPresets() {
   }
 
   const remove = async (p: DeployPresetRow) => {
-    if (!window.confirm(`Delete the saved preset for ${p.chain_id} (${p.env})? Contract Studio will stop auto-filling it.`)) return
     setError(''); setNotice('')
     try {
       await api.deleteDeployPreset(p.chain_id, p.env)
@@ -75,8 +76,15 @@ export default function DeployPresets() {
         sub="Save the 7 StelixVault constructor values once, per chain and per network, and Contract Studio fills them in for you when you pick that network. You never have to re-type Owner, Keeper, Router, Price Feed, Penalty, Fee or the fee again."
         pill={<LiveNote />}
       />
-      {error && <div className="notice alert"><ShieldAlert /><span>{error}</span></div>}
-      {notice && <div className="notice ok"><BadgeCheck /><span>{notice}</span></div>}
+      <AlertModal kind="error" message={error} onClose={() => setError('')} />
+      <AlertModal kind="success" message={notice} onClose={() => setNotice('')} />
+      <AlertModal
+        kind="confirm"
+        message={confirmRemove ? `Delete the saved preset for ${confirmRemove.chain_id} (${confirmRemove.env})? Contract Studio will stop auto-filling it.` : null}
+        confirmLabel="Delete"
+        onConfirm={() => { if (confirmRemove) void remove(confirmRemove) }}
+        onClose={() => setConfirmRemove(null)}
+      />
       <div className="notice info">
         <ShieldAlert />
         <span>
@@ -133,7 +141,7 @@ export default function DeployPresets() {
                   <p className="field-hint">Updated {p.updated_at}{p.updated_by ? ` by ${p.updated_by}` : ''}</p>
                   <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
                     <button className="btn ghost" onClick={() => edit(p)}>Edit</button>
-                    <button className="btn ghost" onClick={() => remove(p)}><Trash2 />Delete</button>
+                    <button className="btn ghost" onClick={() => setConfirmRemove(p)}><Trash2 />Delete</button>
                     <a className="btn ghost" href="/studio">Open Contract Studio</a>
                   </div>
                 </div>

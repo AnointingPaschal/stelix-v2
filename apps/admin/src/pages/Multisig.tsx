@@ -6,6 +6,7 @@ import {
   SAFE_VERSION, SAFE_WEB_APP, thresholdLabel, validateMultisigInput,
 } from '../lib/multisig'
 import { LiveNote, PageHeader, SectionTitle } from '../components/ui'
+import { AlertModal } from '../components/AlertModal'
 
 const short = (a: string) => `${a.slice(0, 6)}…${a.slice(-4)}`
 
@@ -17,6 +18,7 @@ export default function Multisig() {
   const [saltNonce, setSaltNonce] = useState('0')
   const [error, setError] = useState('')
   const [notice, setNotice] = useState('')
+  const [confirmRemove, setConfirmRemove] = useState<MultisigRow | null>(null)
   const [busy, setBusy] = useState(false)
   const [justPrepared, setJustPrepared] = useState<MultisigRow | null>(null)
   const [predicted, setPredicted] = useState('')
@@ -88,7 +90,6 @@ export default function Multisig() {
   }
 
   const remove = async (row: MultisigRow) => {
-    if (!window.confirm(`Discard the prepared (not deployed) multisig #${row.id}?`)) return
     setError('')
     try {
       await api.deleteMultisig(row.id)
@@ -137,8 +138,15 @@ export default function Multisig() {
         sub="Create ONE Safe multisig to own the StelixVault on every EVM chain. One set of owners + threshold, one Safe — with the same owners, threshold, salt nonce and Safe v1.4.1 factory, the Safe address is the same on every EVM chain. The admin only prepares the plan — the Safe itself is created and signed in the owners' own wallets, and its address is recorded only after the admin verifies it on-chain. No private key is ever stored here. No multisig for Solana — Safe is EVM-only."
         pill={<LiveNote />}
       />
-      {error && <div className="notice alert"><ShieldAlert /><span>{error}</span></div>}
-      {notice && <div className="notice ok"><BadgeCheck /><span>{notice}</span></div>}
+      <AlertModal kind="error" message={error} onClose={() => setError('')} />
+      <AlertModal kind="success" message={notice} onClose={() => setNotice('')} />
+      <AlertModal
+        kind="confirm"
+        message={confirmRemove ? `Discard the prepared (not deployed) multisig #${confirmRemove.id}?` : null}
+        confirmLabel="Discard"
+        onConfirm={() => { if (confirmRemove) void remove(confirmRemove) }}
+        onClose={() => setConfirmRemove(null)}
+      />
       <div className="notice info">
         <ShieldAlert />
         <span>
@@ -276,7 +284,7 @@ export default function Multisig() {
                           </button>
                         )}
                         {r.status === 'prepared' && (
-                          <button className="btn ghost" onClick={() => remove(r)}><Trash2 /> Discard</button>
+                          <button className="btn ghost" onClick={() => setConfirmRemove(r)}><Trash2 /> Discard</button>
                         )}
                       </div>
                     </td>

@@ -3,6 +3,7 @@ import { Activity, AlertTriangle, Pause, Play, Wallet } from 'lucide-react'
 import { api, type KeeperStatus } from '../lib/api'
 import type { KeeperRun } from '../lib/types'
 import { LiveNote, PageHeader, SectionTitle, StatCard } from '../components/ui'
+import { AlertModal } from '../components/AlertModal'
 
 export default function Keeper() {
   const [runs, setRuns] = useState<KeeperRun[]>([])
@@ -59,8 +60,8 @@ export default function Keeper() {
           </>
         }
       />
-      {error && <div className="notice alert"><AlertTriangle /><span>{error}</span></div>}
-      {notice && <div className="notice ok"><Activity /><span>{notice}</span></div>}
+      <AlertModal kind="error" message={error} onClose={() => setError('')} />
+      <AlertModal kind="success" message={notice} onClose={() => setNotice('')} />
       {status && !status.keeperLive && (
         <div className="notice info">
           <Activity />

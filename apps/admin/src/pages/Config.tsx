@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react'
 import { CheckCircle2, KeyRound, Rocket, Settings, ShieldCheck, SlidersHorizontal } from 'lucide-react'
 import { api } from '../lib/api'
 import { LiveNote, PageHeader, SectionTitle } from '../components/ui'
+import { AlertModal } from '../components/AlertModal'
 
 export default function Config() {
   const [minVersion, setMinVersion] = useState('2.0.0')
@@ -52,8 +53,8 @@ export default function Config() {
         sub="Minimum app version, force-upgrade switch, feature flags, signed config publishing. The app fetches signed config on launch — chain, contract and fee changes take effect without an app-store release."
         pill={<LiveNote />}
       />
-      {error && <div className="notice alert"><ShieldCheck /><span>{error}</span></div>}
-      {notice && <div className="notice ok"><CheckCircle2 /><span>{notice}</span></div>}
+      <AlertModal kind="error" message={error} onClose={() => setError('')} />
+      <AlertModal kind="success" message={notice} onClose={() => setNotice('')} />
       <div className="grid grid2">
         <div className="card">
           <SectionTitle icon={<Rocket />}>Releases</SectionTitle>

@@ -1,6 +1,7 @@
 import { useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { Lock, LogIn, Mail, ShieldCheck } from 'lucide-react'
+import { AlertModal } from '../components/AlertModal'
 
 export default function Login() {
   const nav = useNavigate()
@@ -18,7 +19,7 @@ export default function Login() {
           <ShieldCheck />
           <span><b>Owner-only sign-in.</b> Only ozoemenapaschal09@gmail.com can sign in — there is no public registration. Every session and action is written to the audit log.</span>
         </div>
-        {err && <div className="notice alert"><ShieldCheck /><span>{err}</span></div>}
+        <AlertModal kind="error" message={err} onClose={() => setErr('')} />
         <form
           onSubmit={async (e) => {
             e.preventDefault()

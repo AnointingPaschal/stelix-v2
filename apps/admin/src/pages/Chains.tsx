@@ -4,6 +4,7 @@ import { api } from '../lib/api'
 import { validateChainInput, type ChainFieldErrors, type ChainInput, type ChainStatus } from '../lib/chainValidation'
 import type { Chain } from '../lib/types'
 import { LiveNote, PageHeader } from '../components/ui'
+import { AlertModal } from '../components/AlertModal'
 
 const badge = (s: Chain['status']) => s === 'live' ? 'b-green' : s === 'testnet' ? 'b-blue' : s === 'paused' ? 'b-amber' : 'b-grey'
 const CHAIN_COLORS: Record<string, string> = {
@@ -71,6 +72,7 @@ export default function Chains() {
   const [chains, setChains] = useState<Chain[]>([])
   const [error, setError] = useState('')
   const [notice, setNotice] = useState('')
+  const [confirmDelete, setConfirmDelete] = useState<Chain | null>(null)
   const [showAdd, setShowAdd] = useState(false)
   const [form, setForm] = useState<ChainFormState>(emptyForm)
   const [addErrors, setAddErrors] = useState<ChainFieldErrors>({})
@@ -155,7 +157,6 @@ export default function Chains() {
   }
 
   const deleteChain = async (c: Chain) => {
-    if (!window.confirm(`Delete ${c.name} (${c.id}) from the registry? The wallet will remove it on its next sync and can never bring it back from its built-in list. This cannot be undone except by adding the chain again.`)) return
     setError('')
     try {
       await api.deleteChain(c.id)
@@ -268,8 +269,15 @@ export default function Chains() {
           </button>
         }
       />
-      {error && <div className="notice alert"><ShieldCheck /><span>{error}</span></div>}
-      {notice && <div className="notice ok"><ShieldCheck /><span>{notice}</span></div>}
+      <AlertModal kind="error" message={error} onClose={() => setError('')} />
+      <AlertModal kind="success" message={notice} onClose={() => setNotice('')} />
+      <AlertModal
+        kind="confirm"
+        message={confirmDelete ? `Delete ${confirmDelete.name} (${confirmDelete.id}) from the registry? The wallet will remove it on its next sync and can never bring it back from its built-in list. This cannot be undone except by adding the chain again.` : null}
+        confirmLabel="Delete"
+        onConfirm={() => { if (confirmDelete) void deleteChain(confirmDelete) }}
+        onClose={() => setConfirmDelete(null)}
+      />
 
       <div className="card">
         <h2 style={{ display: 'flex', alignItems: 'center', gap: 8 }}><Globe />Network mode — Testnet / Mainnet</h2>
@@ -351,7 +359,7 @@ export default function Chains() {
                       <button className="btn ghost" disabled={toggling === c.id} onClick={() => toggleActive(c)}>
                         {c.active ? 'Disable' : 'Enable'}
                       </button>
-                      <button className="btn ghost" onClick={() => void deleteChain(c)} title="Delete chain (refused when it is the default, has a vault, has a deployment, or still has registered tokens)">
+                      <button className="btn ghost" onClick={() => setConfirmDelete(c)} title="Delete chain (refused when it is the default, has a vault, has a deployment, or still has registered tokens)">
                         <Trash2 />Delete
                       </button>
                     </span>

@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react'
 import { CheckCircle2, Inbox, Megaphone, Send, Trash2 } from 'lucide-react'
 import { api } from '../lib/api'
 import { LiveNote, PageHeader, SectionTitle } from '../components/ui'
+import { AlertModal } from '../components/AlertModal'
 
 type Announcement = { id: number; title: string; message: string; audience: string; expires_at: string | null; created_at: string }
 
@@ -9,6 +10,7 @@ export default function Announcements() {
   const [rows, setRows] = useState<Announcement[]>([])
   const [error, setError] = useState('')
   const [notice, setNotice] = useState('')
+  const [confirmDeleteId, setConfirmDeleteId] = useState<number | null>(null)
   const [title, setTitle] = useState('')
   const [message, setMessage] = useState('')
   const [audience, setAudience] = useState('all')
@@ -32,7 +34,6 @@ export default function Announcements() {
   }
 
   const remove = async (id: number) => {
-    if (!window.confirm('Delete this announcement?')) return
     try {
       await api.deleteAnnouncement(id)
       setNotice('Announcement deleted.')
@@ -48,8 +49,15 @@ export default function Announcements() {
         sub="In-app banners and push campaigns: maintenance, new chain live, contract deployment notices. Schedule, audience, expiry. Published announcements are served live to the mobile app banner feed."
         pill={<LiveNote />}
       />
-      {error && <div className="notice alert"><Megaphone /><span>{error}</span></div>}
-      {notice && <div className="notice ok"><CheckCircle2 /><span>{notice}</span></div>}
+      <AlertModal kind="error" message={error} onClose={() => setError('')} />
+      <AlertModal kind="success" message={notice} onClose={() => setNotice('')} />
+      <AlertModal
+        kind="confirm"
+        message={confirmDeleteId !== null ? 'Delete this announcement?' : null}
+        confirmLabel="Delete"
+        onConfirm={() => { if (confirmDeleteId !== null) void remove(confirmDeleteId) }}
+        onClose={() => setConfirmDeleteId(null)}
+      />
       <div className="card">
         <SectionTitle icon={<Megaphone />}>New announcement</SectionTitle>
         <label>Title</label><input value={title} onChange={(e) => setTitle(e.target.value)} placeholder="e.g. Arc is now live on Stelix" />
@@ -83,7 +91,7 @@ export default function Announcements() {
                 <p className="muted small">Audience: {a.audience} · {a.created_at}{a.expires_at ? ` · expires ${a.expires_at}` : ''}</p>
               </div>
               <div className="row-end">
-                <button className="btn ghost" aria-label={`Delete ${a.title}`} onClick={() => remove(a.id)}><Trash2 /></button>
+                <button className="btn ghost" aria-label={`Delete ${a.title}`} onClick={() => setConfirmDeleteId(a.id)}><Trash2 /></button>
               </div>
             </div>
           ))

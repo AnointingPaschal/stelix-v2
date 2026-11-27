@@ -2,6 +2,7 @@ import { useState } from 'react'
 import { Eye, Search, ShieldAlert } from 'lucide-react'
 import { api } from '../lib/api'
 import { LiveNote, PageHeader, SectionTitle } from '../components/ui'
+import { AlertModal } from '../components/AlertModal'
 
 export default function Support() {
   const [q, setQ] = useState('')
@@ -46,7 +47,7 @@ export default function Support() {
         <ShieldAlert />
         <span><b>Support can never ask for a seed phrase or private key.</b> This tool has no field for them — never request them, and never enter them here. The lookup rejects anything that looks like a seed phrase.</span>
       </div>
-      {error && <div className="notice alert"><ShieldAlert /><span>{error}</span></div>}
+      <AlertModal kind="error" message={error} onClose={() => setError('')} />
       <div className="card">
         <SectionTitle icon={<Search />}>Look up a lock</SectionTitle>
         <label>Wallet address, lock ID or transaction hash</label>

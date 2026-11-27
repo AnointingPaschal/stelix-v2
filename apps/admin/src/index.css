@@ -249,6 +249,47 @@ pre{background:var(--navy);color:#D1FAE5;border-radius:10px;padding:14px;overflo
 .progress{height:8px;border-radius:999px;background:#EEF2F7;overflow:hidden}
 .progress i{display:block;height:100%;background:var(--mint);border-radius:999px}
 
+/* ---------- Alert modal: centred popup for errors / success / confirms ---------- */
+.alert-overlay{
+  position:fixed;inset:0;z-index:100;display:flex;align-items:center;justify-content:center;
+  padding:20px;background:rgba(11,18,32,.55);backdrop-filter:blur(2px);
+  animation:alert-fade .18s ease;
+}
+.alert-card{
+  position:relative;width:100%;max-width:420px;background:#fff;border-radius:18px;
+  padding:26px 22px 22px;text-align:center;box-shadow:var(--shadow-lg);
+  animation:alert-pop .22s cubic-bezier(.32,.72,.35,1);
+}
+@keyframes alert-fade{from{opacity:0}to{opacity:1}}
+@keyframes alert-pop{from{opacity:0;transform:scale(.94) translateY(8px)}to{opacity:1;transform:scale(1) translateY(0)}}
+.alert-close{
+  position:absolute;top:12px;right:12px;display:flex;align-items:center;justify-content:center;
+  width:36px;height:36px;border:0;border-radius:10px;background:#F1F5F9;color:var(--muted);cursor:pointer;
+}
+.alert-close:hover{background:#E2E8F0;color:var(--text)}
+.alert-close svg{width:18px;height:18px}
+.alert-icon{
+  width:64px;height:64px;border-radius:50%;margin:2px auto 14px;
+  display:flex;align-items:center;justify-content:center;
+}
+.alert-icon.success{background:var(--mint-soft)}
+.alert-icon.error{background:#FEE2E2}
+.alert-icon.info{background:#DBEAFE}
+.alert-icon.confirm{background:#FEF3C7}
+.alert-icon-img{width:32px;height:32px}
+.alert-icon-img.success{color:var(--mint-dark)}
+.alert-icon-img.error{color:#991B1B}
+.alert-icon-img.info{color:#1E40AF}
+.alert-icon-img.confirm{color:#92400E}
+.alert-title{font-size:18px;margin:0 0 8px;text-align:center}
+.alert-message{
+  color:var(--muted);font-size:14px;line-height:1.55;margin:0 0 20px;text-align:center;
+  overflow-wrap:break-word;
+}
+.alert-actions{display:flex;gap:10px;justify-content:center}
+.alert-actions .btn{flex:1;max-width:200px}
+.alert-ok{min-width:160px}
+
 /* ---------- Login ---------- */
 .login-page{min-height:100vh;min-height:100dvh;background:var(--navy);display:flex;align-items:center;justify-content:center;padding:20px}
 .login-card{width:420px;max-width:100%;background:#fff;border-radius:18px;padding:26px 22px;box-shadow:var(--shadow-lg)}
