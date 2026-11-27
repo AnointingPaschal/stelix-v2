@@ -102,6 +102,7 @@ export default function DeployAdapters({ network, explorerUrl, onDeployed }: Pro
     if (msg.includes('Unrecognized chain ID') || msg.includes('4902')) return 'MetaMask does not know Arc Testnet yet. Tap Connect wallet again — the admin will now add Arc Testnet (chain 5042002, RPC https://rpc.testnet.arc.io) and switch to it. If MetaMask asks you to approve adding the network, approve it.'
     if (msg.includes('nativeCurrency.decimals')) return 'MetaMask refused the chain details. Please hard-refresh this page — the fixed version uses decimals 18 for the chain record — then tap Connect wallet again.'
     if (msg.includes('User denied') || msg.includes('rejected')) return 'You rejected the request in MetaMask. Tap Connect wallet again and approve it in MetaMask.'
+    if (msg.includes('4100') || msg.includes('not been authorized')) return 'MetaMask has not authorised this site to send transactions yet (code 4100). In MetaMask, check that stelix-admin.pages.dev is connected to this account on Arc Testnet, then tap Connect wallet again in the admin, then Deploy — and approve the transaction when MetaMask pops it up. If it still fails, disconnect the site in MetaMask (Settings → Connected sites) and reconnect it fresh.'
     return msg.length > 300 ? `${msg.slice(0, 300)}…` : msg
   }
 
@@ -127,9 +128,19 @@ export default function DeployAdapters({ network, explorerUrl, onDeployed }: Pro
     setBusy(true)
     try {
       const provider = new BrowserProvider(window.ethereum as never)
+      // Re-request accounts right before sending a transaction.
+      // MetaMask mobile can authorise the site for reading (connect)
+      // but still return 4100 "not been authorized" on eth_sendTransaction
+      // after a chain switch/add, until accounts are requested again.
+      await provider.send('eth_requestAccounts', [])
       await ensureNetwork(provider)
       const signer = await provider.getSigner()
       const deployer = await signer.getAddress()
+      if (deployer.toLowerCase() !== wallet.toLowerCase()) {
+        setError(`MetaMask is now on a different account (${deployer.slice(0, 6)}…${deployer.slice(-4)}) than the one you connected (${wallet.slice(0, 6)}…${wallet.slice(-4)}). Switch back to the connected account in MetaMask, then tap Deploy again.`)
+        setBusy(false)
+        return
+      }
       const feedArt = (adaptersArtifact as { contracts: Record<string, { abi: InterfaceAbi; bytecode: string }> }).contracts.UniswapV3TwapFeed
       const adapterArt = (adaptersArtifact as { contracts: Record<string, { abi: InterfaceAbi; bytecode: string }> }).contracts.StelixV3RouterAdapter
       setLog((l) => [...l, `Deploying UniswapV3TwapFeed (USDC ${network.stablecoinAddress}, owner ${deployer})… — sign the transaction in your wallet.`])
