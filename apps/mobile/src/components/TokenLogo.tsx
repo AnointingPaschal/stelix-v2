@@ -2,16 +2,21 @@
  *  loading or when no source has a logo. Same 44px navy circle as the v1
  *  letter avatar, so rows keep their exact layout.
  *
- *  Resolution goes through lib/tokenLogos (Trust Wallet -> DexScreener ->
- *  GeckoTerminal -> CoinGecko -> token lists), cached in memory + local
- *  storage. A stored `logoUrl` (saved at import time, after the user saw
- *  the preview) wins over re-resolution. An <Image> onError also falls
- *  back to the letter — a broken remote image never shows as a blank
- *  circle. */
+ *  Resolution goes through lib/tokenLogos, with the Stelix sources first:
+ *  the token registry logo (admin-verified, uploaded as a file from the
+ *  Launchpad page) and the on-chain factory logoURI (recorded with the
+ *  token at creation, so it shows wherever the address is imported) —
+ *  then Trust Wallet -> DexScreener -> GeckoTerminal -> CoinGecko ->
+ *  token lists, cached in memory + local storage. A stored `logoUrl`
+ *  (saved at import time, after the user saw the preview) wins over
+ *  re-resolution. An <Image> onError also falls back to the letter — a
+ *  broken remote image never shows as a blank circle. */
 import { useEffect, useRef, useState } from 'react';
 import { Image, StyleSheet, Text, View } from 'react-native';
 import { COLORS } from '../theme';
-import { getCachedLogo, resolveTokenLogo } from '../lib/tokenLogos';
+import { findRegistryToken } from '../lib/adminSync';
+import { fetchFactoryLogo, getCachedLogo, resolveTokenLogo } from '../lib/tokenLogos';
+import { useAppOptional } from '../store/AppContext';
 
 export interface TokenLogoProps {
   chainId: string;
@@ -35,6 +40,11 @@ export function useTokenLogo(
   const [uri, setUri] = useState<string | null>(logoUrl ?? null);
   const [loading, setLoading] = useState(!logoUrl);
   const mounted = useRef(true);
+  // Registry + factory sources come from the admin sync (optional — the
+  // hook also renders outside the provider in tests).
+  const app = useAppOptional();
+  const adminTokens = app?.adminTokens;
+  const availableChains = app?.availableChains;
 
   useEffect(() => {
     mounted.current = true;
@@ -46,6 +56,13 @@ export function useTokenLogo(
   useEffect(() => {
     if (logoUrl) {
       setUri(logoUrl);
+      setLoading(false);
+      return;
+    }
+    // Stelix registry logo (admin-verified) — used as-is, no re-fetch.
+    const registryLogo = adminTokens ? findRegistryToken(adminTokens, chainId, address)?.logoUrl ?? null : null;
+    if (registryLogo) {
+      setUri(registryLogo);
       setLoading(false);
       return;
     }
@@ -63,7 +80,12 @@ export function useTokenLogo(
     }
     let cancelled = false;
     setLoading(true);
-    void resolveTokenLogo(chainId, address)
+    const chain = availableChains?.find((c) => c.id === chainId);
+    void resolveTokenLogo(chainId, address, {
+      // On-chain factory logoURI, when this chain has a factory — the
+      // logo recorded with the token at creation.
+      factoryLogo: chain ? () => fetchFactoryLogo(chain, address) : undefined,
+    })
       .then((r) => {
         if (!cancelled && mounted.current) {
           setUri(r.url);
@@ -79,7 +101,7 @@ export function useTokenLogo(
     return () => {
       cancelled = true;
     };
-  }, [chainId, address, logoUrl]);
+  }, [chainId, address, logoUrl, adminTokens, availableChains]);
 
   return { uri, loading };
 }

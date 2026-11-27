@@ -754,6 +754,27 @@ export default {
       return json({ tokens: results ?? [] })
     }
 
+    // Public logo serve (no admin session). Logos are uploaded from the
+    // Launchpad page and stored in D1 (R2 is not enabled on this account);
+    // the upload returns a short https URL of this shape, which is what
+    // gets stored on-chain as the token's logoURI — the image bytes
+    // themselves can never live on-chain (100 KB would cost ~62M gas).
+    // Keys are random and never overwritten, so the response is immutable.
+    const logoMatch = /^\/api\/logo\/([A-Za-z0-9_-]{1,64})$/.exec(path)
+    if (logoMatch && req.method === 'GET') {
+      const row = await env.DB.prepare('SELECT content_type, data FROM launch_logos WHERE key = ?').bind(logoMatch[1]).first<{ content_type: string; data: string }>()
+      if (!row) return json({ error: 'logo not found' }, 404)
+      const bin = atob(row.data)
+      const bytes = new Uint8Array(bin.length)
+      for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i)
+      return new Response(bytes, {
+        headers: {
+          'content-type': row.content_type,
+          'cache-control': 'public, max-age=31536000, immutable',
+        },
+      })
+    }
+
     // Public maintenance state for the mobile app (no admin session).
     if (path === '/api/maintenance' && req.method === 'GET') {
       return json({ maintenance: await getMaintenanceState(env) })
@@ -1163,6 +1184,8 @@ export default {
       if (value.gasToken !== undefined) set('gas_token', value.gasToken === '' ? chain.native_token : value.gasToken)
       if (value.dexRouter !== undefined) set('dex_router', value.dexRouter)
       if (value.vaultAddress !== undefined) set('vault_address', value.vaultAddress)
+      if (value.launchpadAddress !== undefined) set('launchpad_address', value.launchpadAddress)
+      if (value.tokenFactoryAddress !== undefined) set('token_factory_address', value.tokenFactoryAddress)
       if (value.status !== undefined) {
         set('status', value.status)
         // A status change implies the testnet flag unless it was set explicitly.
@@ -1474,15 +1497,19 @@ export default {
     const isDigits = (v: unknown): v is string => typeof v === 'string' && /^\d+$/.test(v)
     if (path === '/api/admin/launches' && req.method === 'GET') {
       const { results } = await env.DB.prepare('SELECT * FROM launches ORDER BY created_at DESC, id DESC LIMIT 100').all()
-      const arc = await env.DB.prepare('SELECT * FROM chains WHERE id = ?').bind('arc').first<ChainRow & { launchpad_address?: string | null; token_factory_address?: string | null }>()
+      // Launchpad + factory addresses per chain (the Launchpad page shows
+      // one Contracts card per chain). The arc fields stay for backward
+      // compatibility with older admin builds.
+      const { results: chainRows } = await env.DB.prepare('SELECT id, launchpad_address, token_factory_address FROM chains').all<{ id: string; launchpad_address: string | null; token_factory_address: string | null }>()
+      const chainContracts = (chainRows ?? []).map((c) => ({ id: c.id, launchpadAddress: c.launchpad_address ?? null, factoryAddress: c.token_factory_address ?? null }))
+      const arcContracts = chainContracts.find((c) => c.id === 'arc')
       return json({
         launches: results ?? [],
-        launchpadAddress: arc?.launchpad_address ?? null,
-        factoryAddress: arc?.token_factory_address ?? null,
+        chains: chainContracts,
+        launchpadAddress: arcContracts?.launchpadAddress ?? null,
+        factoryAddress: arcContracts?.factoryAddress ?? null,
         liquidityManager: null,
-        note: (arc?.launchpad_address ?? null)
-          ? 'Launchpad contracts are registered. Liquidity lock is pending Arc DEX confirmation until a liquidity manager is set.'
-          : 'Launchpad contracts are not deployed on Arc testnet yet — launches go live once they are deployed.',
+        note: 'Launchpad contracts are registered per chain. Liquidity lock is pending Arc DEX confirmation until a liquidity manager is set.',
       })
     }
     if (path === '/api/admin/launches' && req.method === 'POST') {
@@ -1525,8 +1552,45 @@ export default {
         tokensForSale, 'Active', 0, 'pending', null, 0, txHash, authed,
       ).run()
       const id = (run as unknown as { meta?: { last_row_id?: number } }).meta?.last_row_id ?? null
-      await audit(env, authed, 'launchpad.register', `Launch recorded: ${tokenSymbol} on ${chainId} (sale ${saleId ?? 'unconfirmed'}), pending approval`)
+      // A launch registered by the admin is a verified Stelix token: put it
+      // in the Token/DEX registry (verified=1) with its logo, so the wallet
+      // shows the logo wherever the contract address is imported. An
+      // existing registry row keeps its logo when this launch has none.
+      await env.DB.prepare(
+        `INSERT INTO tokens (symbol, chain_id, address, decimals, verified, featured, logo_url)
+         VALUES (?, ?, ?, ?, 1, 0, ?)
+         ON CONFLICT(chain_id, address) DO UPDATE SET
+           symbol = excluded.symbol, decimals = excluded.decimals, verified = 1,
+           logo_url = COALESCE(excluded.logo_url, tokens.logo_url)`,
+      ).bind(tokenSymbol, chainId, tokenAddress, tokenDecimals, logoUrl).run()
+      await bumpSync(env)
+      await audit(env, authed, 'launchpad.register', `Launch recorded: ${tokenSymbol} on ${chainId} (sale ${saleId ?? 'unconfirmed'}), pending approval; token registered with logo`)
       return json({ ok: true, id }, 201)
+    }
+
+    // Logo upload for the Launchpad (admin only). The file — never a link —
+    // is stored in D1 (R2 is not enabled on this account) and served at
+    // GET /api/logo/:key. The returned URL is what the admin stores as the
+    // launch logo and what goes on-chain as the token's logoURI, so the
+    // logo shows wherever the contract address is imported.
+    // Limits: 256 KB max, PNG/JPEG/WebP/GIF only (no SVG — it can carry
+    // scripts). Keys are random and never overwritten.
+    if (path === '/api/admin/launches/logo' && req.method === 'POST') {
+      const form = await req.formData().catch(() => null)
+      const file = form?.get('file')
+      if (!(file instanceof File)) return json({ error: 'attach a logo image file (PNG, JPG, WebP or GIF, max 256 KB)' }, 400)
+      const allowed = ['image/png', 'image/jpeg', 'image/webp', 'image/gif']
+      if (!allowed.includes(file.type)) return json({ error: `logo must be PNG, JPG, WebP or GIF — "${file.type || 'unknown type'}" is not accepted` }, 400)
+      if (file.size <= 0 || file.size > 256 * 1024) return json({ error: 'logo must be between 1 byte and 256 KB' }, 400)
+      const bytes = new Uint8Array(await file.arrayBuffer())
+      let bin = ''
+      const CHUNK = 8192
+      for (let i = 0; i < bytes.length; i += CHUNK) bin += String.fromCharCode(...bytes.subarray(i, i + CHUNK))
+      const key = `l${[...crypto.getRandomValues(new Uint8Array(12))].map((b) => b.toString(16).padStart(2, '0')).join('')}`
+      await env.DB.prepare('INSERT INTO launch_logos (key, content_type, data, created_by) VALUES (?, ?, ?, ?)').bind(key, file.type, btoa(bin), authed).run()
+      const url = `${new URL(req.url).origin}/api/logo/${key}`
+      await audit(env, authed, 'launchpad.logo_upload', `logo uploaded (${file.type}, ${file.size} bytes) -> ${key}`)
+      return json({ ok: true, key, url }, 201)
     }
     if (launchIdMatch && req.method === 'PATCH' && !launchIdMatch[2]) {
       const body = await readJson(req)

@@ -149,7 +149,24 @@ class FakeD1 {
       const table = insert[1]
       const cols = insert[2].split(',').map((c) => c.trim())
       const row: Row = { id: this.nextId(table), created_at: new Date().toISOString() }
-      cols.forEach((c, i) => { row[c] = params[i] })
+      // VALUES may mix `?` placeholders with literals (e.g. `..., 1, 0, ?`
+      // in the token-registry upsert) — bind placeholders in order and
+      // take literals as written, so the double matches real D1.
+      const valuesPart = /VALUES\s*\(([^)]+)\)/i.exec(sql)?.[1]?.split(',').map((v) => v.trim()) ?? []
+      let paramIdx = 0
+      cols.forEach((c, i) => {
+        const v = valuesPart[i]
+        if (v === '?') {
+          row[c] = params[paramIdx]
+          paramIdx += 1
+        } else if (v !== undefined && v !== '') {
+          const num = Number(v)
+          row[c] = v.startsWith("'") && v.endsWith("'") ? v.slice(1, -1) : Number.isNaN(num) ? v : num
+        } else {
+          row[c] = params[paramIdx]
+          paramIdx += 1
+        }
+      })
       this.rows(table).push(row)
       return row.id as number
     }
@@ -700,6 +717,80 @@ describe('Worker API (live endpoints, no sample data)', () => {
     expect((list.body.contributions as Record<string, unknown>[])[0].amount).toBe('25000000')
     const missing = await call(env, '/api/admin/launches/9999/contributions', { token })
     expect(missing.body.contributions).toEqual([])
+  })
+
+  it('launch logos: upload a file (never a link), serve it publicly, reject SVG/oversize/unauthenticated', async () => {
+    // A 1x1 transparent PNG.
+    const png = new Uint8Array([137, 80, 78, 71, 13, 10, 26, 10, 0, 0, 0, 13, 73, 72, 68, 82, 0, 0, 0, 1, 0, 0, 0, 1, 8, 6, 0, 0, 0, 31, 21, 196, 137, 0, 0, 0, 10, 73, 68, 65, 84, 120, 156, 99, 0, 1, 0, 0, 5, 0, 1, 13, 10, 45, 180, 0, 0, 0, 0, 73, 69, 78, 68, 174, 66, 96, 130])
+    const upload = async (file: File, useToken: boolean) => {
+      const form = new FormData()
+      form.append('file', file)
+      const r = await worker.fetch(
+        new Request('https://admin.test/api/admin/launches/logo', {
+          method: 'POST',
+          headers: useToken ? authed(token) : {},
+          body: form,
+        }),
+        env,
+      )
+      return { status: r.status, body: (await r.json().catch(() => ({}))) as Record<string, unknown> }
+    }
+    const noAuth = await upload(new File([png], 'logo.png', { type: 'image/png' }), false)
+    expect(noAuth.status).toBe(401)
+    const svg = await upload(new File(['<svg></svg>'], 'logo.svg', { type: 'image/svg+xml' }), true)
+    expect(svg.status).toBe(400)
+    const big = await upload(new File([new Uint8Array(256 * 1024 + 1)], 'big.png', { type: 'image/png' }), true)
+    expect(big.status).toBe(400)
+    const ok = await upload(new File([png], 'logo.png', { type: 'image/png' }), true)
+    expect(ok.status).toBe(201)
+    const url = ok.body.url as string
+    expect(url).toMatch(/^https:\/\/admin\.test\/api\/logo\/l[0-9a-f]{24}$/)
+    // The public serve route returns the bytes with the right type, no session needed.
+    const served = await worker.fetch(new Request(url), env)
+    expect(served.status).toBe(200)
+    expect(served.headers.get('content-type')).toBe('image/png')
+    expect(new Uint8Array(await served.arrayBuffer())).toEqual(png)
+    const missing = await worker.fetch(new Request('https://admin.test/api/logo/l000000000000000000000000'), env)
+    expect(missing.status).toBe(404)
+  })
+
+  it('launch register upserts the token registry with the logo and returns per-chain contracts', async () => {
+    const now = Math.floor(Date.now() / 1000)
+    const logoUrl = 'https://stelix-admin.pages.dev/api/logo/l0123456789abcdef01234567'
+    const created = await call(env, '/api/admin/launches', {
+      method: 'POST', token,
+      body: { seller: '0x1111111111111111111111111111111111111111', tokenAddress: '0x2222222222222222222222222222222222222222', tokenSymbol: 'TEST', tokenName: 'Test Token', tokenDecimals: 18, logoUrl, pricePerToken: '100000', softCap: '1000000000', hardCap: '10000000000', tokensForSale: '100000000000000000000000', startTime: now + 60, endTime: now + 86400, liquidityLockBps: 0 },
+    })
+    expect(created.status).toBe(201)
+    // The token is in the public registry (verified) with its logo, so
+    // the wallet shows the logo wherever the address is imported.
+    const tokens = await call(env, '/api/tokens')
+    const row = (tokens.body.tokens as Record<string, unknown>[]).find((t) => t.address === '0x2222222222222222222222222222222222222222')
+    expect(row).toBeDefined()
+    expect(row?.symbol).toBe('TEST')
+    expect(row?.verified).toBe(1)
+    expect(row?.logo_url).toBe(logoUrl)
+    // The admin launches feed carries per-chain contract addresses.
+    const admin = await call(env, '/api/admin/launches', { token })
+    expect(Array.isArray(admin.body.chains)).toBe(true)
+    expect((admin.body.chains as Record<string, unknown>[]).find((c) => c.id === 'arc')).toBeDefined()
+  })
+
+  it('chains: PUT accepts launchpad + factory addresses (verified 0x only) and GET /api/chains returns them', async () => {
+    const bad = await call(env, '/api/admin/chains/arc', {
+      method: 'PUT', token,
+      body: { launchpadAddress: 'guess-me' },
+    })
+    expect(bad.status).toBe(400)
+    const ok = await call(env, '/api/admin/chains/arc', {
+      method: 'PUT', token,
+      body: { launchpadAddress: '0x1111111111111111111111111111111111111111', tokenFactoryAddress: '0x2222222222222222222222222222222222222222' },
+    })
+    expect(ok.status).toBe(200)
+    const chains = await call(env, '/api/chains')
+    const arc = (chains.body.chains as Record<string, unknown>[]).find((c) => c.id === 'arc')
+    expect(arc?.launchpad_address).toBe('0x1111111111111111111111111111111111111111')
+    expect(arc?.token_factory_address).toBe('0x2222222222222222222222222222222222222222')
   })
 
   it('multisigs: prepare validates owners/threshold; no chain needed, Solana refused, legacy chain normalised to evm', async () => {

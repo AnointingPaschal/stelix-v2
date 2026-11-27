@@ -98,6 +98,17 @@ export interface ChainConfig {
    *  routers in lib/swap.ts — but the merged chain carries it so the UI
    *  can say honestly whether a router is registered for the chain. */
   dexRouter?: string | null;
+  /** Token factory contract on this chain, registered in the admin Chain
+   *  Manager after a wallet-signed deploy from the Launchpad page.
+   *  Creates ERC-20s for free (gas only). null = not deployed yet.
+   *  The wallet reads a token's logoURI from it on-chain
+   *  (getTokenByAddress), so a factory token's logo shows wherever the
+   *  address is imported. */
+  tokenFactoryAddress?: string | null;
+  /** Launchpad sale contract on this chain, registered in the admin
+   *  Chain Manager after a wallet-signed deploy. null = not deployed
+   *  yet — launches cannot go live on the chain without it. */
+  launchpadAddress?: string | null;
   /** Slug of the paired chain (testnet ↔ mainnet pair, e.g. arc ↔
    *  arc-mainnet), from the admin registry. Used when the admin flips the
    *  global network mode: the wallet moves to the pair when it exists. */

@@ -36,7 +36,7 @@ import { loadWatchlist, resolveWatchlistEntries, type WatchlistEntry } from '../
 import { addImportedToken, resolveTokenMetadata, visibleTokens } from '../../lib/balances';
 import { createImportInputController } from '../../lib/importToken';
 import { fetchDexScreenerToken } from '../../lib/prices';
-import { resolveTokenLogo } from '../../lib/tokenLogos';
+import { fetchFactoryLogo, resolveTokenLogo } from '../../lib/tokenLogos';
 import { tokenDetailRoute } from '../../lib/tokenResolve';
 import { findRegistryToken, visibleAnnouncements } from '../../lib/adminSync';
 import {
@@ -142,7 +142,14 @@ export default function Home() {
     try {
       const [meta, logo, market] = await Promise.all([
         resolveTokenMetadata(chain, a),
-        resolveTokenLogo(chain.id, a).catch(() => ({ url: null as string | null, source: 'none' as const })),
+        // Stelix sources first: the registry logo (admin-verified) and
+        // the on-chain factory logoURI — so a launched token's logo shows
+        // in the preview (and is saved at import) wherever its address
+        // is imported, before any public source is tried.
+        resolveTokenLogo(chain.id, a, {
+          registryLogoUrl: findRegistryToken(adminTokens, chain.id, a)?.logoUrl ?? null,
+          factoryLogo: () => fetchFactoryLogo(chain, a),
+        }).catch(() => ({ url: null as string | null, source: 'none' as const })),
         fetchDexScreenerToken(chain.id, a).catch(() => null),
       ]);
       if (seq !== previewSeq.current) return; // superseded — a newer address was typed

@@ -11,6 +11,12 @@ export interface Chain {
   nativeToken: string; nativeDecimals: number
   stablecoin: string; stablecoinAddress: string; stablecoinDecimals: number
   gasToken: string; dexRouter: string; vaultAddress: string | null
+  /** Launchpad sale contract on this chain (null until deployed from the
+   *  Launchpad page). Launches cannot go live on the chain without it. */
+  launchpadAddress: string | null
+  /** Token factory contract on this chain (null until deployed). Creates
+   *  new ERC-20s for free — gas only, no Stelix fee. */
+  tokenFactoryAddress: string | null
   status: ChainStatus; isDefault?: boolean
   /** True when this is a testnet (derived from status when the flag is absent). */
   isTestnet: boolean

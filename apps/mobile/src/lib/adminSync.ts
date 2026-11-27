@@ -79,6 +79,11 @@ export interface AdminTokenEntry {
   decimals: number;
   verified: boolean;
   featured: boolean;
+  /** Logo URL registered for this token in the admin (uploaded as a file
+   *  from the Launchpad page, or the on-chain logoURI for a factory
+   *  token). null = no registered logo — the wallet falls back to the
+   *  public logo sources and the on-chain factory read. */
+  logoUrl: string | null;
 }
 
 export interface AdminAppConfig {
@@ -205,6 +210,7 @@ function parseToken(v: unknown): AdminTokenEntry | null {
     decimals,
     verified: asBool(v.verified, false),
     featured: asBool(v.featured, false),
+    logoUrl: asString(v.logo_url),
   };
 }
 

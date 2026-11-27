@@ -33,6 +33,8 @@ import { getChain } from './chains';
 import { kvGet, kvSet } from './storage';
 
 export type LogoSource =
+  | 'registry'
+  | 'factory'
   | 'trustwallet'
   | 'dexscreener'
   | 'geckoterminal'
@@ -334,6 +336,42 @@ async function logoFromTokenList(
 }
 
 // ---------------------------------------------------------------------------
+// On-chain factory logo (StelixTokenFactory.getTokenByAddress)
+// ---------------------------------------------------------------------------
+
+const FACTORY_TOKEN_INFO_ABI = [
+  'function getTokenByAddress(address tokenAddress) view returns (tuple(address token, address creator, string name, string symbol, uint256 totalSupply, uint8 decimals, uint256 createdAt, string logoURI))',
+];
+
+/**
+ * Read a token's logoURI from the chain's Stelix token factory — the
+ * logo recorded on-chain when the token was created. Returns null when
+ * the chain has no factory, the token was not created by it, it has no
+ * logo, or the RPC call fails. Never throws. The caller passes the
+ * MERGED chain config (admin-registered factory address), not the
+ * built-in one — getChain() only knows built-ins.
+ */
+export async function fetchFactoryLogo(
+  chain: { tokenFactoryAddress?: string | null; rpcUrl: string },
+  tokenAddress: string,
+): Promise<string | null> {
+  const factory = chain.tokenFactoryAddress ?? null;
+  if (!factory || !ethers.isAddress(factory) || !ethers.isAddress(tokenAddress)) return null;
+  try {
+    const provider = new ethers.JsonRpcProvider(chain.rpcUrl);
+    const contract = new ethers.Contract(factory, FACTORY_TOKEN_INFO_ABI, provider);
+    const info = await Promise.race([
+      contract.getTokenByAddress(tokenAddress),
+      new Promise<never>((_, reject) => setTimeout(() => reject(new Error('factory logo read timed out')), FETCH_TIMEOUT_MS)),
+    ]);
+    const logoURI = typeof info?.logoURI === 'string' ? info.logoURI.trim() : '';
+    return logoURI ? logoURI : null;
+  } catch {
+    return null;
+  }
+}
+
+// ---------------------------------------------------------------------------
 // Public resolver
 // ---------------------------------------------------------------------------
 
@@ -341,6 +379,18 @@ export interface ResolveTokenLogoOptions {
   fetchImpl?: FetchImpl;
   /** CoinGecko id of the native asset, when known (native logos only). */
   nativeCoingeckoId?: string;
+  /** Logo URL from the Stelix token registry (admin-verified, uploaded
+   *  as a file from the Launchpad page). Checked FIRST — it is the
+   *  admin's own record for this token, so it wins over every public
+   *  source. Verified with a HEAD/GET before it is trusted; a dead
+   *  registry URL falls through to the other sources. */
+  registryLogoUrl?: string | null;
+  /** On-chain factory read for this token (the logoURI recorded with
+   *  the token at creation). Checked second, before the public sources,
+   *  so a factory token's logo shows wherever the address is imported
+   *  even before the token is in the registry. Build it with
+   *  fetchFactoryLogo(chain, address). */
+  factoryLogo?: () => Promise<string | null>;
 }
 
 /**
@@ -387,6 +437,19 @@ export async function resolveTokenLogo(
       if (cg && (await verifyImageUrl(cg, fetchImpl))) return finish(cg, 'coingecko');
     }
     return finish(null, 'none');
+  }
+
+  // --- 0. Stelix registry logo (admin-verified) — wins over everything.
+  if (opts.registryLogoUrl) {
+    const url = opts.registryLogoUrl.trim();
+    if (url && (await verifyImageUrl(url, fetchImpl))) return finish(url, 'registry');
+  }
+
+  // --- 0b. On-chain factory logoURI — the logo recorded with the token
+  // at creation, so it shows wherever the address is imported.
+  if (opts.factoryLogo) {
+    const fl = await opts.factoryLogo().catch(() => null);
+    if (fl && (await verifyImageUrl(fl, fetchImpl))) return finish(fl, 'factory');
   }
 
   // --- 1. Trust Wallet assets repo.

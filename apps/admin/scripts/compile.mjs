@@ -90,3 +90,78 @@ console.log(`  deployed size: ${artifact.deployedBytes} bytes (limit 24576)`)
 console.log(`  bytecode sha256: ${artifact.bytecodeHash}`)
 console.log(`  warnings: ${warnings.length}`)
 for (const w of artifact.warnings) console.log(`  warning: ${w.split('\n')[0]}`)
+
+// ---- Launchpad (StelixTokenFactory + StelixLaunchpad) ----
+// Same pinned solc + settings as the vault. The factory creates the
+// token (name/symbol/supply/decimals/logoURI, gas only, no Stelix fee)
+// and the launchpad runs the fixed-price sale. Both are deployed from
+// the admin with the connected wallet (Launchpad Manager), so their
+// ABIs + creation bytecodes live in launchpad.artifact.json.
+const launchpadFiles = {
+  'launchpad/StelixTokenFactory.sol': readFileSync(join(root, 'src/contracts/launchpad/StelixTokenFactory.sol'), 'utf8'),
+  'launchpad/LaunchToken.sol': readFileSync(join(root, 'src/contracts/launchpad/LaunchToken.sol'), 'utf8'),
+  'launchpad/StelixLaunchpad.sol': readFileSync(join(root, 'src/contracts/launchpad/StelixLaunchpad.sol'), 'utf8'),
+  'interfaces/IERC20.sol': readFileSync(join(root, 'src/contracts/interfaces/IERC20.sol'), 'utf8'),
+}
+const launchpadSourceHashes = Object.fromEntries(
+  Object.entries(launchpadFiles).map(([name, content]) => [
+    name,
+    createHash('sha256').update(content).digest('hex'),
+  ]),
+)
+const launchpadInput = {
+  language: 'Solidity',
+  sources: Object.fromEntries(
+    Object.entries(launchpadFiles).map(([name, content]) => [name, { content }]),
+  ),
+  settings: {
+    optimizer: { enabled: true, runs: 200 },
+    viaIR: true,
+    outputSelection: { '*': { '*': ['abi', 'evm.bytecode.object', 'evm.deployedBytecode.object'] } },
+  },
+}
+const launchpadOutput = JSON.parse(solc.compile(JSON.stringify(launchpadInput)))
+const launchpadErrors = (launchpadOutput.errors ?? []).filter((e) => e.severity === 'error')
+const launchpadWarnings = (launchpadOutput.errors ?? []).filter((e) => e.severity === 'warning')
+if (launchpadErrors.length > 0) {
+  for (const e of launchpadErrors) console.error(e.formattedMessage ?? e.message)
+  process.exit(1)
+}
+const oneArtifact = (contractName, fileKey) => {
+  const c = launchpadOutput.contracts[fileKey][contractName]
+  const bc = c.evm.bytecode.object
+  const dep = c.evm.deployedBytecode.object
+  return {
+    abi: c.abi,
+    bytecode: `0x${bc}`,
+    deployedBytecode: `0x${dep}`,
+    bytecodeHash: createHash('sha256').update(bc).digest('hex'),
+    deployedBytecodeHash: createHash('sha256').update(dep).digest('hex'),
+    bytecodeBytes: bc.length / 2,
+    deployedBytes: dep.length / 2,
+    sizeLimitBytes: 24576,
+    withinSizeLimit: dep.length / 2 <= 24576,
+  }
+}
+const launchpadArtifact = {
+  compiler: `solc ${SOLC_PINNED}`,
+  solcVersion: solc.version(),
+  optimizer: { enabled: true, runs: 200 },
+  viaIR: true,
+  sourceHashes: launchpadSourceHashes,
+  factory: oneArtifact('StelixTokenFactory', 'launchpad/StelixTokenFactory.sol'),
+  launchpad: oneArtifact('StelixLaunchpad', 'launchpad/StelixLaunchpad.sol'),
+  warnings: launchpadWarnings.map((w) => w.formattedMessage ?? w.message),
+  compiledAt: new Date().toISOString(),
+}
+writeFileSync(
+  join(root, 'src/contracts/launchpad.artifact.json'),
+  JSON.stringify(launchpadArtifact, null, 2) + '\n',
+)
+console.log(`solc ${SOLC_PINNED}: StelixTokenFactory + StelixLaunchpad compiled OK`)
+console.log(`  factory deployed size: ${launchpadArtifact.factory.deployedBytes} bytes (limit 24576)`)
+console.log(`  launchpad deployed size: ${launchpadArtifact.launchpad.deployedBytes} bytes (limit 24576)`)
+console.log(`  factory bytecode sha256: ${launchpadArtifact.factory.bytecodeHash}`)
+console.log(`  launchpad bytecode sha256: ${launchpadArtifact.launchpad.bytecodeHash}`)
+console.log(`  warnings: ${launchpadWarnings.length}`)
+for (const w of launchpadArtifact.warnings) console.log(`  warning: ${w.split('\n')[0]}`)

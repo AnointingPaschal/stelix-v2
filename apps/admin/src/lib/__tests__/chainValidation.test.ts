@@ -81,6 +81,30 @@ describe('validateChainInput (create)', () => {
     expect(blankOk.value?.vaultAddress).toBeNull()
   })
 
+  it('accepts verified launchpad + factory addresses, rejects malformed ones, blanks to null', () => {
+    const good = validateChainInput({
+      ...GOOD,
+      launchpadAddress: '0x1111111111111111111111111111111111111111',
+      tokenFactoryAddress: '0x2222222222222222222222222222222222222222',
+    })
+    expect(good.errors).toEqual({})
+    expect(good.value?.launchpadAddress).toBe('0x1111111111111111111111111111111111111111')
+    expect(good.value?.tokenFactoryAddress).toBe('0x2222222222222222222222222222222222222222')
+    const badLaunchpad = validateChainInput({ ...GOOD, launchpadAddress: '0xZZZ' })
+    expect(badLaunchpad.value).toBeNull()
+    expect(badLaunchpad.errors.launchpadAddress).toMatch(/0x address/)
+    const badFactory = validateChainInput({ ...GOOD, tokenFactoryAddress: 'guess-me' })
+    expect(badFactory.value).toBeNull()
+    expect(badFactory.errors.tokenFactoryAddress).toMatch(/0x address/)
+    const blank = validateChainInput({ ...GOOD, launchpadAddress: '', tokenFactoryAddress: '' })
+    expect(blank.value?.launchpadAddress).toBeNull()
+    expect(blank.value?.tokenFactoryAddress).toBeNull()
+    // Partial updates validate only the supplied launchpad fields.
+    const partial = validateChainInput({ launchpadAddress: '0x1111111111111111111111111111111111111111' }, { partial: true })
+    expect(partial.errors).toEqual({})
+    expect(partial.value?.launchpadAddress).toBe('0x1111111111111111111111111111111111111111')
+  })
+
   it('rejects a bad slug (spaces, uppercase-only shapes, too short)', () => {
     for (const id of ['Bad Slug', 'a', 'has_underscore', '']) {
       const { value, errors } = validateChainInput({ ...GOOD, id })

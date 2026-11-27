@@ -35,7 +35,7 @@ contract LaunchpadTest is Test {
 
         // Seller creates a token via the factory: 1,000,000 supply, 18 dec.
         vm.prank(seller);
-        token = factory.createToken("Stelix Test", "STEST", 1_000_000e18, 18);
+        token = factory.createToken("Stelix Test", "STEST", 1_000_000e18, 18, "https://stelix-admin.pages.dev/api/logo/testlogo");
 
         usdc.mint(alice, 100_000e6);
         usdc.mint(bob, 100_000e6);
@@ -62,23 +62,37 @@ contract LaunchpadTest is Test {
     // -- factory -------------------------------------------------------
     function testFactoryCreatesTokenWithSupplyToCreator() public {
         vm.prank(seller);
-        address t = factory.createToken("Another", "ANO", 500e18, 6);
+        address t = factory.createToken("Another", "ANO", 500e18, 6, "");
         assertEq(LaunchToken(t).balanceOf(seller), 500e18);
         assertEq(LaunchToken(t).decimals(), 6);
         assertTrue(factory.isFactoryToken(t));
         assertEq(factory.tokenCount(), 2);
     }
 
+    // -- on-chain logo ---------------------------------------------------
+    function testFactoryRecordsLogoURIOnChain() public {
+        StelixTokenFactory.TokenInfo memory info = factory.getTokenByAddress(token);
+        assertEq(info.logoURI, "https://stelix-admin.pages.dev/api/logo/testlogo");
+        assertEq(info.name, "Stelix Test");
+        assertEq(info.symbol, "STEST");
+        assertEq(factory.getToken(0).logoURI, "https://stelix-admin.pages.dev/api/logo/testlogo");
+        // A token created without a logo records an empty logoURI.
+        vm.prank(seller);
+        address t = factory.createToken("No Logo", "NOLOGO", 1e18, 18, "");
+        assertEq(factory.getTokenByAddress(t).logoURI, "");
+        assertEq(factory.getTokenByAddress(address(0x1234)).token, address(0));
+    }
+
     function testFactoryRejectsBadParams() public {
         vm.prank(seller);
         vm.expectRevert("name required");
-        factory.createToken("", "X", 1e18, 18);
+        factory.createToken("", "X", 1e18, 18, "");
         vm.prank(seller);
         vm.expectRevert("supply required");
-        factory.createToken("X", "X", 0, 18);
+        factory.createToken("X", "X", 0, 18, "");
         vm.prank(seller);
         vm.expectRevert("decimals > 18");
-        factory.createToken("X", "X", 1e18, 19);
+        factory.createToken("X", "X", 1e18, 19, "");
     }
 
     // -- sale creation ---------------------------------------------------

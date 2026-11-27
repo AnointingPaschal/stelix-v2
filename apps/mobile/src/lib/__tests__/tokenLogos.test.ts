@@ -5,6 +5,7 @@
  *  throws, native-asset logo, and caching (no second fetch). */
 import {
   clearLogoCache,
+  fetchFactoryLogo,
   normalizeChainId,
   resolveTokenLogo,
   trustWalletLogoUrl,
@@ -202,5 +203,70 @@ describe('resolveTokenLogo', () => {
     const second = await resolveTokenLogo('bnb', WKC, { fetchImpl: fetch });
     expect(second).toEqual(first);
     expect(fetch.mock.calls.length).toBe(callsAfterFirst);
+  });
+});
+
+describe('Stelix sources (registry + on-chain factory)', () => {
+  const REGISTRY_LOGO = 'https://stelix-admin.pages.dev/api/logo/l0123456789abcdef01234567';
+  const FACTORY_LOGO = 'https://stelix-admin.pages.dev/api/logo/lfedcba9876543210fedcba98';
+
+  it('registry logo wins over Trust Wallet even when Trust Wallet has one', async () => {
+    const { fetch } = stubFetch({
+      'stelix-admin.pages.dev': { status: 200, contentType: 'image/png' },
+      'raw.githubusercontent.com': { status: 200, contentType: 'image/png' },
+    });
+    const r = await resolveTokenLogo('bnb', WKC, { fetchImpl: fetch, registryLogoUrl: REGISTRY_LOGO });
+    expect(r).toEqual({ url: REGISTRY_LOGO, source: 'registry' });
+  });
+
+  it('factory logoURI wins when there is no registry logo', async () => {
+    const { fetch } = stubFetch({
+      'stelix-admin.pages.dev': { status: 200, contentType: 'image/png' },
+      'raw.githubusercontent.com': { status: 200, contentType: 'image/png' },
+    });
+    const r = await resolveTokenLogo('bnb', WKC, {
+      fetchImpl: fetch,
+      factoryLogo: async () => FACTORY_LOGO,
+    });
+    expect(r).toEqual({ url: FACTORY_LOGO, source: 'factory' });
+  });
+
+  it('registry logo wins over the factory logo when both exist', async () => {
+    const { fetch } = stubFetch({
+      'stelix-admin.pages.dev': { status: 200, contentType: 'image/png' },
+    });
+    const r = await resolveTokenLogo('bnb', WKC, {
+      fetchImpl: fetch,
+      registryLogoUrl: REGISTRY_LOGO,
+      factoryLogo: async () => FACTORY_LOGO,
+    });
+    expect(r).toEqual({ url: REGISTRY_LOGO, source: 'registry' });
+  });
+
+  it('a dead registry URL falls through to Trust Wallet', async () => {
+    const { fetch } = stubFetch({
+      'stelix-admin.pages.dev': { status: 404 },
+      'raw.githubusercontent.com': { status: 200, contentType: 'image/png' },
+    });
+    const r = await resolveTokenLogo('bnb', WKC, { fetchImpl: fetch, registryLogoUrl: REGISTRY_LOGO });
+    expect(r.source).toBe('trustwallet');
+    expect(r.url).toBe(trustWalletLogoUrl('bnb', WKC));
+  });
+
+  it('a failing factory read falls through to the public sources', async () => {
+    const { fetch } = stubFetch({
+      'raw.githubusercontent.com': { status: 200, contentType: 'image/png' },
+    });
+    const r = await resolveTokenLogo('bnb', WKC, {
+      fetchImpl: fetch,
+      factoryLogo: async () => { throw new Error('rpc down'); },
+    });
+    expect(r.source).toBe('trustwallet');
+  });
+
+  it('fetchFactoryLogo returns null with no factory, or an invalid address, without touching the network', async () => {
+    await expect(fetchFactoryLogo({ tokenFactoryAddress: null, rpcUrl: 'https://example.invalid' }, WKC)).resolves.toBeNull();
+    await expect(fetchFactoryLogo({ tokenFactoryAddress: 'not-an-address', rpcUrl: 'https://example.invalid' }, WKC)).resolves.toBeNull();
+    await expect(fetchFactoryLogo({ tokenFactoryAddress: '0x1111111111111111111111111111111111111111', rpcUrl: 'https://example.invalid' }, 'not-an-address')).resolves.toBeNull();
   });
 });

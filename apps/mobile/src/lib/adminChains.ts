@@ -216,6 +216,16 @@ function overlayBuiltIn(builtIn: ChainConfig, remote: AdminChainRow, remoteIsDef
       remote.dex_router && /^0x[0-9a-fA-F]{40}$/.test(remote.dex_router.trim())
         ? remote.dex_router.trim()
         : builtIn.dexRouter ?? null,
+    // Launchpad contracts (verified 0x only; blank never blanks a
+    // verified built-in address and never invents one).
+    tokenFactoryAddress:
+      remote.token_factory_address && /^0x[0-9a-fA-F]{40}$/.test(remote.token_factory_address.trim())
+        ? remote.token_factory_address.trim()
+        : builtIn.tokenFactoryAddress ?? null,
+    launchpadAddress:
+      remote.launchpad_address && /^0x[0-9a-fA-F]{40}$/.test(remote.launchpad_address.trim())
+        ? remote.launchpad_address.trim()
+        : builtIn.launchpadAddress ?? null,
     pairedChainId: remote.paired_chain_id ?? builtIn.pairedChainId ?? null,
     status: mapRemoteStatus(remote.status, builtIn.status),
     testnet: remoteTestnet !== undefined ? remoteTestnet : remote.status === 'testnet' ? true : remote.status === 'live' ? false : builtIn.testnet,
@@ -265,6 +275,14 @@ function remoteOnlyChain(remote: AdminChainRow, remoteIsDefault: string | null):
     vaultContract: remote.vault_address && remote.vault_address.trim() !== '' ? remote.vault_address.trim() : null,
     dexRouter:
       remote.dex_router && /^0x[0-9a-fA-F]{40}$/.test(remote.dex_router.trim()) ? remote.dex_router.trim() : null,
+    tokenFactoryAddress:
+      remote.token_factory_address && /^0x[0-9a-fA-F]{40}$/.test(remote.token_factory_address.trim())
+        ? remote.token_factory_address.trim()
+        : null,
+    launchpadAddress:
+      remote.launchpad_address && /^0x[0-9a-fA-F]{40}$/.test(remote.launchpad_address.trim())
+        ? remote.launchpad_address.trim()
+        : null,
     pairedChainId: remote.paired_chain_id ?? null,
     status: mapRemoteStatus(remote.status, 'coming-soon'),
     isDefault: remoteIsDefault !== null ? remote.id === remoteIsDefault : false,

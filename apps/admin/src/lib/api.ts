@@ -30,6 +30,7 @@ type ChainRow = {
   native_token: string; native_decimals?: number | null
   stablecoin: string; stablecoin_address: string; stablecoin_decimals?: number | null
   gas_token?: string | null; dex_router: string; vault_address: string | null
+  launchpad_address?: string | null; token_factory_address?: string | null
   status: Chain['status']; is_default: number
   is_testnet?: number | null; active?: number | null; paired_chain_id?: string | null
 }
@@ -47,7 +48,9 @@ const mapChain = (c: ChainRow): Chain => ({
   stablecoinDecimals: typeof c.stablecoin_decimals === 'number' ? c.stablecoin_decimals : 6,
   gasToken: c.gas_token ?? c.native_token,
   dexRouter: c.dex_router ?? '',
-  vaultAddress: c.vault_address, status: c.status, isDefault: c.is_default === 1,
+  vaultAddress: c.vault_address, launchpadAddress: c.launchpad_address ?? null,
+  tokenFactoryAddress: c.token_factory_address ?? null,
+  status: c.status, isDefault: c.is_default === 1,
   isTestnet: typeof c.is_testnet === 'number' ? c.is_testnet === 1 : c.status === 'testnet',
   active: typeof c.active === 'number' ? c.active === 1 : true,
   pairedChainId: c.paired_chain_id ?? null,
@@ -86,6 +89,8 @@ export interface LaunchesFeed {
   launches: LaunchRow[]
   launchpadAddress: string | null
   factoryAddress: string | null
+  /** Launchpad + factory addresses per chain (the Contracts cards). */
+  chains: { id: string; launchpadAddress: string | null; factoryAddress: string | null }[]
   liquidityManager: string | null
   note: string
 }
@@ -341,8 +346,23 @@ export const api = {
     return d.locks.map(mapLock)
   },
   async getLaunches(): Promise<LaunchesFeed> {
-    const d = await live<{ launches: LaunchDbRow[]; launchpadAddress: string | null; factoryAddress: string | null; liquidityManager: string | null; note: string }>('/api/admin/launches')
-    return { launches: d.launches.map(mapLaunch), launchpadAddress: d.launchpadAddress, factoryAddress: d.factoryAddress, liquidityManager: d.liquidityManager, note: d.note }
+    const d = await live<{ launches: LaunchDbRow[]; launchpadAddress: string | null; factoryAddress: string | null; chains?: { id: string; launchpadAddress: string | null; factoryAddress: string | null }[]; liquidityManager: string | null; note: string }>('/api/admin/launches')
+    return { launches: d.launches.map(mapLaunch), launchpadAddress: d.launchpadAddress, factoryAddress: d.factoryAddress, chains: d.chains ?? [], liquidityManager: d.liquidityManager, note: d.note }
+  },
+  /** Upload a launch logo image (file, not a link). Returns the short
+   *  https URL that goes on-chain as the token's logoURI and into the
+   *  token registry — the logo shows wherever the address is imported. */
+  async uploadLaunchLogo(file: File): Promise<{ ok: boolean; key: string; url: string }> {
+    const form = new FormData()
+    form.append('file', file)
+    const r = await fetch('/api/admin/launches/logo', { method: 'POST', credentials: 'same-origin', body: form })
+    if (r.status === 401) {
+      if (window.location.pathname !== '/') window.location.href = '/'
+      throw new Error('Session expired — sign in again.')
+    }
+    const body = (await r.json().catch(() => ({}))) as { error?: string; key?: string; url?: string }
+    if (!r.ok) throw new Error(body.error ?? `Upload failed: ${r.status}`)
+    return { ok: true, key: body.key ?? '', url: body.url ?? '' }
   },
   async registerLaunch(data: {
     chainId?: string; saleId?: number | null; seller: string; tokenAddress: string; tokenSymbol: string;

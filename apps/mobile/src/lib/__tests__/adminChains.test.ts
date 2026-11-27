@@ -120,6 +120,34 @@ describe('mergeAdminChains', () => {
     expect(bnb?.pairedChainId).toBe('bnb-testnet');
   });
 
+  it('carries the launchpad factory + launchpad addresses when verified, null when blank', () => {
+    const merged = mergeAdminChains(CHAINS, [
+      row({
+        id: 'arc', chain_id: 5042002,
+        token_factory_address: '0x1111111111111111111111111111111111111111',
+        launchpad_address: '0x2222222222222222222222222222222222222222',
+      }),
+    ]);
+    const arc = merged.find((c) => c.id === 'arc');
+    expect(arc?.tokenFactoryAddress).toBe('0x1111111111111111111111111111111111111111');
+    expect(arc?.launchpadAddress).toBe('0x2222222222222222222222222222222222222222');
+    const blank = mergeAdminChains(CHAINS, [
+      row({ id: 'arc', chain_id: 5042002, token_factory_address: '', launchpad_address: null }),
+    ]);
+    expect(blank.find((c) => c.id === 'arc')?.tokenFactoryAddress).toBeNull();
+    expect(blank.find((c) => c.id === 'arc')?.launchpadAddress).toBeNull();
+    // A remote-only chain carries them too.
+    const remoteOnly = mergeAdminChains(CHAINS, [
+      row({
+        token_factory_address: '0x3333333333333333333333333333333333333333',
+        launchpad_address: '0x4444444444444444444444444444444444444444',
+      }),
+    ]);
+    const arb = remoteOnly.find((c) => c.id === 'arbitrum');
+    expect(arb?.tokenFactoryAddress).toBe('0x3333333333333333333333333333333333333333');
+    expect(arb?.launchpadAddress).toBe('0x4444444444444444444444444444444444444444');
+  });
+
   it('an unverified router address is never carried (blank or malformed)', () => {
     const merged = mergeAdminChains(CHAINS, [row({ id: 'bnb', chain_id: 56, dex_router: 'guess-me' })]);
     expect(merged.find((c) => c.id === 'bnb')?.dexRouter).toBeNull();

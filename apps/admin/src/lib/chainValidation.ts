@@ -37,6 +37,12 @@ export interface ChainInput {
   gasToken: string
   dexRouter: string
   vaultAddress: string | null
+  /** Launchpad sale contract on this chain (deployed from the Launchpad
+   *  page). Null until deployed — launches cannot go live without it. */
+  launchpadAddress: string | null
+  /** Token factory contract on this chain (deploys new ERC-20s for free,
+   *  gas only). Null until deployed. */
+  tokenFactoryAddress: string | null
   status: ChainStatus
   isTestnet: boolean
   active: boolean
@@ -212,6 +218,26 @@ export function validateChainInput(input: unknown, opts?: { partial?: boolean })
     else value.vaultAddress = vault === '' ? null : vault
   } else if (!partial) {
     value.vaultAddress = null
+  }
+
+  // --- launchpad + token factory: optional, set by the Launchpad page
+  // after a wallet-signed deploy (the deploy writes the real address
+  // through the chain update API). Verified on the explorer only.
+  if (present('launchpadAddress', 'launchpad_address')) {
+    const raw = pick(body, 'launchpadAddress', 'launchpad_address')
+    const addr = raw === null ? null : asString(raw)
+    if (addr !== null && addr !== '' && !isAddress(addr)) errors.launchpadAddress = 'launchpad address must be a valid 0x address (40 hex chars) or left blank — it is filled in automatically when the launchpad is deployed'
+    else value.launchpadAddress = addr === '' ? null : addr
+  } else if (!partial) {
+    value.launchpadAddress = null
+  }
+  if (present('tokenFactoryAddress', 'token_factory_address')) {
+    const raw = pick(body, 'tokenFactoryAddress', 'token_factory_address')
+    const addr = raw === null ? null : asString(raw)
+    if (addr !== null && addr !== '' && !isAddress(addr)) errors.tokenFactoryAddress = 'token factory address must be a valid 0x address (40 hex chars) or left blank — it is filled in automatically when the factory is deployed'
+    else value.tokenFactoryAddress = addr === '' ? null : addr
+  } else if (!partial) {
+    value.tokenFactoryAddress = null
   }
 
   // --- status / testnet flag ---

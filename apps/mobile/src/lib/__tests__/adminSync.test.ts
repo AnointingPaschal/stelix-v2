@@ -122,6 +122,20 @@ describe('parseAdminSync', () => {
     expect(parseAdminSync(syncBody({ networkMode: 'bogus' }))?.networkMode).toBeNull();
   });
 
+  it('maps a registry token logo_url to logoUrl (null when the row has none)', () => {
+    const withLogo = parseAdminSync(syncBody({
+      tokens: [
+        { id: 2, symbol: 'STELIX', chain_id: 'arc', address: '0x1111111111111111111111111111111111111111', decimals: 18, verified: 1, featured: 0, logo_url: 'https://stelix-admin.pages.dev/api/logo/l0123456789abcdef01234567' },
+        { id: 1, symbol: 'USDC', chain_id: 'arc', address: '0x3600000000000000000000000000000000000000', decimals: 6, verified: 1, featured: 0 },
+      ],
+    }));
+    expect(withLogo?.tokens).toHaveLength(2);
+    expect(findRegistryToken(withLogo?.tokens ?? [], 'arc', '0x1111111111111111111111111111111111111111')?.logoUrl).toBe(
+      'https://stelix-admin.pages.dev/api/logo/l0123456789abcdef01234567',
+    );
+    expect(findRegistryToken(withLogo?.tokens ?? [], 'arc', '0x3600000000000000000000000000000000000000')?.logoUrl).toBeNull();
+  });
+
   it('returns null on a wrong shape, so the wallet keeps last-known state', () => {
     expect(parseAdminSync(null)).toBeNull();
     expect(parseAdminSync({})).toBeNull();
