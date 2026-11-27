@@ -65,6 +65,13 @@ const artifact = {
     .update(Object.values(files).join('\n'))
     .digest('hex'),
   abi: contract.abi,
+  // The creation bytecode itself (hex, with 0x prefix) — needed by the
+  // admin's Deploy Vault card, which deploys with the connected wallet
+  // in the browser. Previously only the hash/size were stored, so the
+  // vault could only be deployed with Foundry. The hash fields above
+  // are unchanged, so source verification still works exactly as before.
+  bytecode: `0x${bytecode}`,
+  deployedBytecode: `0x${deployed}`,
   bytecodeHash: createHash('sha256').update(bytecode).digest('hex'),
   deployedBytecodeHash: createHash('sha256').update(deployed).digest('hex'),
   bytecodeBytes: bytecode.length / 2,

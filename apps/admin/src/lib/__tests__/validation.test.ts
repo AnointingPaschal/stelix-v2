@@ -61,6 +61,8 @@ describe('validateDeployParams', () => {
     expect(mainnetConfirmPhrase('BNB Smart Chain')).toBe('Deploy StelixVault to BNB Smart Chain mainnet')
     // A chain already named "... Mainnet" must not get a doubled suffix.
     expect(mainnetConfirmPhrase('Arc Mainnet')).toBe('Deploy StelixVault to Arc Mainnet')
+    // Same for a testnet name: "Arc Testnet" must not become "... Testnet mainnet".
+    expect(mainnetConfirmPhrase('Arc Testnet')).toBe('Deploy StelixVault to Arc mainnet')
   })
 
   it('maps a mainnet chain slug to its testnet counterpart', () => {

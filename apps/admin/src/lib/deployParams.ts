@@ -27,11 +27,18 @@ export const isTxHash = (v: unknown): v is string =>
   typeof v === 'string' && /^0x[0-9a-fA-F]{64}$/.test(v)
 
 export function mainnetConfirmPhrase(chainName: string): string {
-  // The phrase must name the selected network. A chain whose name already
-  // ends in " Mainnet" (e.g. the "Arc Mainnet" row) must not get a doubled
-  // "... Mainnet mainnet".
-  if (/ Mainnet$/.test(chainName.trim())) return `Deploy StelixVault to ${chainName.trim()}`
-  return `Deploy StelixVault to ${chainName} mainnet`
+  // The phrase must name the selected network, once, without a doubled
+  // suffix. Chain names arrive as "Arc Testnet", "Arc Mainnet", or a
+  // plain name like "BNB Smart Chain". A name already ending in
+  // " Mainnet" is used as-is; a name ending in " Testnet" has that
+  // suffix stripped before " mainnet" is appended — otherwise "Arc
+  // Testnet" produced the nonsense "Deploy StelixVault to Arc Testnet
+  // mainnet" (reported 2026-11-27). The Worker checks the same phrase
+  // against the D1 chain name, so "Arc Mainnet" keeps its capital M.
+  const name = chainName.trim()
+  if (/ Mainnet$/i.test(name)) return `Deploy StelixVault to ${name}`
+  const base = name.replace(/ Testnet$/i, '')
+  return `Deploy StelixVault to ${base} mainnet`
 }
 
 /**

@@ -6,6 +6,7 @@ import { ARC_TESTNET, arcNetworkFor } from '../lib/arcNetworks'
 import { mainnetConfirmPhrase, testnetChainIdFor, validateDeployParams } from '../lib/deployParams'
 import { api, type AuditGate, type CompileResult, type DeployPresetRow, type MultisigRow } from '../lib/api'
 import DeployAdapters from '../components/DeployAdapters'
+import DeployVault, { type VaultParams } from '../components/DeployVault'
 import type { Chain } from '../lib/types'
 import { LiveNote, PageHeader, SectionTitle } from '../components/ui'
 
@@ -249,6 +250,16 @@ export default function ContractStudio() {
     setBusy(false)
   }
 
+  // Vault deployed from the admin with a connected wallet: fill the
+  // deployed address + tx hash into the form so it can be verified on
+  // the explorer and registered in Chain Manager below.
+  const onVaultDeployed = (deployedAddress: string, deployedTxHash: string) => {
+    setAddress(deployedAddress)
+    setTxHash(deployedTxHash)
+    setNotice(`StelixVault deployed at ${deployedAddress}. Tap "Verify on explorer", then "Register in Chain Manager" below — registration checks on-chain code and the source hash before writing anything to D1.`)
+    load()
+  }
+
   // Adapters deployed from the admin with a connected wallet: save
   // their addresses into the Deploy Preset for this network and fill
   // the form from them, so the vault deploy below can proceed.
@@ -293,7 +304,7 @@ export default function ContractStudio() {
       <PageHeader
         icon={<Code2 />}
         title="Contract Studio"
-        sub={`Write / edit, compile, test-deploy and mainnet-deploy StelixVault. Pinned compiler: solc ${SOLC_PINNED}. The admin never holds a deployer key: deploys are broadcast by the Foundry flow, and the Worker only registers an address after verifying on-chain code and explorer source status.`}
+        sub={`Write / edit, compile, test-deploy and mainnet-deploy StelixVault. Pinned compiler: solc ${SOLC_PINNED}. The admin never holds a deployer key: testnet deploys are signed by your connected wallet in the browser (or broadcast by the Foundry flow), and the Worker only registers an address after verifying on-chain code and explorer source status.`}
         pill={<LiveNote />}
       />
       {error && <div className="notice alert"><ShieldAlert /><span>{error}</span></div>}
@@ -404,7 +415,15 @@ export default function ContractStudio() {
               <button className="btn mint" onClick={() => prepare(env)} disabled={busy}><Rocket />{env === 'mainnet' ? 'Prepare mainnet deploy' : 'Prepare testnet deploy'}</button>
             </div>
             {prepareCmd && <pre>{prepareCmd}</pre>}
-            <label style={{ marginTop: 16 }}>Deployed contract address (after the Foundry broadcast confirms)</label>
+            {isArc && arcEnv === 'testnet' && (
+              <DeployVault
+                network={arcNet}
+                explorerUrl={net.explorerUrl}
+                params={params as VaultParams}
+                onDeployed={onVaultDeployed}
+              />
+            )}
+            <label style={{ marginTop: 16 }}>Deployed contract address (after the deploy confirms — filled in automatically when you deploy from the admin)</label>
             <input placeholder="0x…" value={address} onChange={(e) => setAddress(e.target.value)} />
             <label>Deploy transaction hash (optional)</label>
             <input placeholder="0x…" value={txHash} onChange={(e) => setTxHash(e.target.value)} />
