@@ -133,6 +133,17 @@ class FakeD1 {
       }
       return undefined
     }
+    if (/INTO\s+admin_settings/i.test(sql)) {
+      const rows = this.rows('admin_settings')
+      const existing = rows.find((r) => r.key === params[0])
+      if (existing) {
+        existing.value = params[1]
+        existing.updated_at = new Date().toISOString()
+      } else {
+        rows.push({ key: params[0], value: params[1], updated_at: new Date().toISOString() })
+      }
+      return undefined
+    }
     const insert = /INSERT INTO\s+(\w+)\s*\(([^)]+)\)/i.exec(sql)
     if (insert) {
       const table = insert[1]
@@ -521,6 +532,38 @@ describe('Worker API (live endpoints, no sample data)', () => {
     expect(ok.body.rpcUrl).toBe('https://rpc.mainnet.arc.io')
     expect(String(ok.body.deployCommand)).toMatch(/CHAIN=arc-mainnet/)
     expect(String(ok.body.note)).toMatch(/mainnet deployer key/)
+  })
+
+  it('gate bypass: off by default, lets a mainnet prepare pass without gate evidence, and re-enforces when turned off', async () => {
+    const before = await call(env, '/api/admin/gate-bypass', { token })
+    expect(before.body.bypassed).toBe(false)
+    // No confirmation phrase in the body either: the bypass skips it too.
+    const mainnet = { ...DEPLOY_PARAMS, chainId: 'arc-mainnet', env: 'mainnet', sourceHash: '0b5e90fcf6bc5d0592ccecd1aa41e83fbc880ef844c3ad4eaee9adcecc6f0646' }
+    const gated = await call(env, '/api/admin/deploy/prepare', { method: 'POST', token, body: mainnet })
+    expect(gated.status).toBe(403)
+    const flipped = await call(env, '/api/admin/gate-bypass', { method: 'POST', token, body: { bypassed: true } })
+    expect(flipped.status).toBe(200)
+    expect(flipped.body.bypassed).toBe(true)
+    const after = await call(env, '/api/admin/gate-bypass', { token })
+    expect(after.body.bypassed).toBe(true)
+    const allowed = await call(env, '/api/admin/deploy/prepare', { method: 'POST', token, body: mainnet })
+    expect(allowed.status).toBe(200)
+    expect(String(allowed.body.deployCommand)).toMatch(/CHAIN=arc-mainnet/)
+    // Turning it back off re-enforces the gate.
+    await call(env, '/api/admin/gate-bypass', { method: 'POST', token, body: { bypassed: false } })
+    const gatedAgain = await call(env, '/api/admin/deploy/prepare', { method: 'POST', token, body: mainnet })
+    expect(gatedAgain.status).toBe(403)
+  })
+
+  it('deploy register: gate bypass does not skip the on-chain code check', async () => {
+    await call(env, '/api/admin/gate-bypass', { method: 'POST', token, body: { bypassed: true } })
+    const res = await call(env, '/api/admin/deploy/register', {
+      method: 'POST', token,
+      body: { ...DEPLOY_PARAMS, chainId: 'arc-mainnet', env: 'mainnet', address: '0x7777777777777777777777777777777777777777', sourceHash: '0b5e90fcf6bc5d0592ccecd1aa41e83fbc880ef844c3ad4eaee9adcecc6f0646' },
+    })
+    expect([400, 502]).toContain(res.status)
+    const deployments = await call(env, '/api/admin/deployments', { token })
+    expect((deployments.body.deployments as unknown[]).length).toBe(0)
   })
 
   it('audit log records admin actions', async () => {

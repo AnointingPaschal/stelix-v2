@@ -63,6 +63,10 @@
 // automated audit (zero open critical/high) OR a recorded passing independent
 // audit, a verified testnet deployment on the same chain, a recorded
 // small-value smoke-test attestation, and the typed confirmation phrase.
+// The gate is optional when the admin turns it off (admin_settings key
+// 'mainnet_gate_bypass', migration 0016): prepare / register then skip the
+// gate checks, but on-chain code verification still runs and every
+// bypassed deploy is audit-logged.
 import { runStaticAudit, sha256Hex, type AuditFinding } from '../lib/auditCheck'
 import { validateFeePayload, type FeeConfig } from '../lib/fees'
 import { buildCircleChallengeRequest, CIRCLE_API_BASE, isValidCircleAppId, maskAppId, parseCircleError, validateCircleChallengeInput } from '../lib/circle'
@@ -569,6 +573,31 @@ async function explorerSourceVerified(env: Env, chain: ChainRow, address: string
   } catch {
     return { checked: false, sourceVerified: false, note: 'Explorer API unreachable; source verification not confirmed.' }
   }
+}
+
+// Admin settings (migration 0016) — small key/value store for admin-only
+// switches. The only setting today is 'mainnet_gate_bypass': '1' makes
+// the mainnet gate optional (the admin's explicit choice, 2026-11-27),
+// '0' or absent means the gate is enforced. It is read on every mainnet
+// prepare / register, so flipping it takes effect immediately.
+async function getSetting(env: Env, key: string): Promise<string | null> {
+  try {
+    const row = await env.DB.prepare('SELECT value FROM admin_settings WHERE key = ?').bind(key).first<{ value: string }>()
+    return row?.value ?? null
+  } catch {
+    return null
+  }
+}
+
+async function isGateBypassed(env: Env): Promise<boolean> {
+  return (await getSetting(env, 'mainnet_gate_bypass')) === '1'
+}
+
+async function setSetting(env: Env, key: string, value: string): Promise<void> {
+  await env.DB.prepare(
+    `INSERT INTO admin_settings (key, value, updated_at) VALUES (?, ?, datetime('now'))
+     ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at`,
+  ).bind(key, value).run()
 }
 
 async function mainnetGate(env: Env, chainId: string): Promise<{ pass: boolean; reasons: string[] }> {
@@ -1781,10 +1810,12 @@ export default {
       if (!chain) return json({ error: 'chain not found in Chain Manager' }, 400)
       if (params.env === 'mainnet') {
         const gate = await mainnetGate(env, params.chainId)
-        if (!gate.pass) return json({ error: 'Mainnet gate not passed', reasons: gate.reasons }, 403)
-        if (String(body.confirmation ?? '') !== mainnetConfirmPhrase(chain.name)) {
+        const bypassed = await isGateBypassed(env)
+        if (!gate.pass && !bypassed) return json({ error: 'Mainnet gate not passed', reasons: gate.reasons }, 403)
+        if (!bypassed && String(body.confirmation ?? '') !== mainnetConfirmPhrase(chain.name)) {
           return json({ error: `Typed confirmation must read exactly: ${mainnetConfirmPhrase(chain.name)}` }, 403)
         }
+        if (bypassed) await audit(env, authed, 'studio.deploy_prepare_bypass', `Mainnet deploy prepared for ${chain.name} with the gate bypassed.`)
       }
       const sourceHash = String(body.sourceHash ?? '')
       if (sourceHash && sourceHash !== ARTIFACT_SOURCE_HASH) {
@@ -1847,10 +1878,12 @@ export default {
       if (!chain) return json({ error: 'chain not found in Chain Manager' }, 404)
       if (params.env === 'mainnet') {
         const gate = await mainnetGate(env, params.chainId)
-        if (!gate.pass) return json({ error: 'Mainnet gate not passed', reasons: gate.reasons }, 403)
-        if (String(body.confirmation ?? '') !== mainnetConfirmPhrase(chain.name)) {
+        const bypassed = await isGateBypassed(env)
+        if (!gate.pass && !bypassed) return json({ error: 'Mainnet gate not passed', reasons: gate.reasons }, 403)
+        if (!bypassed && String(body.confirmation ?? '') !== mainnetConfirmPhrase(chain.name)) {
           return json({ error: `Typed confirmation must read exactly: ${mainnetConfirmPhrase(chain.name)}` }, 403)
         }
+        if (bypassed) await audit(env, authed, 'studio.deploy_register_bypass', `StelixVault mainnet registration for ${chain.name} with the gate bypassed.`)
       }
       const rpcUrl = (chain.rpc_urls.split(',')[0] ?? '').trim()
       let code = '0x'
@@ -1927,6 +1960,25 @@ export default {
       await env.DB.prepare('INSERT INTO gate_attestations (chain_id, kind, attested_by, note) VALUES (?, ?, ?, ?)').bind(chainId, kind, authed, note).run()
       await audit(env, authed, 'studio.gate_attest', `Small-value smoke-test attestation recorded for ${chainId}: ${note}`)
       return json({ ok: true }, 201)
+    }
+    // ---- Mainnet gate bypass (migration 0016) ----
+    // Makes the mainnet gate optional, at the admin's explicit choice.
+    // Default off (no row = enforced). Every flip is audit-logged, and
+    // every prepare / register that runs while bypassed is audit-logged
+    // too. The bypass skips the audit / verified-testnet / smoke /
+    // typed-confirmation checks only — on-chain code verification still
+    // runs on register, and the typed phrase is still accepted.
+    if (path === '/api/admin/gate-bypass' && req.method === 'GET') {
+      return json({ bypassed: await isGateBypassed(env) })
+    }
+    if (path === '/api/admin/gate-bypass' && req.method === 'POST') {
+      const body = await readJson(req)
+      const bypassed = body.bypassed === true
+      await setSetting(env, 'mainnet_gate_bypass', bypassed ? '1' : '0')
+      await audit(env, authed, bypassed ? 'admin.gate_bypass_on' : 'admin.gate_bypass_off', bypassed
+        ? 'Mainnet gate bypassed — mainnet vault deploys no longer require the audit / testnet / smoke checks.'
+        : 'Mainnet gate re-enabled — mainnet vault deploys require the full gate again.')
+      return json({ ok: true, bypassed })
     }
 
     // ---- Contract Audit (automated static audit + independent audits) ----

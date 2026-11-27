@@ -45,6 +45,11 @@ export default function ContractStudio() {
   const [testnetPassed, setTestnetPassed] = useState(false)
   const [smokeAttested, setSmokeAttested] = useState(false)
   const [smokeNote, setSmokeNote] = useState('')
+  // Mainnet gate bypass (migration 0016): false = gate enforced (default),
+  // true = the gate is optional and mainnet deploys skip its checks.
+  const [gateBypassed, setGateBypassed] = useState(false)
+  // Pending bypass flip awaiting confirmation in the centred modal.
+  const [confirmBypass, setConfirmBypass] = useState<boolean | null>(null)
   const [deploys, setDeploys] = useState<Deployment[]>([])
   const [presets, setPresets] = useState<DeployPresetRow[]>([])
   const [presetsLoaded, setPresetsLoaded] = useState(false)
@@ -136,16 +141,27 @@ export default function ContractStudio() {
     autoSellFeeBps: String(p.auto_sell_fee_bps),
   })
 
+  // Fill the deployed-address / tx boxes from the database for one
+  // network. A deployment saved in D1 is the source of truth, so the
+  // boxes always show it — switching networks or reloading the page can
+  // never "clear" a deployed vault again. No deployment yet: empty.
+  const fillDeployed = (list: Deployment[], chainId: string, e: 'testnet' | 'mainnet') => {
+    const d = list.find((x) => x.chain_id === chainId && x.env === e)
+    setAddress(d?.address ?? '')
+    setTxHash(d?.tx_hash ?? '')
+  }
+
   const load = () => {
     api.getChains().then((c) => {
       setChains(c)
       const fams = new Set(c.map((x) => (x.id === 'arc-mainnet' ? 'arc' : x.id)))
       if (c.length > 0 && !fams.has(chainFamily)) setChainFamily('arc')
     }).catch(() => undefined)
-    api.getDeployments().then((d) => setDeploys(d.deployments)).catch(() => undefined)
+    api.getDeployments().then((d) => { setDeploys(d.deployments); fillDeployed(d.deployments, effectiveChainId, env) }).catch(() => undefined)
     api.getDeployPresets().then((p) => { setPresets(p); setPresetsLoaded(true) }).catch(() => setPresetsLoaded(true))
     api.getMultisigs().then(setMultisigs).catch(() => undefined)
     api.getAuditGate().then(setGate).catch(() => undefined)
+    api.getGateBypass().then((r) => setGateBypassed(r.bypassed)).catch(() => undefined)
   }
   useEffect(load, [])
 
@@ -177,7 +193,7 @@ export default function ContractStudio() {
   // Mainnet vault lock: the gate must pass AND the typed confirmation
   // naming this network must match. The Worker enforces the same gate
   // server-side at registration, so this lock is the UI half of it.
-  const vaultLocked = env === 'mainnet' && (!mainnetReady || confirmText.trim() !== mainnetConfirmPhrase(networkName))
+  const vaultLocked = env === 'mainnet' && !gateBypassed && (!mainnetReady || confirmText.trim() !== mainnetConfirmPhrase(networkName))
   const vaultLockReason = env !== 'mainnet' ? ''
     : !auditGatePass ? 'Audit gate has not passed — run the automated audit with zero open critical/high findings, or record a passing independent audit.'
     : !(verifiedTestnet || testnetPassed) ? 'No verified testnet deployment (or ticked testnet flow) on this chain yet — prove the full lock → target → auto-sell flow on testnet first.'
@@ -187,7 +203,10 @@ export default function ContractStudio() {
   /** Switching chain or testnet/mainnet clears the 7 constructor fields and
    *  every confirmation, then fills them from the saved preset for that
    *  network if one exists: testnet values are never silently carried to
-   *  mainnet, and each network must be re-confirmed on its own. */
+   *  mainnet, and each network must be re-confirmed on its own. The
+   *  deployed-address boxes are NOT cleared — they are refilled from the
+   *  database for the new network (empty only when nothing is deployed
+   *  there yet). */
   const selectNetwork = (family: string, nextEnv?: 'testnet' | 'mainnet') => {
     const testnetRow = testnetIdForFamily(family)
     const resolvedEnv: 'testnet' | 'mainnet' = family === 'solana' ? 'mainnet'
@@ -204,8 +223,7 @@ export default function ContractStudio() {
       setTestnetPassed(false)
       setSmokeAttested(false)
       setPrepareCmd('')
-      setAddress('')
-      setTxHash('')
+      fillDeployed(deploys, nextChainId, resolvedEnv)
       setError('')
       const label = resolvedEnv === 'testnet' && testnetRow
         ? (evmTestnetFor(nextChainId)?.name ?? (family === 'arc' ? 'Arc Testnet' : nextChainId))
@@ -216,7 +234,10 @@ export default function ContractStudio() {
     }
   }
 
-  const compile = async () => {
+  // Compile the editor source and return the result (null on failure), so
+  // a deploy can compile-then-register in one flow without re-reading
+  // state that has not updated yet.
+  const compile = async (): Promise<CompileResult | null> => {
     setError(''); setNotice(''); setBusy(true)
     try {
       const r = await api.compile(src)
@@ -228,8 +249,13 @@ export default function ContractStudio() {
         (r.bytecodeHash ? `Bytecode sha256: ${r.bytecodeHash}\nDeployed size: ${r.deployedBytes} bytes (limit 24576)\n` : '') +
         (r.warnings.length > 0 ? `Warnings:\n${r.warnings.join('\n')}` : 'Warnings: none.'),
       )
-    } catch (e) { setError(e instanceof Error ? e.message : 'Compile failed.') }
-    setBusy(false)
+      setBusy(false)
+      return r
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'Compile failed.')
+      setBusy(false)
+      return null
+    }
   }
 
   const buildParams = () => ({
@@ -271,36 +297,67 @@ export default function ContractStudio() {
     setBusy(false)
   }
 
-  const register = async (registerEnv: 'testnet' | 'mainnet') => {
+  // Register one deployed vault in the database (deployments row + Chain
+  // Manager vault address). Takes the address, tx hash and compile result
+  // as arguments so a wallet deploy can register immediately without
+  // waiting on state updates. Returns true when the row was written.
+  // When `auto` is true the failure message also says the address is
+  // still in the form, so it can be registered by hand instead.
+  const registerDeployment = async (registerEnv: 'testnet' | 'mainnet', addr: string, tx: string, compileResult: CompileResult | null, auto = false): Promise<boolean> => {
     setError(''); setNotice('')
-    if (!address.trim()) { setError('Enter the deployed contract address first.'); return }
-    const { errors } = validateDeployParams({ ...buildParams(), env: registerEnv, address: address.trim(), txHash: txHash.trim() || undefined, sourceHash: compileRes?.sourceHash })
-    if (errors.length > 0) { setError(errors.join(' ')); return }
-    if (!compileRes) { setError('Compile first — registration requires the source hash of the exact compiled source.'); return }
-    if (!compileRes.matchesArtifact) { setError('Source differs from the compiled artifact. Recompile with `npm run compile:contract` first.'); return }
-    if (registerEnv === 'mainnet') {
-      if (!mainnetReady) { setError('Mainnet is gated: passing audit, verified testnet deployment on this chain, and a recorded smoke-test attestation are all required.'); return }
-      if (confirmText.trim() !== mainnetConfirmPhrase(networkName)) { setError(`Typed confirmation must read exactly: ${mainnetConfirmPhrase(networkName)}`); return }
+    const fail = (msg: string) => {
+      setError(msg + (auto ? ' The deployed address is still in the form above — tap "Register in Chain Manager" to save it.' : ''))
+      return false
+    }
+    if (!addr.trim()) return fail('Enter the deployed contract address first.')
+    const { errors } = validateDeployParams({ ...buildParams(), env: registerEnv, address: addr.trim(), txHash: tx.trim() || undefined, sourceHash: compileResult?.sourceHash })
+    if (errors.length > 0) return fail(errors.join(' '))
+    if (!compileResult) return fail('Compile first — registration requires the source hash of the exact compiled source.')
+    if (!compileResult.matchesArtifact) return fail('Source differs from the compiled artifact. Recompile with `npm run compile:contract` first.')
+    if (registerEnv === 'mainnet' && !gateBypassed) {
+      if (!mainnetReady) return fail('Mainnet is gated: passing audit, verified testnet deployment on this chain, and a recorded smoke-test attestation are all required.')
+      if (confirmText.trim() !== mainnetConfirmPhrase(networkName)) return fail(`Typed confirmation must read exactly: ${mainnetConfirmPhrase(networkName)}`)
     }
     setBusy(true)
     try {
       const r = await api.deployRegister({
-        ...buildParams(), env: registerEnv, address: address.trim(), txHash: txHash.trim() || undefined,
-        sourceHash: compileRes.sourceHash, confirmation: registerEnv === 'mainnet' ? confirmText : undefined,
+        ...buildParams(), env: registerEnv, address: addr.trim(), txHash: tx.trim() || undefined,
+        sourceHash: compileResult.sourceHash, confirmation: registerEnv === 'mainnet' ? confirmText : undefined,
       })
       setNotice(`Registered: StelixVault on ${r.chain} at ${r.address} (${r.verificationStatus}). Vault address written to Chain Manager. ${r.note}`)
       load()
-    } catch (e) { setError(e instanceof Error ? e.message : 'Registration failed.') }
-    setBusy(false)
+      setBusy(false)
+      return true
+    } catch (e) {
+      setBusy(false)
+      return fail(e instanceof Error ? e.message : 'Registration failed.')
+    }
   }
 
-  // Vault deployed from the admin with a connected wallet: fill the
-  // deployed address + tx hash into the form so it can be verified on
-  // the explorer and registered in Chain Manager below.
-  const onVaultDeployed = (deployedAddress: string, deployedTxHash: string) => {
+  const register = async (registerEnv: 'testnet' | 'mainnet') => {
+    await registerDeployment(registerEnv, address.trim(), txHash.trim(), compileRes)
+  }
+
+  // Vault deployed from the admin with a connected wallet: the address +
+  // tx hash are saved to the database automatically (compiling first if
+  // this session has not compiled the exact source yet), so the details
+  // can never clear from the page again — they are reloaded from D1 on
+  // every visit and every network switch. Registration still verifies
+  // on-chain code and the source hash before writing anything.
+  const onVaultDeployed = async (deployedAddress: string, deployedTxHash: string) => {
     setAddress(deployedAddress)
     setTxHash(deployedTxHash)
-    setNotice(`StelixVault deployed at ${deployedAddress}. Tap "Verify on explorer", then "Register in Chain Manager" below — registration checks on-chain code and the source hash before writing anything to D1.`)
+    let cr = compileRes
+    if (!cr || !cr.matchesArtifact) {
+      setNotice(`StelixVault deployed at ${deployedAddress}. Compiling so it can be saved to the database…`)
+      cr = await compile()
+    }
+    if (!cr || !cr.matchesArtifact) {
+      setError(`Vault deployed at ${deployedAddress}, but it could not be saved automatically — compile the exact source, then tap "Register in Chain Manager" below. The address is still in the form above.`)
+      return
+    }
+    const saved = await registerDeployment(env, deployedAddress, deployedTxHash, cr, true)
+    if (saved) setNotice(`StelixVault deployed at ${deployedAddress} and saved to the database (${env}). It will stay in the form on every visit — tap "Verify on explorer" any time to check the explorer status.`)
     load()
   }
 
@@ -355,7 +412,9 @@ export default function ContractStudio() {
       <AlertModal kind="success" message={notice} onClose={() => setNotice('')} />
       <div className="notice alert">
         <ShieldAlert />
-        <span><b>Mainnet deploy is gated:</b> audit status, testnet flow passed, small-value smoke test, typed confirmation naming the network. Arc was testnet-first because no mainnet vault is deployed yet and no independent audit exists yet. Existing locks stay under their original contract — improvements ship as a new deployment for new locks only.</span>
+        <span>{gateBypassed
+          ? <><b>Mainnet gate is bypassed (optional).</b> Mainnet vault deploys currently skip the audit, verified-testnet, smoke-test and typed-confirmation checks. On-chain code is still verified on register, and every bypassed deploy is written to the audit log. Existing locks stay under their original contract — improvements ship as a new deployment for new locks only.</>
+          : <><b>Mainnet deploy is gated:</b> audit status, testnet flow passed, small-value smoke test, typed confirmation naming the network. Arc was testnet-first because no mainnet vault is deployed yet and no independent audit exists yet. Existing locks stay under their original contract — improvements ship as a new deployment for new locks only.</>}</span>
       </div>
       <div className="grid grid2">
         <div className="card">
@@ -473,7 +532,7 @@ export default function ContractStudio() {
                 onDeployed={onVaultDeployed}
               />
             )}
-            <label style={{ marginTop: 16 }}>Deployed contract address (after the deploy confirms — filled in automatically when you deploy from the admin)</label>
+            <label style={{ marginTop: 16 }}>Deployed contract address (after the deploy confirms — filled in automatically when you deploy from the admin, and saved to the database, so it stays here on every visit)</label>
             <input placeholder="0x…" value={address} onChange={(e) => setAddress(e.target.value)} />
             <label>Deploy transaction hash (optional)</label>
             <input placeholder="0x…" value={txHash} onChange={(e) => setTxHash(e.target.value)} />
@@ -481,7 +540,7 @@ export default function ContractStudio() {
               <button className="btn ghost" onClick={verify} disabled={busy}>Verify on explorer</button>
               {env === 'testnet' && <button className="btn ghost" onClick={() => register('testnet')} disabled={busy}>Register in Chain Manager</button>}
             </div>
-            {env === 'mainnet' && <p className="field-hint">Mainnet registration is in the Mainnet gate card below — it stays gated and needs the typed confirmation naming {networkName}.</p>}
+            {env === 'mainnet' && <p className="field-hint">Mainnet registration is in the Mainnet gate card below — {gateBypassed ? 'the gate is currently bypassed, so it deploys without the gate checks.' : 'it stays gated and needs the typed confirmation naming ' + networkName + '.'}</p>}
           </div>
           <div className="card">
             <SectionTitle icon={<ShieldAlert />}>Mainnet gate</SectionTitle>
@@ -500,7 +559,39 @@ export default function ContractStudio() {
             <button className="btn ghost block" style={{ marginTop: 8 }} onClick={attestSmoke} disabled={smokeAttested}>Record smoke-test attestation</button>
             <label>Type to confirm: <span className="kbd">{mainnetConfirmPhrase(networkName)}</span></label>
             <input value={confirmText} onChange={(e) => setConfirmText(e.target.value)} placeholder={mainnetConfirmPhrase(networkName)} />
-            <button className="btn danger block" style={{ marginTop: 14 }} onClick={() => register('mainnet')} disabled={busy || !mainnetReady}><Rocket />Deploy to mainnet (gated)</button>
+            <button className="btn danger block" style={{ marginTop: 14 }} onClick={() => register('mainnet')} disabled={busy || (!mainnetReady && !gateBypassed)}><Rocket />{gateBypassed ? 'Deploy to mainnet (gate bypassed)' : 'Deploy to mainnet (gated)'}</button>
+            <div className="notice alert" style={{ marginTop: 14 }}>
+              <ShieldAlert />
+              <span>
+                <b>Mainnet gate: {gateBypassed ? 'BYPASSED — optional' : 'enforced'}.</b>{' '}
+                {gateBypassed
+                  ? 'Mainnet vault deploys currently skip the audit, verified-testnet, smoke-test and typed-confirmation checks. On-chain code is still verified on register, and every bypassed deploy is written to the audit log. This is real money — turn the gate back on when you want the checks enforced again.'
+                  : 'The gate is on: a mainnet vault deploy needs the checks above. You can make the gate optional — deploys then skip the checks (on-chain code is still verified, and bypassed deploys are audit-logged).'}
+              </span>
+            </div>
+            <button className={gateBypassed ? 'btn mint block' : 'btn danger block'} style={{ marginTop: 8 }} onClick={() => setConfirmBypass(!gateBypassed)} disabled={busy}>
+              {gateBypassed ? 'Turn the mainnet gate back on' : 'Make the mainnet gate optional'}
+            </button>
+            <AlertModal
+              kind="confirm"
+              message={confirmBypass === null ? '' : confirmBypass
+                ? 'Turn the mainnet gate OFF? Mainnet vault deploys will no longer need the audit, verified testnet deployment, smoke test or typed confirmation. On-chain code is still verified on register, and every bypassed deploy is written to the audit log.'
+                : 'Turn the mainnet gate back ON? Mainnet vault deploys will need the full gate again.'}
+              onClose={() => setConfirmBypass(null)}
+              confirmLabel={confirmBypass ? 'Yes, bypass the gate' : 'Yes, turn the gate on'}
+              onConfirm={async () => {
+                const next = confirmBypass
+                setConfirmBypass(null)
+                if (next === null) return
+                setBusy(true)
+                try {
+                  const r = await api.setGateBypass(next)
+                  setGateBypassed(r.bypassed)
+                  setNotice(r.bypassed ? 'Mainnet gate is now optional (bypassed). Mainnet vault deploys skip the gate checks.' : 'Mainnet gate is enforced again.')
+                } catch (e) { setError(e instanceof Error ? e.message : 'Could not change the gate setting.') }
+                setBusy(false)
+              }}
+            />
             <p className="field-hint">Solana note: the Solana program is built with Anchor and deployed with the Solana CLI; its program ID is then registered in Chain Manager the same way.</p>
           </div>
           <div className="card">

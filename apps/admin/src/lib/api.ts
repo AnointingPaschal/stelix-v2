@@ -457,6 +457,13 @@ export const api = {
   async attestSmoke(chainId: string, note: string): Promise<{ ok: boolean }> {
     return post('/api/admin/deploy/gate/attest', { chainId, kind: 'smoke', note })
   },
+  /** Mainnet gate bypass — makes the gate optional. Default off. */
+  async getGateBypass(): Promise<{ bypassed: boolean }> {
+    return live('/api/admin/gate-bypass')
+  },
+  async setGateBypass(bypassed: boolean): Promise<{ ok: boolean; bypassed: boolean }> {
+    return post('/api/admin/gate-bypass', { bypassed })
+  },
   async runContractAudit(source: string): Promise<{ ok: boolean; runId: number | null; sourceHash: string; compiler: string; verdict: string; counts: Record<string, number>; openCriticalHigh: number; findings: AuditRun['findings'] }> {
     return post('/api/admin/audit/run', { source })
   },
