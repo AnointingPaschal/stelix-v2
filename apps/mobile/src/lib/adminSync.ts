@@ -85,6 +85,9 @@ export interface AdminTokenEntry {
   decimals: number;
   verified: boolean;
   featured: boolean;
+  /** Admin-set display order inside My Assets for this chain (lower =
+   *  first). The sync returns tokens ordered by (chain, sort_order). */
+  sortOrder: number;
   /** Logo URL registered for this token in the admin (uploaded as a file
    *  from the Launchpad page, or the on-chain logoURI for a factory
    *  token). null = no registered logo — the wallet falls back to the
@@ -222,6 +225,7 @@ function parseToken(v: unknown): AdminTokenEntry | null {
     verified: asBool(v.verified, false),
     featured: asBool(v.featured, false),
     logoUrl: asString(v.logo_url),
+    sortOrder: asNumber(v.sort_order) ?? asNumber(v.sortOrder) ?? 0,
   };
 }
 

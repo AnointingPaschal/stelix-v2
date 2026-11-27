@@ -135,6 +135,17 @@ describe('parseAdminSync', () => {
     expect(findRegistryToken(withLogo?.tokens ?? [], 'arc', '0x3600000000000000000000000000000000000000')?.logoUrl).toBeNull();
   });
 
+  it('maps a registry token sort_order to sortOrder (0 when the row has none)', () => {
+    const data = parseAdminSync(syncBody({
+      tokens: [
+        { id: 2, symbol: 'STELIX', chain_id: 'arc', address: '0x1111111111111111111111111111111111111111', decimals: 18, verified: 1, featured: 0, sort_order: 2 },
+        { id: 1, symbol: 'USDC', chain_id: 'arc', address: '0x3600000000000000000000000000000000000000', decimals: 6, verified: 1, featured: 0 },
+      ],
+    }));
+    expect(findRegistryToken(data?.tokens ?? [], 'arc', '0x1111111111111111111111111111111111111111')?.sortOrder).toBe(2);
+    expect(findRegistryToken(data?.tokens ?? [], 'arc', '0x3600000000000000000000000000000000000000')?.sortOrder).toBe(0);
+  });
+
   it('returns null on a wrong shape, so the wallet keeps last-known state', () => {
     expect(parseAdminSync(null)).toBeNull();
     expect(parseAdminSync({})).toBeNull();

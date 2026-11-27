@@ -1185,4 +1185,102 @@ describe('Worker API (live endpoints, no sample data)', () => {
     )
     expect(r.status).toBe(200)
   })
+
+  describe('Cyber Defense (migration 0018)', () => {
+    const fromIp = async (ip: string, path: string, opts: { method?: string; token?: string; body?: unknown } = {}) => {
+      const r = await worker.fetch(
+        new Request(`https://admin.test${path}`, {
+          method: opts.method ?? 'GET',
+          headers: {
+            'content-type': 'application/json',
+            'cf-connecting-ip': ip,
+            ...(opts.token ? authed(opts.token) : {}),
+          },
+          body: opts.body === undefined ? undefined : JSON.stringify(opts.body),
+        }),
+        env,
+      )
+      const body = (await r.json().catch(() => ({}))) as Record<string, unknown>
+      return { status: r.status, body }
+    }
+
+    it('records failed sign-ins and auto-blocks the IP after 5 failures', async () => {
+      const ip = '203.0.113.42'
+      for (let i = 0; i < 5; i++) {
+        const r = await fromIp(ip, '/api/admin/login', { method: 'POST', body: { email: 'ozoemenapaschal09@gmail.com', password: 'wrong-password' } })
+        expect([401, 429]).toContain(r.status)
+      }
+      // The IP is now on the blocklist: even the public sync refuses it.
+      const blocked = await fromIp(ip, '/api/sync')
+      expect(blocked.status).toBe(403)
+      // And the feed recorded the failures plus the auto-block.
+      const feed = await call(env, '/api/admin/security-events', { token })
+      expect(feed.status).toBe(200)
+      const events = feed.body.events as { category: string; ip: string }[]
+      expect(events.filter((e) => e.category === 'login-failed' && e.ip === ip)).toHaveLength(5)
+      expect(events.some((e) => e.category === 'brute-force' && e.ip === ip)).toBe(true)
+      const blocks = await call(env, '/api/admin/security-blocks', { token })
+      expect((blocks.body.blocks as { ip: string }[]).some((b) => b.ip === ip)).toBe(true)
+    })
+
+    it('manual block refuses the IP on every route; unblock lets it back in', async () => {
+      const ip = '198.51.100.7'
+      const ok = await call(env, '/api/sync')
+      expect(ok.status).toBe(200)
+      const block = await call(env, '/api/admin/security-blocks', { method: 'POST', token, body: { ip, reason: 'test block', minutes: 60 } })
+      expect(block.status).toBe(200)
+      const refused = await fromIp(ip, '/api/sync')
+      expect(refused.status).toBe(403)
+      const refusedAdmin = await fromIp(ip, '/api/admin/dashboard', { token })
+      expect(refusedAdmin.status).toBe(403)
+      const list = await call(env, '/api/admin/security-blocks', { token })
+      const rows = list.body.blocks as { id: number; ip: string }[]
+      const row = rows.find((b) => b.ip === ip)
+      expect(row).toBeDefined()
+      const unblock = await call(env, `/api/admin/security-blocks?id=${row!.id}`, { method: 'DELETE', token })
+      expect(unblock.status).toBe(200)
+      const back = await fromIp(ip, '/api/sync')
+      expect(back.status).toBe(200)
+    })
+
+    it('records an unauthenticated admin probe in the feed', async () => {
+      const probe = await call(env, '/api/admin/dashboard')
+      expect(probe.status).toBe(401)
+      const feed = await call(env, '/api/admin/security-events', { token })
+      const events = feed.body.events as { category: string }[]
+      expect(events.some((e) => e.category === 'unauthorized-admin')).toBe(true)
+    })
+
+    it('security audit scores the live configuration', async () => {
+      const res = await call(env, '/api/admin/security-audit', { token })
+      expect(res.status).toBe(200)
+      const checks = res.body.checks as { id: string; status: string }[]
+      const byId = new Map(checks.map((c) => [c.id, c.status]))
+      expect(byId.get('admin-password')).toBe('pass')
+      expect(byId.get('session-secret')).toBe('pass')
+      expect(byId.get('config-signing')).toBe('pass')
+      expect(byId.get('blocklist')).toBe('pass')
+      expect(byId.get('keeper')).toBe('warn')
+    })
+
+    it('contract watch returns an array (empty with no deployments)', async () => {
+      const res = await call(env, '/api/admin/contract-watch', { token })
+      expect(res.status).toBe(200)
+      expect(Array.isArray(res.body.contracts)).toBe(true)
+    })
+
+    it('token order: a reorder POST rewrites sort_order for the chain', async () => {
+      const a = await call(env, '/api/admin/tokens', { method: 'POST', token, body: { symbol: 'AAA', chainId: 'arc', address: '0x1111111111111111111111111111111111111111', decimals: 18, verified: true } })
+      const b = await call(env, '/api/admin/tokens', { method: 'POST', token, body: { symbol: 'BBB', chainId: 'arc', address: '0x2222222222222222222222222222222222222222', decimals: 18, verified: false } })
+      expect(a.status).toBe(201)
+      expect(b.status).toBe(201)
+      const idA = a.body.id as number
+      const idB = b.body.id as number
+      const reorder = await call(env, '/api/admin/tokens/order', { method: 'POST', token, body: { chainId: 'arc', ids: [idB, idA] } })
+      expect(reorder.status).toBe(200)
+      const rows = db.tables.tokens as { id: number; sort_order: number }[]
+      expect(rows.find((r) => r.id === idB)?.sort_order).toBe(0)
+      expect(rows.find((r) => r.id === idA)?.sort_order).toBe(1)
+    })
+  })
 })

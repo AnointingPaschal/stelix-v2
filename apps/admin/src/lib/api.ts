@@ -36,7 +36,7 @@ type ChainRow = {
 }
 type KeeperRow = { id: number; started_at: string; chain_id: string; locks_checked: number; triggers: number; executed: number; retried: number; failed: number; status: KeeperRun['status'] }
 type AuditRow = { id: number; created_at: string; actor: string; action: string; detail: string | null }
-type TokenRow = { id: number; symbol: string; chain_id: string; address: string; decimals: number; verified: number; featured: number }
+type TokenRow = { id: number; symbol: string; chain_id: string; address: string; decimals: number; verified: number; featured: number; sort_order?: number | null }
 type LockDbRow = { id: string; chain_id: string; owner: string; token_address: string; token_symbol: string; amount_raw: string; status: string; unlock_time: string | null }
 
 const mapChain = (c: ChainRow): Chain => ({
@@ -311,9 +311,33 @@ export const api = {
   async setMaintenance(data: { enabled: boolean; message: string; scope: 'all' | 'wallet' }): Promise<{ ok: boolean; maintenance: { enabled: boolean; message: string; scope: 'all' | 'wallet'; updatedAt: string | null } }> {
     return post('/api/admin/maintenance', data)
   },
-  async getTokens(): Promise<{ id: number; symbol: string; chain: string; address: string; decimals: number; verified: boolean; featured: boolean }[]> {
+  async getTokens(): Promise<{ id: number; symbol: string; chain: string; address: string; decimals: number; verified: boolean; featured: boolean; sortOrder: number }[]> {
     const d = await live<{ tokens: TokenRow[] }>('/api/admin/tokens')
-    return d.tokens.map((t) => ({ id: t.id, symbol: t.symbol, chain: t.chain_id, address: t.address, decimals: t.decimals, verified: t.verified === 1, featured: t.featured === 1 }))
+    return d.tokens.map((t) => ({ id: t.id, symbol: t.symbol, chain: t.chain_id, address: t.address, decimals: t.decimals, verified: t.verified === 1, featured: t.featured === 1, sortOrder: typeof t.sort_order === 'number' ? t.sort_order : 0 }))
+  },
+  async reorderTokens(chainId: string, ids: number[]): Promise<{ ok: boolean }> {
+    return post('/api/admin/tokens/order', { chainId, ids })
+  },
+  // ---- Cyber Defense ----
+  async getSecurityEvents(limit = 200): Promise<{ events: { id: number; category: string; status: string; ip: string; country: string; user_agent: string; method: string; path: string; detail: string; created_at: string }[] }> {
+    return live(`/api/admin/security-events?limit=${limit}`)
+  },
+  async getSecurityBlocks(): Promise<{ blocks: { id: number; ip: string; reason: string; blocked_by: string; expires_at: string | null; created_at: string }[] }> {
+    return live('/api/admin/security-blocks')
+  },
+  async blockIp(ip: string, reason: string, minutes: number | null): Promise<{ ok: boolean }> {
+    return post('/api/admin/security-blocks', { ip, reason, minutes })
+  },
+  async unblockIp(id: number): Promise<{ ok: boolean }> {
+    const r = await fetch(`/api/admin/security-blocks?id=${id}`, { method: 'DELETE', credentials: 'same-origin' })
+    if (!r.ok) throw new Error(`Unblock failed: ${r.status}`)
+    return r.json() as Promise<{ ok: boolean }>
+  },
+  async getSecurityAudit(): Promise<{ checks: { id: string; label: string; status: 'pass' | 'warn' | 'fail'; detail: string }[] }> {
+    return live('/api/admin/security-audit')
+  },
+  async getContractWatch(): Promise<{ contracts: { chainId: string; address: string; kind: string; env: string; hasCode: boolean | null; codeNote: string; recentTxCount: number | null; lastTxAt: string | null; txNote: string; checkedAt: string }[] }> {
+    return live('/api/admin/contract-watch')
   },
   async searchTokens(q: string, chain?: string): Promise<{ tokens: { symbol: string; name: string; chain: string; address: string; priceUsd: number | null; dex: string; pairUrl: string | null; source: string }[]; source: string }> {
     const params = new URLSearchParams({ q })

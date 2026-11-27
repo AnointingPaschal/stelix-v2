@@ -211,6 +211,70 @@ async function audit(env: Env, actor: string | null, action: string, detail: str
   }
 }
 
+// ---- Cyber Defense (migration 0018) ----
+// The Worker is the only server the whole system has: every admin page,
+// every wallet sync, every public feed passes through here. So the attack
+// feed lives here too — the Worker records security-relevant requests in
+// security_events and refuses blocked IPs on every route. A Worker-level
+// block cannot stop anyone calling the vault contracts directly on-chain;
+// the contracts' own onlyOwner / onlyKeeper guards are the defense there.
+// Logging never breaks a request: every write is best-effort.
+export type SecurityStatus = 'blocked' | 'intercepted' | 'failed' | 'success'
+
+async function logSecurityEvent(
+  env: Env,
+  req: Request | null,
+  category: string,
+  status: SecurityStatus,
+  detail: string,
+): Promise<void> {
+  try {
+    const ip = req ? clientIp(req) : 'unknown'
+    const country = req ? (req.headers.get('cf-ipcountry') ?? '') : ''
+    const ua = req ? (req.headers.get('user-agent') ?? '').slice(0, 200) : ''
+    const method = req ? req.method : ''
+    const path = req ? new URL(req.url).pathname : ''
+    await env.DB.prepare(
+      'INSERT INTO security_events (category, status, ip, country, user_agent, method, path, detail) VALUES (?, ?, ?, ?, ?, ?, ?, ?)',
+    ).bind(category, status, ip, country, ua, method, path, detail).run()
+    // Keep the feed bounded: an attacker hammering a blocked IP would
+    // otherwise grow the table without limit.
+    await env.DB.prepare(
+      'DELETE FROM security_events WHERE id NOT IN (SELECT id FROM security_events ORDER BY id DESC LIMIT 5000)',
+    ).run()
+  } catch {
+    // The feed is observability, never a gate.
+  }
+}
+
+async function isIpBlocked(env: Env, ip: string): Promise<boolean> {
+  if (!ip || ip === 'unknown') return false
+  try {
+    const row = await env.DB.prepare(
+      "SELECT 1 AS blocked FROM security_blocks WHERE ip = ? AND active = ? AND (expires_at IS NULL OR expires_at = '' OR datetime(expires_at) > datetime('now'))",
+    ).bind(ip, 1).first<{ blocked: number }>()
+    return !!row
+  } catch {
+    // Fail open: a missing table (migration not applied yet) must not
+    // lock everyone out.
+    return false
+  }
+}
+
+async function blockIp(
+  env: Env,
+  ip: string,
+  reason: string,
+  blockedBy: string | null,
+  minutes: number | null,
+): Promise<void> {
+  const expiresAt = minutes ? new Date(Date.now() + minutes * 60 * 1000).toISOString() : null
+  await env.DB.prepare(
+    `INSERT INTO security_blocks (ip, reason, blocked_by, expires_at, active) VALUES (?, ?, ?, ?, 1)
+     ON CONFLICT(ip) DO UPDATE SET reason = excluded.reason, blocked_by = excluded.blocked_by, expires_at = excluded.expires_at, active = 1`,
+  ).bind(ip, reason, blockedBy ?? '', expiresAt).run()
+}
+
 // ---- Realtime sync version (migration 0007) ----
 // Monotonic counter the wallet polls via GET /api/sync. Bumped on every
 // admin write so an edit is visible within one poll interval. Best-effort:
@@ -674,11 +738,26 @@ async function handleLogin(req: Request, env: Env): Promise<Response> {
       'INSERT INTO login_attempts (ip, attempts, last_attempt_at, locked_until) VALUES (?, ?, datetime(\'now\'), ?) ON CONFLICT(ip) DO UPDATE SET attempts = excluded.attempts, last_attempt_at = excluded.last_attempt_at, locked_until = excluded.locked_until',
     ).bind(ip, attempts, lockedUntil).run()
     await audit(env, email || ip, 'admin.login_failed', `failed sign-in from ${ip} (${attempts} attempts)`)
+    // Cyber feed: every failed sign-in is an event; the 5th failure also
+    // fires the gunner — the IP is blocked at the Worker for 60 minutes,
+    // on top of the 15-minute login lockout above.
+    await logSecurityEvent(env, req, 'login-failed', 'failed', `failed admin sign-in (${attempts} attempts)`)
+    if (attempts >= 5) {
+      try {
+        await blockIp(env, ip, '5 failed admin sign-ins', 'auto-block', 60)
+        await logSecurityEvent(env, req, 'brute-force', 'intercepted', `IP blocked for 60 minutes after 5 failed admin sign-ins`)
+      } catch {
+        // The lockout above already stops the login; the block is a bonus.
+      }
+    }
     return json({ error: attempts >= 5 ? 'Too many failed attempts. Try again in 15 minutes.' : 'Invalid email or password.' }, 401)
   }
 
   await env.DB.prepare('DELETE FROM login_attempts WHERE ip = ?').bind(ip).run()
   await audit(env, email, 'admin.login', `admin sign-in from ${ip}`)
+  // A sign-in that went through is also a feed event — a login from a
+  // new IP or country is the first sign of a successful penetration.
+  await logSecurityEvent(env, req, 'login', 'success', `admin sign-in from ${ip}`)
   const token = await makeSession(email, env.ADMIN_SESSION_SECRET, await getSessionVersion(env))
   return json({ ok: true, email }, 200, { 'set-cookie': sessionCookie(token) })
 }
@@ -713,6 +792,14 @@ export default {
     const path = url.pathname
 
     if (path === '/api/health') return json({ ok: true, env: env.ENVIRONMENT })
+
+    // Cyber Defense: a blocked IP is refused on EVERY route — admin,
+    // public API and wallet sync alike — before any handler runs. The
+    // hit is recorded so the admin sees the attacker still knocking.
+    if (await isIpBlocked(env, clientIp(req))) {
+      await logSecurityEvent(env, req, 'blocked-ip', 'blocked', 'request refused: IP is on the blocklist')
+      return json({ error: 'forbidden' }, 403)
+    }
 
     if (path === '/api/admin/login' && req.method === 'POST') return handleLogin(req, env)
     if (path === '/api/admin/logout' && req.method === 'POST') {
@@ -750,7 +837,7 @@ export default {
     // Importing an unregistered token by address is still allowed — the
     // wallet says so instead of blocking it.
     if (path === '/api/tokens' && req.method === 'GET') {
-      const { results } = await env.DB.prepare('SELECT * FROM tokens ORDER BY chain_id, symbol').all()
+      const { results } = await env.DB.prepare('SELECT * FROM tokens ORDER BY chain_id, sort_order, symbol').all()
       return json({ tokens: results ?? [] })
     }
 
@@ -794,7 +881,7 @@ export default {
       const latestFees = await getLatestFees(env)
       const announcements = await getPublicAnnouncements(env)
       const config = await getSignedConfig(env)
-      const { results: tokens } = await env.DB.prepare('SELECT * FROM tokens ORDER BY chain_id, symbol').all()
+      const { results: tokens } = await env.DB.prepare('SELECT * FROM tokens ORDER BY chain_id, sort_order, symbol').all()
       const maintenance = await getMaintenanceState(env)
       const networkMode = await getNetworkMode(env)
       return json({
@@ -852,6 +939,12 @@ export default {
     // Everything below requires a valid admin session.
     const authed = await readSession(req, env)
     if (!authed && path.startsWith('/api/')) {
+      // Cyber feed: someone probing an admin endpoint without a session.
+      // The session check itself (/api/admin/session) is excluded — the
+      // login page calls it on every load, and a 401 there is normal.
+      if (path.startsWith('/api/admin/') && path !== '/api/admin/session' && path !== '/api/admin/logout') {
+        await logSecurityEvent(env, req, 'unauthorized-admin', 'intercepted', `unauthenticated request to ${path}`)
+      }
       return json({ error: 'admin session required — sign in first' }, 401)
     }
     if (!authed) {
@@ -1242,7 +1335,7 @@ export default {
 
     // ---- Tokens / DEX registry ----
     if (path === '/api/admin/tokens' && req.method === 'GET') {
-      const { results } = await env.DB.prepare('SELECT * FROM tokens ORDER BY chain_id, symbol').all()
+      const { results } = await env.DB.prepare('SELECT * FROM tokens ORDER BY chain_id, sort_order, symbol').all()
       return json({ tokens: results ?? [] })
     }
     if (path === '/api/admin/tokens' && req.method === 'POST') {
@@ -1258,13 +1351,32 @@ export default {
       if (!chain) return json({ error: 'chain not found in Chain Manager' }, 400)
       const existing = await env.DB.prepare('SELECT id FROM tokens WHERE chain_id = ? AND address = ?').bind(chainId, address).first()
       if (existing) return json({ error: 'Token already registered for this chain' }, 409)
+      // New tokens go last in their chain's My Assets order; the admin
+      // moves them with POST /api/admin/tokens/order.
+      const maxRow = await env.DB.prepare('SELECT COALESCE(MAX(sort_order), -1) AS m FROM tokens WHERE chain_id = ?').bind(chainId).first<{ m: number }>()
+      const sortOrder = Number.isFinite(maxRow?.m) ? (maxRow?.m ?? -1) + 1 : 0
       const run = await env.DB.prepare(
-        'INSERT INTO tokens (symbol, chain_id, address, decimals, verified, featured) VALUES (?, ?, ?, ?, ?, ?)',
-      ).bind(symbol, chainId, address, decimals, body.verified ? 1 : 0, body.featured ? 1 : 0).run()
+        'INSERT INTO tokens (symbol, chain_id, address, decimals, verified, featured, sort_order) VALUES (?, ?, ?, ?, ?, ?, ?)',
+      ).bind(symbol, chainId, address, decimals, body.verified ? 1 : 0, body.featured ? 1 : 0, sortOrder).run()
       await bumpSync(env)
       await audit(env, authed, 'token.add', `${symbol} on ${chainId} (${address})`)
       const id = (run as unknown as { meta?: { last_row_id?: number } }).meta?.last_row_id ?? null
       return json({ ok: true, id }, 201)
+    }
+    if (path === '/api/admin/tokens/order' && req.method === 'POST') {
+      // Reorder a chain's registry tokens: the body carries the full id
+      // order for that chain; position in the list is the new sort_order.
+      // The wallet syncs tokens in this order into My Assets.
+      const body = await readJson(req)
+      const chainId = String(body.chainId ?? body.chain_id ?? '').trim()
+      const ids = Array.isArray(body.ids) ? body.ids.map((v: unknown) => Number(v)).filter((n: number) => Number.isInteger(n)) : []
+      if (!chainId || ids.length === 0) return json({ error: 'chainId and a non-empty ids list are required' }, 400)
+      for (let i = 0; i < ids.length; i++) {
+        await env.DB.prepare('UPDATE tokens SET sort_order = ? WHERE id = ?').bind(i, ids[i]).run()
+      }
+      await bumpSync(env)
+      await audit(env, authed, 'token.reorder', `reordered ${ids.length} registry tokens on ${chainId}`)
+      return json({ ok: true })
     }
     if (path === '/api/admin/tokens' && req.method === 'DELETE') {
       const id = url.searchParams.get('id')
@@ -1306,6 +1418,142 @@ export default {
       } catch {
         return json({ error: 'DexScreener search unreachable' }, 502)
       }
+    }
+
+    // ---- Cyber Defense (migration 0018) ----
+    // The live feed the Cyber page polls: newest first. The blocklist
+    // check, login hooks and unauthorized-admin hook above write here.
+    if (path === '/api/admin/security-events' && req.method === 'GET') {
+      const limit = Math.min(Math.max(Number(url.searchParams.get('limit') ?? 200), 1), 500)
+      const { results } = await env.DB.prepare('SELECT * FROM security_events ORDER BY id DESC LIMIT ?').bind(limit).all()
+      return json({ events: results ?? [] })
+    }
+    if (path === '/api/admin/security-blocks' && req.method === 'GET') {
+      const { results } = await env.DB.prepare('SELECT * FROM security_blocks WHERE active = ? ORDER BY id DESC').bind(1).all()
+      return json({ blocks: results ?? [] })
+    }
+    // The gunner: block an IP at the Worker. minutes null = permanent
+    // until an admin unblocks it. The block takes effect on the very
+    // next request from that IP, on every route.
+    if (path === '/api/admin/security-blocks' && req.method === 'POST') {
+      const body = await readJson(req)
+      const ip = String(body.ip ?? '').trim()
+      const reason = String(body.reason ?? '').trim() || 'blocked from Cyber Defense'
+      const minutes = body.minutes === null || body.minutes === undefined ? null : Number(body.minutes)
+      if (!ip) return json({ error: 'ip is required' }, 400)
+      if (minutes !== null && (!Number.isFinite(minutes) || minutes <= 0)) return json({ error: 'minutes must be a positive number, or null for permanent' }, 400)
+      await blockIp(env, ip, reason, authed, minutes)
+      await logSecurityEvent(env, req, 'manual-block', 'blocked', `IP ${ip} blocked by ${authed} (${reason})`)
+      await audit(env, authed, 'security.block', `IP ${ip} blocked (${reason})`)
+      return json({ ok: true })
+    }
+    if (path === '/api/admin/security-blocks' && req.method === 'DELETE') {
+      const id = url.searchParams.get('id')
+      if (!id) return json({ error: 'id required' }, 400)
+      await env.DB.prepare('UPDATE security_blocks SET active = ? WHERE id = ?').bind(0, Number(id)).run()
+      await audit(env, authed, 'security.unblock', `block id ${id} lifted`)
+      return json({ ok: true })
+    }
+    // Full security check: the live configuration, scored pass / warn /
+    // fail. Nothing here is guessed — each check reads the real secret,
+    // table or counter it names.
+    if (path === '/api/admin/security-audit' && req.method === 'GET') {
+      const checks: { id: string; label: string; status: 'pass' | 'warn' | 'fail'; detail: string }[] = []
+      const push = (id: string, label: string, status: 'pass' | 'warn' | 'fail', detail: string) => checks.push({ id, label, status, detail })
+      let hashSet = !!(env.ADMIN_PASSWORD_HASH && env.ADMIN_PASSWORD_HASH.length > 0)
+      try {
+        const authRow = await env.DB.prepare('SELECT password_hash FROM admin_auth WHERE id = 1').first<{ password_hash: string }>()
+        if (authRow?.password_hash) hashSet = true
+      } catch { /* admin_auth missing — the secret is the only source */ }
+      push('admin-password', 'Admin password hash set', hashSet ? 'pass' : 'fail', hashSet ? 'A password hash is stored (Pages secret or D1).' : 'No admin password hash found — set ADMIN_PASSWORD_HASH or change the password in the admin.')
+      push('session-secret', 'Admin session secret set', env.ADMIN_SESSION_SECRET ? 'pass' : 'fail', env.ADMIN_SESSION_SECRET ? 'Sessions are signed with ADMIN_SESSION_SECRET.' : 'ADMIN_SESSION_SECRET is not set — sessions cannot be verified.')
+      push('config-signing', 'Config signing secret set', env.CONFIG_SIGNING_SECRET ? 'pass' : 'fail', env.CONFIG_SIGNING_SECRET ? 'Published app configs are HMAC-signed.' : 'CONFIG_SIGNING_SECRET is not set — config publishing refuses to sign.')
+      const keeperLive = !!(env.KEEPER_WORKER_URL && env.KEEPER_RUN_KEY)
+      push('keeper', 'Keeper Worker connected', keeperLive ? 'pass' : 'warn', keeperLive ? 'KEEPER_WORKER_URL and KEEPER_RUN_KEY are set — auto-sells can run.' : 'Keeper secrets are not set — locks cannot auto-sell until the keeper is deployed and connected.')
+      try {
+        const blocks = await env.DB.prepare('SELECT COUNT(*) AS n FROM security_blocks WHERE active = ?').bind(1).first<{ n: number }>()
+        push('blocklist', 'Blocklist live', 'pass', `${blocks?.n ?? 0} IP${blocks?.n === 1 ? '' : 's'} currently blocked at the Worker.`)
+      } catch {
+        push('blocklist', 'Blocklist live', 'fail', 'security_blocks table missing — apply migration 0018.')
+      }
+      try {
+        const failed = await env.DB.prepare("SELECT COUNT(*) AS n FROM security_events WHERE category = ? AND datetime(created_at) > datetime('now', '-1 day')").bind('login-failed').first<{ n: number }>()
+        const n = failed?.n ?? 0
+        push('failed-logins', 'Failed admin sign-ins (24h)', n === 0 ? 'pass' : n < 5 ? 'warn' : 'fail', n === 0 ? 'No failed admin sign-ins in the last 24 hours.' : `${n} failed admin sign-in${n === 1 ? '' : 's'} in the last 24 hours — check the Cyber feed for the source IPs.`)
+      } catch {
+        push('failed-logins', 'Failed admin sign-ins (24h)', 'fail', 'security_events table missing — apply migration 0018.')
+      }
+      const maint = await getMaintenanceState(env)
+      push('maintenance', 'Maintenance mode', maint.enabled ? 'warn' : 'pass', maint.enabled ? `Maintenance mode is ON (${maint.scope}) — the app shows the maintenance screen.` : 'Maintenance mode is off.')
+      return json({ checks })
+    }
+    // Contract watch: every deployed vault / adapter / feed, checked live
+    // — does the address still hold code, and what are its latest
+    // transactions? The explorer read is best-effort (some explorers
+    // need an API key); a failed read reports "unavailable", never a
+    // guessed "all clear".
+    if (path === '/api/admin/contract-watch' && req.method === 'GET') {
+      const { results: deps } = await env.DB.prepare('SELECT chain_id, address, env FROM deployments ORDER BY id DESC').all<{ chain_id: string; address: string; env: string }>()
+      const { results: chainRows } = await env.DB.prepare('SELECT id, rpc_urls, explorer_url, vault_address FROM chains').all<{ id: string; rpc_urls: string; explorer_url: string; vault_address: string | null }>()
+      const rpcByChain = new Map<string, { rpc: string; explorer: string }>()
+      for (const c of chainRows ?? []) {
+        rpcByChain.set(c.id, { rpc: String(c.rpc_urls ?? '').split(',')[0]?.trim() ?? '', explorer: String(c.explorer_url ?? '').replace(/\/$/, '') })
+      }
+      const seen = new Set<string>()
+      const targets: { chainId: string; address: string; kind: string; env: string }[] = []
+      for (const d of deps ?? []) {
+        const key = `${d.chain_id}:${String(d.address).toLowerCase()}`
+        if (seen.has(key)) continue
+        seen.add(key)
+        targets.push({ chainId: d.chain_id, address: d.address, kind: 'deployment', env: d.env ?? '' })
+      }
+      for (const c of chainRows ?? []) {
+        if (!c.vault_address) continue
+        const key = `${c.id}:${String(c.vault_address).toLowerCase()}`
+        if (seen.has(key)) continue
+        seen.add(key)
+        targets.push({ chainId: c.id, address: c.vault_address, kind: 'vault', env: '' })
+      }
+      const contracts = await Promise.all(targets.map(async (t) => {
+        const info = rpcByChain.get(t.chainId) ?? { rpc: '', explorer: '' }
+        let hasCode: boolean | null = null
+        let codeNote = ''
+        if (info.rpc) {
+          try {
+            const r = await fetchWithTimeout(info.rpc, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'eth_getCode', params: [t.address, 'latest'] }) }, 6000)
+            const body = (await r.json()) as { result?: string }
+            hasCode = typeof body.result === 'string' && body.result !== '0x' && body.result.length > 2
+            if (!hasCode) codeNote = 'No code at this address — the contract may have been self-destructed or the address is wrong.'
+          } catch {
+            codeNote = 'RPC unreachable — code check unavailable.'
+          }
+        } else {
+          codeNote = 'No RPC configured for this chain.'
+        }
+        let recentTxCount: number | null = null
+        let lastTxAt: string | null = null
+        let txNote = ''
+        if (info.explorer) {
+          try {
+            const r = await fetchWithTimeout(`${info.explorer}/api?module=account&action=txlist&address=${t.address}&page=1&offset=5&sort=desc`, {}, 6000)
+            const body = (await r.json()) as { status?: string; result?: { hash?: string; timeStamp?: string }[]; message?: string }
+            if (Array.isArray(body.result)) {
+              const txs = body.result.filter((x) => x && typeof x.hash === 'string' && x.timeStamp)
+              recentTxCount = txs.length
+              const latest = txs[0]?.timeStamp ? Number(txs[0].timeStamp) * 1000 : null
+              lastTxAt = latest ? new Date(latest).toISOString() : null
+            } else {
+              txNote = body.message ? `Explorer: ${body.message}` : 'Explorer returned no transactions.'
+            }
+          } catch {
+            txNote = 'Explorer unreachable — recent transactions unavailable.'
+          }
+        } else {
+          txNote = 'No explorer configured for this chain.'
+        }
+        return { ...t, hasCode, codeNote, recentTxCount, lastTxAt, txNote, checkedAt: new Date().toISOString() }
+      }))
+      return json({ contracts })
     }
 
     // ---- Fees and Limits (versioned) ----

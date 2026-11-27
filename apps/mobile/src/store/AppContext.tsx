@@ -240,6 +240,10 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
   const pendingModeRef = useRef<NetworkMode>(null);
   const transactionActiveRef = useRef(false);
   const lastMergedRef = useRef<ChainConfig[] | null>(null);
+  /** Last-known assets per wallet + chain: switching chains shows the
+   *  cached list instantly while the live refresh runs in the background,
+   *  so My Assets never sits empty waiting on RPC + price reads. */
+  const balancesCacheRef = useRef(new Map<string, TokenBalance[]>());
   const setTransactionActive = useCallback((v: boolean) => {
     transactionActiveRef.current = v;
     setTransactionActiveState(v);
@@ -448,7 +452,19 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     setLoading(true);
     try {
       const imported = await loadImportedTokens(address);
-      const res = await fetchBalances(chain.id, chainAddress, imported);
+      // Registry tokens for this chain ride along: every admin-registered
+      // token appears in My Assets, in the admin's order, verified badge
+      // when the admin marked it verified.
+      const registry = adminTokens.map((t) => ({
+        chainId: t.chainId,
+        address: t.address,
+        symbol: t.symbol,
+        decimals: t.decimals,
+        logoUrl: t.logoUrl,
+        verified: t.verified,
+        sortOrder: t.sortOrder,
+      }));
+      const res = await fetchBalances(chain.id, chainAddress, imported, registry);
       // Balances come back with locked: 0 (the RPC layer does not know
       // about locks) — keep the locked figures refreshLocks filled in,
       // or a balance refresh would silently zero the Locked split.
@@ -468,7 +484,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     } finally {
       setLoading(false);
     }
-  }, [chainAddress, chain.id, address]);
+  }, [chainAddress, chain.id, address, adminTokens]);
 
   const refreshLocks = useCallback(async () => {
     if (!address) return;
@@ -611,14 +627,25 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
 
   // Live refresh when the wallet unlocks or the chain changes.
   useEffect(() => {
-    if (unlocked && address) void refreshAll();
-    else {
+    if (unlocked && address) {
+      // Show this wallet + chain's last-known assets instantly, then
+      // refresh live in the background — no blank list, no waiting.
+      const cached = balancesCacheRef.current.get(`${address}:${chain.id}`);
+      if (cached) setTokens(cached);
+      void refreshAll();
+    } else {
       setTokens([]);
       setLocks([]);
       setAllHistory([]);
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [unlocked, address, chain.id]);
+
+  // Keep the per-chain cache current whenever the asset list changes
+  // (a fresh balance fetch, or locks filling in the locked split).
+  useEffect(() => {
+    if (address && tokens.length > 0) balancesCacheRef.current.set(`${address}:${chain.id}`, tokens);
+  }, [address, chain.id, tokens]);
 
   const setChain = useCallback((c: ChainConfig) => setChainState(c), []);
   const addLock = useCallback((l: BullLock) => setLocks((prev) => [l, ...prev]), []);

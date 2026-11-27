@@ -44,6 +44,12 @@ export interface ImportedToken {
   coingeckoId?: string;
   /** Logo URL verified at import time (user saw it in the preview card). */
   logoUrl?: string | null;
+  /** True when this row came from the admin token registry and the admin
+   *  marked it verified — My Assets shows the verified badge. */
+  verified?: boolean;
+  /** Admin-set display order (registry rows only); user-imported rows
+   *  have none and sort after registry rows, in their saved order. */
+  sortOrder?: number;
 }
 
 export interface TokenBalance {
@@ -63,7 +69,59 @@ export interface TokenBalance {
   coingeckoId?: string;
   /** Verified logo URL (imported tokens) — null = no logo found anywhere. */
   logoUrl?: string | null;
+  /** True when the admin registry marked this token verified — My Assets
+   *  shows the verified badge next to the symbol. */
+  verified?: boolean;
+  /** Admin-set display order (registry rows only). */
+  sortOrder?: number;
   isSpam: boolean; // true only when flagged by the dust/spam filter (see history.ts)
+}
+
+/** A token from the admin Token Registry, as the wallet sync delivers it. */
+export interface RegistryTokenInput {
+  chainId: string;
+  address: string;
+  symbol: string;
+  name?: string;
+  decimals: number;
+  logoUrl?: string | null;
+  verified: boolean;
+  sortOrder: number;
+}
+
+/** Merge the admin registry into the user's imported tokens for one chain.
+ *  Every registry token for the chain appears in My Assets — in the
+ *  admin's order — and a token the user also imported is shown once,
+ *  with the registry's (verified) name, symbol, decimals and logo.
+ *  User-imported tokens that are not in the registry follow, in their
+ *  saved order. Pure function, unit-tested. */
+export function mergeRegistryTokens(
+  imported: ImportedToken[],
+  registry: RegistryTokenInput[],
+  chainId: string,
+): ImportedToken[] {
+  const byAddress = new Map<string, ImportedToken>();
+  const orderedRegistry = [...registry]
+    .filter((r) => r.chainId === chainId)
+    .sort((a, b) => a.sortOrder - b.sortOrder);
+  for (const r of orderedRegistry) {
+    byAddress.set(r.address.toLowerCase(), {
+      chainId,
+      address: r.address,
+      symbol: r.symbol,
+      name: r.name ?? r.symbol,
+      decimals: r.decimals,
+      logoUrl: r.logoUrl ?? null,
+      verified: r.verified,
+      sortOrder: r.sortOrder,
+    });
+  }
+  for (const t of imported) {
+    if (t.chainId !== chainId) continue;
+    const key = t.address.toLowerCase();
+    if (!byAddress.has(key)) byAddress.set(key, t);
+  }
+  return [...byAddress.values()];
 }
 
 export interface BalancesResult {
@@ -365,6 +423,8 @@ async function fetchErc20Balance(
     priceUpdatedAt: null,
     coingeckoId: token.coingeckoId,
     logoUrl: token.logoUrl ?? null,
+    verified: token.verified ?? false,
+    sortOrder: token.sortOrder,
     isSpam: false,
   };
 }
@@ -378,11 +438,15 @@ const MAJOR_COINGECKO_IDS: Record<string, string> = {
   USDT: 'tether',
 };
 
-/** Fetch live balances for the native asset + the user's imported tokens. */
+/** Fetch live balances for the native asset + the user's imported tokens.
+ *  `registryTokens` are the admin registry entries for this chain: every
+ *  one appears in My Assets, in the admin's order, verified badge when
+ *  the admin marked it verified. */
 export async function fetchBalances(
   chainId: string,
   address: string,
   importedTokens?: ImportedToken[],
+  registryTokens?: RegistryTokenInput[],
 ): Promise<BalancesResult> {
   const chain = getChain(chainId);
   const startedAt = Date.now();
@@ -424,25 +488,30 @@ export async function fetchBalances(
         priceUpdatedAt: solPrice !== null ? Date.now() : null,
         isSpam: false,
       });
-      for (const t of sol.tokens) {
-        const ds = await fetchDexScreenerToken(chain.id, t.mint);
-        tokens.push({
-          symbol: ds?.symbol ?? `${t.mint.slice(0, 4)}…${t.mint.slice(-4)}`,
-          name: ds?.name ?? `SPL token ${t.mint.slice(0, 8)}…`,
-          chainId: chain.id,
-          address: t.mint,
-          decimals: t.decimals,
-          balance: t.balance,
-          balanceRaw: t.balanceRaw,
-          locked: 0,
-          priceUsd: ds?.priceUsd ?? null,
-          price: ds?.priceUsd ?? null,
-          priceSource: ds?.priceUsd ? 'dexscreener' : 'unavailable',
-          priceUpdatedAt: ds?.updatedAt ?? null,
-          logoUrl: null,
-          isSpam: false,
-        });
-      }
+      // Prices for every SPL token in parallel: a sequential loop made
+      // the list load one DexScreener round-trip at a time.
+      const priced = await Promise.all(
+        sol.tokens.map(async (t) => {
+          const ds = await fetchDexScreenerToken(chain.id, t.mint);
+          return {
+            symbol: ds?.symbol ?? `${t.mint.slice(0, 4)}…${t.mint.slice(-4)}`,
+            name: ds?.name ?? `SPL token ${t.mint.slice(0, 8)}…`,
+            chainId: chain.id,
+            address: t.mint,
+            decimals: t.decimals,
+            balance: t.balance,
+            balanceRaw: t.balanceRaw,
+            locked: 0,
+            priceUsd: ds?.priceUsd ?? null,
+            price: ds?.priceUsd ?? null,
+            priceSource: ds?.priceUsd ? 'dexscreener' : 'unavailable',
+            priceUpdatedAt: ds?.updatedAt ?? null,
+            logoUrl: null,
+            isSpam: false,
+          } as TokenBalance;
+        }),
+      );
+      tokens.push(...priced);
       const totalUsd = tokens.reduce((s, t) => s + (t.priceUsd !== null ? t.balance * t.priceUsd : 0), 0);
       return { chain, address, tokens, totalUsd, loading: false, error: null, updatedAt: Date.now() };
     } catch (e) {
@@ -464,7 +533,11 @@ export async function fetchBalances(
     return { chain, address, tokens: [], totalUsd: 0, loading: false, error: 'Invalid wallet address.', updatedAt: startedAt };
   }
   const provider = getProvider(chain);
-  const imported = (importedTokens ?? (await loadImportedTokens(address))).filter((t) => t.chainId === chain.id);
+  const imported = mergeRegistryTokens(
+    importedTokens ?? (await loadImportedTokens(address)),
+    registryTokens ?? [],
+    chain.id,
+  );
   let native: TokenBalance;
   try {
     native = await fetchNativeBalance(chain, provider, address);
@@ -491,27 +564,31 @@ export async function fetchBalances(
   const tokens = [native, ...erc20.filter((t): t is TokenBalance => t !== null)];
 
   // Prices: DexScreener per ERC-20, CoinGecko for majors (native + stables).
+  // The DexScreener reads run in parallel: a sequential loop made the
+  // list load one round-trip at a time on every chain switch.
   const cgIds = [...new Set(tokens.map((t) => t.coingeckoId ?? MAJOR_COINGECKO_IDS[t.symbol]).filter(Boolean))] as string[];
   const cg = cgIds.length > 0 ? await fetchMajorPrices(cgIds) : {};
-  for (const t of tokens) {
-    const cgId = t.coingeckoId ?? MAJOR_COINGECKO_IDS[t.symbol];
-    if (t.address) {
-      const ds = await fetchDexScreenerToken(chain.id, t.address);
-      if (ds?.priceUsd) {
-        t.priceUsd = ds.priceUsd;
-        t.price = ds.priceUsd;
-        t.priceSource = 'dexscreener';
-        t.priceUpdatedAt = ds.updatedAt;
-        continue;
+  await Promise.all(
+    tokens.map(async (t) => {
+      const cgId = t.coingeckoId ?? MAJOR_COINGECKO_IDS[t.symbol];
+      if (t.address) {
+        const ds = await fetchDexScreenerToken(chain.id, t.address);
+        if (ds?.priceUsd) {
+          t.priceUsd = ds.priceUsd;
+          t.price = ds.priceUsd;
+          t.priceSource = 'dexscreener';
+          t.priceUpdatedAt = ds.updatedAt;
+          return;
+        }
       }
-    }
-    if (cgId && cg[cgId]?.price !== null) {
-      t.priceUsd = cg[cgId].price;
-      t.price = cg[cgId].price;
-      t.priceSource = 'coingecko';
-      t.priceUpdatedAt = cg[cgId].updatedAt;
-    }
-  }
+      if (cgId && cg[cgId]?.price !== null) {
+        t.priceUsd = cg[cgId].price;
+        t.price = cg[cgId].price;
+        t.priceSource = 'coingecko';
+        t.priceUpdatedAt = cg[cgId].updatedAt;
+      }
+    }),
+  );
 
   const totalUsd = tokens.reduce((s, t) => s + (t.priceUsd !== null ? t.balance * t.priceUsd : 0), 0);
   return { chain, address, tokens, totalUsd, loading: false, error: null, updatedAt: Date.now() };

@@ -3,7 +3,7 @@
  *  price + 24h pill underneath, value right-aligned with balance below. */
 import React from 'react';
 import { Pressable, StyleSheet, Text, View } from 'react-native';
-import { ChevronRight, Lock } from 'lucide-react-native';
+import { BadgeCheck, ChevronRight, Lock } from 'lucide-react-native';
 import { COLORS } from '../theme';
 import { fmtNum, fmtPrice, fmtUsd, timeLeft } from '../lib/format';
 import type { TokenBalance } from '../lib/balances';
@@ -28,6 +28,7 @@ export function TokenRow({
       <View style={styles.mid}>
         <View style={styles.nameRow}>
           <Text style={styles.name} numberOfLines={1}>{token.symbol}</Text>
+          {token.verified ? <BadgeCheck size={13} color={COLORS.mintDark} /> : null}
           {token.locked > 0 && <Lock size={12} color={COLORS.mintDark} />}
         </View>
         <View style={styles.priceRow}>

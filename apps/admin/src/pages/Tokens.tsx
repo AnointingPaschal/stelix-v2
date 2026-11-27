@@ -1,11 +1,11 @@
 import { useEffect, useState } from 'react'
-import { BadgeCheck, Coins, Gauge, Percent, Search, Star, Timer, Trash2, X } from 'lucide-react'
+import { BadgeCheck, ChevronDown, ChevronUp, Coins, Gauge, Percent, Search, Star, Timer, Trash2, X } from 'lucide-react'
 import { api } from '../lib/api'
 import type { Chain } from '../lib/types'
 import { LiveNote, PageHeader, SectionTitle, StatCard } from '../components/ui'
 import { AlertModal } from '../components/AlertModal'
 
-type RegistryToken = { id: number; symbol: string; chain: string; address: string; decimals: number; verified: boolean; featured: boolean }
+type RegistryToken = { id: number; symbol: string; chain: string; address: string; decimals: number; verified: boolean; featured: boolean; sortOrder: number }
 type SearchHit = { symbol: string; name: string; chain: string; address: string; priceUsd: number | null; dex: string; pairUrl: string | null; source: string }
 
 export default function Tokens() {
@@ -56,6 +56,25 @@ export default function Tokens() {
       setNotice(`${t.symbol} removed.`)
       load()
     } catch (e) { setError(e instanceof Error ? e.message : 'Could not remove token.') }
+  }
+
+  // Order is per chain: the list the server returns is already ordered
+  // by (chain, sort_order), so a move swaps the token with its
+  // same-chain neighbour and saves the full chain order. The wallet
+  // shows My Assets in this order, registry tokens first.
+  const moveToken = async (t: RegistryToken, dir: -1 | 1) => {
+    const sameChain = tokens.filter((x) => x.chain === t.chain)
+    const idx = sameChain.findIndex((x) => x.id === t.id)
+    const swapIdx = idx + dir
+    if (idx < 0 || swapIdx < 0 || swapIdx >= sameChain.length) return
+    const next = [...sameChain]
+    const [moved] = next.splice(idx, 1)
+    next.splice(swapIdx, 0, moved)
+    setError('')
+    try {
+      await api.reorderTokens(t.chain, next.map((x) => x.id))
+      load()
+    } catch (e) { setError(e instanceof Error ? e.message : 'Could not reorder tokens.') }
   }
 
   return (
@@ -133,10 +152,19 @@ export default function Tokens() {
         ) : (
           <div className="table-wrap">
             <table className="rtable">
-              <thead><tr><th>Token</th><th>Chain</th><th>Address</th><th>Decimals</th><th>Verified</th><th>Featured</th><th></th></tr></thead>
+              <thead><tr><th>Order</th><th>Token</th><th>Chain</th><th>Address</th><th>Decimals</th><th>Verified</th><th>Featured</th><th></th></tr></thead>
               <tbody>
-                {tokens.map((t) => (
+                {tokens.map((t) => {
+                  const sameChain = tokens.filter((x) => x.chain === t.chain)
+                  const idx = sameChain.findIndex((x) => x.id === t.id)
+                  return (
                   <tr key={t.id}>
+                    <td data-label="Order">
+                      <span style={{ display: 'inline-flex', gap: 2, alignItems: 'center' }}>
+                        <button className="btn ghost" aria-label={`Move ${t.symbol} up`} disabled={idx <= 0} onClick={() => moveToken(t, -1)}><ChevronUp /></button>
+                        <button className="btn ghost" aria-label={`Move ${t.symbol} down`} disabled={idx < 0 || idx >= sameChain.length - 1} onClick={() => moveToken(t, 1)}><ChevronDown /></button>
+                      </span>
+                    </td>
                     <td data-label="Token"><b>{t.symbol}</b></td>
                     <td data-label="Chain">{t.chain}</td>
                     <td data-label="Address"><span className="kbd">{t.address}</span></td>
@@ -145,13 +173,15 @@ export default function Tokens() {
                     <td data-label="Featured">{t.featured ? <span className="badge b-mint"><Star />Yes</span> : <span className="badge b-grey">No</span>}</td>
                     <td data-label="Remove"><button className="btn ghost" aria-label={`Remove ${t.symbol}`} onClick={() => setConfirmRemove(t)}><Trash2 /></button></td>
                   </tr>
-                ))}
+                  )
+                })}
               </tbody>
             </table>
           </div>
         )}
         <p className="muted" style={{ marginTop: 10, marginBottom: 0 }}>
           <X /> Token prices in the app are always live (DexScreener / GeckoTerminal); this registry only controls which tokens are featured or verified.
+          Every token here appears in the app's My Assets for its chain, in the order above (up / down), with a verified badge when marked Verified.
         </p>
       </div>
     </div>
