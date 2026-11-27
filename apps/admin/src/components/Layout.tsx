@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react'
 import { NavLink, Outlet, useLocation, useNavigate } from 'react-router-dom'
 import {
-  Activity, ChevronsLeft, ChevronsRight, Coins, LayoutDashboard, Link2, LogOut,
+  Activity, ChevronsLeft, ChevronsRight, Coins, KeyRound, LayoutDashboard, Link2, LogOut,
   Megaphone, Menu, Percent, Code2, Rocket, ScrollText, Search, Settings, Settings2, ShieldCheck, Users, Wallet, Wrench, X,
 } from 'lucide-react'
 import type { LucideIcon } from 'lucide-react'
@@ -45,6 +45,9 @@ function NavItems({ onNavigate }: { onNavigate?: () => void }) {
         </NavLink>
       ))}
       <div className="navsection">Account</div>
+      <NavLink to="/security" onClick={onNavigate} className={({ isActive }) => 'navlink' + (isActive ? ' active' : '')}>
+        <KeyRound /><span>Security</span>
+      </NavLink>
       <SignOutButton />
     </>
   )

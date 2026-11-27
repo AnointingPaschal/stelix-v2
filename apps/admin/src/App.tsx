@@ -15,6 +15,7 @@ import Config from './pages/Config'
 import Support from './pages/Support'
 import ContractAudit from './pages/ContractAudit'
 import Maintenance from './pages/Maintenance'
+import Security from './pages/Security'
 import Circle from './pages/Circle'
 import Audit from './pages/Audit'
 export default function App() {
@@ -33,6 +34,7 @@ export default function App() {
       <Route path="/announcements" element={<Announcements />} />
       <Route path="/config" element={<Config />} />
       <Route path="/maintenance" element={<Maintenance />} />
+      <Route path="/security" element={<Security />} />
       <Route path="/support" element={<Support />} />
       <Route path="/contract-audit" element={<ContractAudit />} />
       <Route path="/circle" element={<Circle />} />

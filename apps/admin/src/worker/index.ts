@@ -6,10 +6,14 @@
 // lists / zero counts with an explicit note, never invented figures.
 //
 // AUTH (owner-only): POST /api/admin/login checks email + PBKDF2-SHA256
-// password hash (ADMIN_EMAIL var, ADMIN_PASSWORD_HASH secret) server-side,
-// with per-IP rate limiting (5 failures -> 15 min lock) and an audit_log entry.
+// password hash server-side, with per-IP rate limiting (5 failures -> 15 min
+// lock) and an audit_log entry. The hash lives in D1 admin_auth once the
+// password is changed from the admin (POST /api/admin/change-password);
+// until then the ADMIN_PASSWORD_HASH Pages secret is the fallback.
 // On success it sets an HttpOnly signed session cookie (HMAC-SHA256 with
-// ADMIN_SESSION_SECRET, 8h). All /api/admin/*, /api/keeper/runs
+// ADMIN_SESSION_SECRET, 8h) carrying a session version: changing the password
+// bumps admin_auth.session_version, which invalidates every existing session.
+// All /api/admin/*, /api/keeper/runs
 // and /api/support require it. /api/health, /api/config, /api/announcements,
 // /api/launches, /api/chains, /api/fees, /api/tokens, /api/maintenance and
 // /api/sync stay public: config is signed and served to
@@ -112,8 +116,8 @@ async function hmac(key: string, data: string): Promise<Uint8Array> {
   return new Uint8Array(await crypto.subtle.sign('HMAC', k, new TextEncoder().encode(data)))
 }
 
-async function makeSession(email: string, secret: string): Promise<string> {
-  const payload = b64url(new TextEncoder().encode(JSON.stringify({ email, exp: Date.now() + 8 * 3600 * 1000 })))
+async function makeSession(email: string, secret: string, version = 0): Promise<string> {
+  const payload = b64url(new TextEncoder().encode(JSON.stringify({ email, exp: Date.now() + 8 * 3600 * 1000, v: version })))
   const sig = b64url(await hmac(secret, payload))
   return `${payload}.${sig}`
 }
@@ -127,8 +131,13 @@ async function readSession(req: Request, env: Env): Promise<string | null> {
   const expected = b64url(await hmac(env.ADMIN_SESSION_SECRET, payload))
   if (!timingSafeEqual(new TextEncoder().encode(sig), new TextEncoder().encode(expected))) return null
   try {
-    const { email, exp } = JSON.parse(new TextDecoder().decode(unb64url(payload)))
+    const { email, exp, v } = JSON.parse(new TextDecoder().decode(unb64url(payload)))
     if (typeof email !== 'string' || typeof exp !== 'number' || exp < Date.now()) return null
+    // Tokens issued before the session version existed carry no v and count
+    // as version 0. A password change bumps the stored version, so every
+    // token from before the change stops working here.
+    const tokenVersion = typeof v === 'number' ? v : 0
+    if (tokenVersion !== (await getSessionVersion(env))) return null
     return email
   } catch {
     return null
@@ -140,7 +149,7 @@ const sessionCookie = (token: string | null) =>
     ? `stelix_admin=${token}; HttpOnly; Secure; SameSite=Strict; Path=/; Max-Age=28800`
     : 'stelix_admin=; HttpOnly; Secure; SameSite=Strict; Path=/; Max-Age=0'
 
-async function verifyPassword(password: string, stored: string): Promise<boolean> {
+export async function verifyPassword(password: string, stored: string): Promise<boolean> {
   const parts = stored.split('$')
   if (parts.length !== 4 || parts[0] !== 'pbkdf2-sha256') return false
   const iterations = parseInt(parts[1], 10)
@@ -150,6 +159,36 @@ async function verifyPassword(password: string, stored: string): Promise<boolean
   const key = await crypto.subtle.importKey('raw', new TextEncoder().encode(password), 'PBKDF2', false, ['deriveBits'])
   const derived = new Uint8Array(await crypto.subtle.deriveBits({ name: 'PBKDF2', hash: 'SHA-256', salt, iterations }, key, expected.length * 8))
   return timingSafeEqual(derived, expected)
+}
+
+const PBKDF2_ITERATIONS = 600_000
+
+// Hash a new admin password in exactly the format verifyPassword reads:
+// pbkdf2-sha256$<iterations>$<b64url salt>$<b64url derived key>.
+export async function hashPassword(password: string): Promise<string> {
+  const salt = crypto.getRandomValues(new Uint8Array(32))
+  const key = await crypto.subtle.importKey('raw', new TextEncoder().encode(password), 'PBKDF2', false, ['deriveBits'])
+  const derived = new Uint8Array(await crypto.subtle.deriveBits({ name: 'PBKDF2', hash: 'SHA-256', salt, iterations: PBKDF2_ITERATIONS }, key, 256))
+  return `pbkdf2-sha256$${PBKDF2_ITERATIONS}$${b64url(salt)}$${b64url(derived)}`
+}
+
+// Effective admin password hash: the D1 row once the password has been
+// changed from the admin, otherwise the ADMIN_PASSWORD_HASH Pages secret.
+// A missing admin_auth table (migration not applied yet) falls back too.
+async function getPasswordHash(env: Env): Promise<string> {
+  try {
+    const row = await env.DB.prepare('SELECT password_hash FROM admin_auth WHERE id = 1').first<{ password_hash: string | null }>()
+    if (row?.password_hash) return row.password_hash
+  } catch { /* fall through to the secret */ }
+  return env.ADMIN_PASSWORD_HASH ?? ''
+}
+
+// Current session version: 0 until the first password change bumps it.
+async function getSessionVersion(env: Env): Promise<number> {
+  try {
+    const row = await env.DB.prepare('SELECT session_version FROM admin_auth WHERE id = 1').first<{ session_version: number }>()
+    return row?.session_version ?? 0
+  } catch { return 0 }
 }
 
 const clientIp = (req: Request) => req.headers.get('cf-connecting-ip') ?? 'unknown'
@@ -576,7 +615,7 @@ async function handleLogin(req: Request, env: Env): Promise<Response> {
   }
 
   const emailOk = email.length > 0 && email === (env.ADMIN_EMAIL ?? '').toLowerCase()
-  const passOk = emailOk && password.length > 0 && (await verifyPassword(password, env.ADMIN_PASSWORD_HASH ?? ''))
+  const passOk = emailOk && password.length > 0 && (await verifyPassword(password, await getPasswordHash(env)))
   if (!emailOk || !passOk) {
     const attempts = (row?.attempts ?? 0) + 1
     const lockedUntil = attempts >= 5 ? new Date(Date.now() + 15 * 60 * 1000).toISOString() : null
@@ -589,8 +628,32 @@ async function handleLogin(req: Request, env: Env): Promise<Response> {
 
   await env.DB.prepare('DELETE FROM login_attempts WHERE ip = ?').bind(ip).run()
   await audit(env, email, 'admin.login', `admin sign-in from ${ip}`)
-  const token = await makeSession(email, env.ADMIN_SESSION_SECRET)
+  const token = await makeSession(email, env.ADMIN_SESSION_SECRET, await getSessionVersion(env))
   return json({ ok: true, email }, 200, { 'set-cookie': sessionCookie(token) })
+}
+
+// Change the admin password from inside the admin. The caller must already
+// be signed in AND know the current password. The new hash is stored in D1
+// (admin_auth) and the session version is bumped, so every existing session
+// — including this browser's — stops working and must sign in again.
+async function handleChangePassword(req: Request, env: Env, authed: string): Promise<Response> {
+  const body = await readJson(req)
+  const current = String(body.currentPassword ?? '')
+  const next = String(body.newPassword ?? '')
+  if (!current || !next) return json({ error: 'Current and new password are both required.' }, 400)
+  if (next.length < 12) return json({ error: 'New password must be at least 12 characters.' }, 400)
+  if (next === current) return json({ error: 'New password must be different from the current one.' }, 400)
+  if (!(await verifyPassword(current, await getPasswordHash(env)))) {
+    return json({ error: 'Current password is wrong.' }, 401)
+  }
+  const hash = await hashPassword(next)
+  const version = await getSessionVersion(env)
+  await env.DB.prepare(
+    `INSERT INTO admin_auth (id, password_hash, session_version, updated_at) VALUES (1, ?, ?, datetime('now'))
+     ON CONFLICT(id) DO UPDATE SET password_hash = excluded.password_hash, session_version = excluded.session_version, updated_at = excluded.updated_at`,
+  ).bind(hash, version + 1).run()
+  await audit(env, authed, 'admin.password_changed', 'admin password changed from the admin; all sessions invalidated')
+  return json({ ok: true })
 }
 
 export default {
@@ -722,6 +785,12 @@ export default {
     if (!authed) {
       // Non-API paths fall through to the SPA below only when authed; otherwise
       // the SPA itself redirects to login via its session check.
+    }
+
+    // Change the admin password from inside the admin (see handleChangePassword).
+    if (path === '/api/admin/change-password' && req.method === 'POST') {
+      if (!authed) return json({ error: 'admin session required — sign in first' }, 401)
+      return handleChangePassword(req, env, authed)
     }
 
     // ---- Circle User-Controlled Wallets (Arc only, EOA first) ----

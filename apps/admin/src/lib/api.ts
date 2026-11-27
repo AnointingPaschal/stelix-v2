@@ -534,4 +534,7 @@ export const api = {
   async logout() {
     await fetch('/api/admin/logout', { method: 'POST', credentials: 'same-origin' })
   },
+  async changePassword(currentPassword: string, newPassword: string): Promise<{ ok: boolean }> {
+    return post('/api/admin/change-password', { currentPassword, newPassword })
+  },
 }
