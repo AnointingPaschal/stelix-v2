@@ -27,7 +27,21 @@ export const isTxHash = (v: unknown): v is string =>
   typeof v === 'string' && /^0x[0-9a-fA-F]{64}$/.test(v)
 
 export function mainnetConfirmPhrase(chainName: string): string {
+  // The phrase must name the selected network. A chain whose name already
+  // ends in " Mainnet" (e.g. the "Arc Mainnet" row) must not get a doubled
+  // "... Mainnet mainnet".
+  if (/ Mainnet$/.test(chainName.trim())) return `Deploy StelixVault to ${chainName.trim()}`
   return `Deploy StelixVault to ${chainName} mainnet`
+}
+
+/**
+ * The testnet counterpart of a chain slug: "arc-mainnet" -> "arc" (the
+ * verified testnet deployment and the testnet flow that gate a mainnet
+ * deploy live under the testnet row), anything else -> itself. Shared by
+ * the Contract Studio page and the Worker mainnet gate so both agree.
+ */
+export function testnetChainIdFor(chainId: string): string {
+  return chainId.endsWith('-mainnet') ? chainId.slice(0, -'-mainnet'.length) : chainId
 }
 
 export function validateDeployParams(input: unknown): { params: DeployParams | null; errors: string[] } {

@@ -18,7 +18,7 @@
  * No auto-refresh polling (GeckoTerminal free tier is 30 calls/min) —
  * the user refreshes manually. */
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { Pressable, ScrollView, StyleSheet, Text, TextInput, View, useWindowDimensions } from 'react-native';
+import { KeyboardAvoidingView, Platform, Pressable, ScrollView, StyleSheet, Text, TextInput, View, useWindowDimensions } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { router } from 'expo-router';
 import { Flame, Landmark, RefreshCw, Search, SlidersHorizontal, Sparkles, TrendingUp, X } from 'lucide-react-native';
@@ -202,277 +202,280 @@ export default function Discover() {
   };
 
   return (
-    <ScrollView
-      style={styles.root}
-      contentContainerStyle={[
-        styles.inner,
-        {
-          paddingTop: 12 + insets.top,
-          paddingBottom: 24 + insets.bottom,
-          ...(isWide ? { maxWidth: 768, width: '100%', alignSelf: 'center' } : null),
-        },
-      ]}
-    >
-      <View style={styles.head}>
-        <View style={styles.headSide} />
-        <Text style={styles.title} numberOfLines={1} adjustsFontSizeToFit minimumFontScale={0.85}>Discover</Text>
-        <Pressable
-          onPress={() => void load(tab, chainFilter, debouncedQuery)}
-          style={styles.headSide}
-          hitSlop={8}
-          accessibilityLabel="Refresh"
-        >
-          <RefreshCw size={18} color={COLORS.text} />
-        </Pressable>
-      </View>
-
-      <View style={styles.tabs}>
-        {TABS.map((t) => (
-          <Pressable key={t.key} style={styles.tab} onPress={() => changeTab(t.key)}>
-            <View style={styles.tabLabel}>
-              {t.icon}
-              <Text
-                style={[styles.tabText, tab === t.key && styles.tabTextOn]}
-                numberOfLines={1}
-                adjustsFontSizeToFit
-                minimumFontScale={0.8}
-              >
-                {t.label}
-              </Text>
-            </View>
-            {tab === t.key ? <View style={styles.tabUnderline} /> : <View style={styles.tabUnderlineOff} />}
-          </Pressable>
-        ))}
-      </View>
-
-      <ScrollView horizontal showsHorizontalScrollIndicator={false} style={styles.chips} contentContainerStyle={styles.chipsInner}>
-        <Pressable
-          style={[styles.chip, chainFilter === 'all' && styles.chipOn]}
-          onPress={() => setChainFilter('all')}
-        >
-          <Text style={[styles.chipText, chainFilter === 'all' && styles.chipTextOn]}>All chains</Text>
-        </Pressable>
-        {DISCOVER_CHAINS.map((c) => (
+    <KeyboardAvoidingView style={styles.root} behavior={Platform.OS === 'ios' ? 'padding' : 'height'} keyboardVerticalOffset={insets.top}>
+      <ScrollView
+        style={{ flex: 1 }}
+        keyboardShouldPersistTaps="handled"
+        contentContainerStyle={[
+          styles.inner,
+          {
+            paddingTop: 12 + insets.top,
+            paddingBottom: 32 + insets.bottom,
+            ...(isWide ? { maxWidth: 768, width: '100%', alignSelf: 'center' } : null),
+          },
+        ]}
+      >
+        <View style={styles.head}>
+          <View style={styles.headSide} />
+          <Text style={styles.title} numberOfLines={1} adjustsFontSizeToFit minimumFontScale={0.85}>Discover</Text>
           <Pressable
-            key={c.id}
-            style={[styles.chip, chainFilter === c.id && styles.chipOn]}
-            onPress={() => setChainFilter(c.id)}
+            onPress={() => void load(tab, chainFilter, debouncedQuery)}
+            style={styles.headSide}
+            hitSlop={8}
+            accessibilityLabel="Refresh"
           >
-            <Text style={[styles.chipText, chainFilter === c.id && styles.chipTextOn]}>{c.label}</Text>
+            <RefreshCw size={18} color={COLORS.text} />
           </Pressable>
-        ))}
-      </ScrollView>
-
-      <View style={styles.blockHead}>
-        <View style={styles.blockIcon}>
-          <Flame size={16} color={COLORS.amber} />
         </View>
-        <View style={styles.blockMid}>
-          <Text style={styles.blockTitle}>{tabTitle}</Text>
-          <Text style={styles.blockSub}>{tabSub}</Text>
-        </View>
-        <View style={styles.countPill}>
-          <Text style={styles.countText}>{visible.length} tokens</Text>
-        </View>
-      </View>
 
-      <View style={styles.searchWrap}>
-        <Search size={16} color={COLORS.textMuted} />
-        <TextInput
-          style={styles.search}
-          placeholder="Search symbol, name or contract address…"
-          placeholderTextColor={COLORS.textMuted}
-          value={query}
-          onChangeText={setQuery}
-          autoCapitalize="none"
-          autoCorrect={false}
-        />
-        {query ? (
-          <Pressable onPress={() => setQuery('')} hitSlop={8}>
-            <X size={16} color={COLORS.textMuted} />
-          </Pressable>
-        ) : null}
-      </View>
-
-      <ScrollView horizontal showsHorizontalScrollIndicator={false} style={styles.chips} contentContainerStyle={styles.chipsInner}>
-        {SORTS.map((s) => {
-          const active = (sort ?? TAB_DEFAULT_SORT[tab]) === s.key;
-          return (
-            <Pressable key={s.key} style={[styles.chip, active && styles.chipOn]} onPress={() => setSort(s.key)}>
-              <Text style={[styles.chipText, active && styles.chipTextOn]}>{s.label}</Text>
+        <View style={styles.tabs}>
+          {TABS.map((t) => (
+            <Pressable key={t.key} style={styles.tab} onPress={() => changeTab(t.key)}>
+              <View style={styles.tabLabel}>
+                {t.icon}
+                <Text
+                  style={[styles.tabText, tab === t.key && styles.tabTextOn]}
+                  numberOfLines={1}
+                  adjustsFontSizeToFit
+                  minimumFontScale={0.8}
+                >
+                  {t.label}
+                </Text>
+              </View>
+              {tab === t.key ? <View style={styles.tabUnderline} /> : <View style={styles.tabUnderlineOff} />}
             </Pressable>
-          );
-        })}
-        <Pressable
-          style={[styles.chip, styles.filterChip, filtersOpen && styles.chipOn]}
-          onPress={() => setFiltersOpen((v) => !v)}
-        >
-          <SlidersHorizontal size={13} color={filtersOpen ? '#fff' : COLORS.text} />
-          <Text style={[styles.chipText, filtersOpen && styles.chipTextOn]}>
-            Filters{activeFilterCount > 0 ? ` (${activeFilterCount})` : ''}
-          </Text>
-        </Pressable>
-      </ScrollView>
+          ))}
+        </View>
 
-      {filtersOpen ? (
-        <View style={styles.filterPanel}>
-          <Text style={styles.filterLabel}>Minimums (USD)</Text>
-          <View style={styles.filterRow}>
-            <View style={styles.filterField}>
-              <Text style={styles.filterFieldLabel}>Liquidity</Text>
-              <TextInput
-                style={styles.filterInput}
-                placeholder="$0"
-                placeholderTextColor={COLORS.textMuted}
-                value={minLiq}
-                onChangeText={setMinLiq}
-                keyboardType="numeric"
-              />
-            </View>
-            <View style={styles.filterField}>
-              <Text style={styles.filterFieldLabel}>24h volume</Text>
-              <TextInput
-                style={styles.filterInput}
-                placeholder="$0"
-                placeholderTextColor={COLORS.textMuted}
-                value={minVol}
-                onChangeText={setMinVol}
-                keyboardType="numeric"
-              />
-            </View>
-            <View style={styles.filterField}>
-              <Text style={styles.filterFieldLabel}>Market cap</Text>
-              <TextInput
-                style={styles.filterInput}
-                placeholder="$0"
-                placeholderTextColor={COLORS.textMuted}
-                value={minMc}
-                onChangeText={setMinMc}
-                keyboardType="numeric"
-              />
-            </View>
+        <ScrollView horizontal showsHorizontalScrollIndicator={false} style={styles.chips} contentContainerStyle={styles.chipsInner}>
+          <Pressable
+            style={[styles.chip, chainFilter === 'all' && styles.chipOn]}
+            onPress={() => setChainFilter('all')}
+          >
+            <Text style={[styles.chipText, chainFilter === 'all' && styles.chipTextOn]}>All chains</Text>
+          </Pressable>
+          {DISCOVER_CHAINS.map((c) => (
+            <Pressable
+              key={c.id}
+              style={[styles.chip, chainFilter === c.id && styles.chipOn]}
+              onPress={() => setChainFilter(c.id)}
+            >
+              <Text style={[styles.chipText, chainFilter === c.id && styles.chipTextOn]}>{c.label}</Text>
+            </Pressable>
+          ))}
+        </ScrollView>
+
+        <View style={styles.blockHead}>
+          <View style={styles.blockIcon}>
+            <Flame size={16} color={COLORS.amber} />
           </View>
-          <Text style={styles.filterLabel}>Pair age</Text>
-          <View style={styles.filterRow}>
-            {AGE_CHOICES.map((a) => (
+          <View style={styles.blockMid}>
+            <Text style={styles.blockTitle}>{tabTitle}</Text>
+            <Text style={styles.blockSub}>{tabSub}</Text>
+          </View>
+          <View style={styles.countPill}>
+            <Text style={styles.countText}>{visible.length} tokens</Text>
+          </View>
+        </View>
+
+        <View style={styles.searchWrap}>
+          <Search size={16} color={COLORS.textMuted} />
+          <TextInput
+            style={styles.search}
+            placeholder="Search symbol, name or contract address…"
+            placeholderTextColor={COLORS.textMuted}
+            value={query}
+            onChangeText={setQuery}
+            autoCapitalize="none"
+            autoCorrect={false}
+          />
+          {query ? (
+            <Pressable onPress={() => setQuery('')} hitSlop={8}>
+              <X size={16} color={COLORS.textMuted} />
+            </Pressable>
+          ) : null}
+        </View>
+
+        <ScrollView horizontal showsHorizontalScrollIndicator={false} style={styles.chips} contentContainerStyle={styles.chipsInner}>
+          {SORTS.map((s) => {
+            const active = (sort ?? TAB_DEFAULT_SORT[tab]) === s.key;
+            return (
+              <Pressable key={s.key} style={[styles.chip, active && styles.chipOn]} onPress={() => setSort(s.key)}>
+                <Text style={[styles.chipText, active && styles.chipTextOn]}>{s.label}</Text>
+              </Pressable>
+            );
+          })}
+          <Pressable
+            style={[styles.chip, styles.filterChip, filtersOpen && styles.chipOn]}
+            onPress={() => setFiltersOpen((v) => !v)}
+          >
+            <SlidersHorizontal size={13} color={filtersOpen ? '#fff' : COLORS.text} />
+            <Text style={[styles.chipText, filtersOpen && styles.chipTextOn]}>
+              Filters{activeFilterCount > 0 ? ` (${activeFilterCount})` : ''}
+            </Text>
+          </Pressable>
+        </ScrollView>
+
+        {filtersOpen ? (
+          <View style={styles.filterPanel}>
+            <Text style={styles.filterLabel}>Minimums (USD)</Text>
+            <View style={styles.filterRow}>
+              <View style={styles.filterField}>
+                <Text style={styles.filterFieldLabel}>Liquidity</Text>
+                <TextInput
+                  style={styles.filterInput}
+                  placeholder="$0"
+                  placeholderTextColor={COLORS.textMuted}
+                  value={minLiq}
+                  onChangeText={setMinLiq}
+                  keyboardType="numeric"
+                />
+              </View>
+              <View style={styles.filterField}>
+                <Text style={styles.filterFieldLabel}>24h volume</Text>
+                <TextInput
+                  style={styles.filterInput}
+                  placeholder="$0"
+                  placeholderTextColor={COLORS.textMuted}
+                  value={minVol}
+                  onChangeText={setMinVol}
+                  keyboardType="numeric"
+                />
+              </View>
+              <View style={styles.filterField}>
+                <Text style={styles.filterFieldLabel}>Market cap</Text>
+                <TextInput
+                  style={styles.filterInput}
+                  placeholder="$0"
+                  placeholderTextColor={COLORS.textMuted}
+                  value={minMc}
+                  onChangeText={setMinMc}
+                  keyboardType="numeric"
+                />
+              </View>
+            </View>
+            <Text style={styles.filterLabel}>Pair age</Text>
+            <View style={styles.filterRow}>
+              {AGE_CHOICES.map((a) => (
+                <Pressable
+                  key={a.label}
+                  style={[styles.chip, maxAgeMs === a.ms && !newOnly && styles.chipOn]}
+                  onPress={() => {
+                    setMaxAgeMs(a.ms);
+                    setNewOnly(false);
+                  }}
+                >
+                  <Text style={[styles.chipText, maxAgeMs === a.ms && !newOnly && styles.chipTextOn]}>{a.label}</Text>
+                </Pressable>
+              ))}
               <Pressable
-                key={a.label}
-                style={[styles.chip, maxAgeMs === a.ms && !newOnly && styles.chipOn]}
+                style={[styles.chip, newOnly && styles.chipOn]}
                 onPress={() => {
-                  setMaxAgeMs(a.ms);
-                  setNewOnly(false);
+                  setNewOnly((v) => !v);
+                  setMaxAgeMs(null);
                 }}
               >
-                <Text style={[styles.chipText, maxAgeMs === a.ms && !newOnly && styles.chipTextOn]}>{a.label}</Text>
+                <Text style={[styles.chipText, newOnly && styles.chipTextOn]}>New only (&lt;24h)</Text>
               </Pressable>
-            ))}
-            <Pressable
-              style={[styles.chip, newOnly && styles.chipOn]}
-              onPress={() => {
-                setNewOnly((v) => !v);
-                setMaxAgeMs(null);
-              }}
-            >
-              <Text style={[styles.chipText, newOnly && styles.chipTextOn]}>New only (&lt;24h)</Text>
-            </Pressable>
-          </View>
-          {dexOptions.length > 0 ? (
-            <>
-              <Text style={styles.filterLabel}>DEX</Text>
-              <View style={styles.filterRow}>
-                <Pressable
-                  style={[styles.chip, dexFilter === null && styles.chipOn]}
-                  onPress={() => setDexFilter(null)}
-                >
-                  <Text style={[styles.chipText, dexFilter === null && styles.chipTextOn]}>All DEXes</Text>
-                </Pressable>
-                {dexOptions.map((d) => (
-                  <Pressable
-                    key={d}
-                    style={[styles.chip, dexFilter === d && styles.chipOn]}
-                    onPress={() => setDexFilter(d)}
-                  >
-                    <Text style={[styles.chipText, dexFilter === d && styles.chipTextOn]}>{prettyDexId(d)}</Text>
-                  </Pressable>
-                ))}
-              </View>
-            </>
-          ) : null}
-          {activeFilterCount > 0 ? (
-            <Pressable style={styles.clearBtn} onPress={clearFilters}>
-              <Text style={styles.clearBtnText}>Clear all filters</Text>
-            </Pressable>
-          ) : null}
-        </View>
-      ) : null}
-
-      {error ? <Text style={styles.error}>{error}</Text> : null}
-      {source ? (
-        <Text style={styles.source}>
-          Source: {source}
-          {updatedAt ? ` · Updated ${new Date(updatedAt).toLocaleTimeString()}` : ''}
-        </Text>
-      ) : null}
-
-      {loading ? (
-        <Text style={styles.loading}>Loading tokens…</Text>
-      ) : visible.length === 0 ? (
-        <EmptyState
-          title={debouncedQuery ? 'No tokens match that search' : 'No tokens found'}
-          body={
-            debouncedQuery
-              ? 'Try a different symbol, name or contract address.'
-              : activeFilterCount > 0
-                ? 'Try loosening the filters — nothing in this list passes them.'
-                : 'Tokens will appear here once the live feed returns data.'
-          }
-        />
-      ) : (
-        visible.map((t, i) => (
-          <Pressable
-            key={`${t.chainId}:${t.address}`}
-            style={styles.row}
-            onPress={() => router.push(tokenDetailRoute({ symbol: t.symbol, address: t.address, chainId: t.chainId }))}
-          >
-            <Text style={styles.rank}>{i + 1}</Text>
-            <TokenLogo chainId={t.chainId} address={t.address} symbol={t.symbol} size={38} logoUrl={t.iconUrl} fallbackTone="light" />
-            <View style={styles.mid}>
-              <View style={styles.line}>
-                <Text style={styles.name} numberOfLines={1}>
-                  {t.symbol}
-                </Text>
-                <Text style={[styles.cell, styles.cellRight]} numberOfLines={1}>{t.priceUsd === null ? '—' : fmtPrice(t.priceUsd)}</Text>
-              </View>
-              <View style={styles.line}>
-                <Text style={styles.sub} numberOfLines={1}>
-                  {t.name && t.name !== t.symbol ? `${t.name} · ` : ''}
-                  {prettyDexId(t.dexId)} · {formatTokenAge(t.pairCreatedAt)}
-                </Text>
-                <Text
-                  style={[
-                    styles.cell,
-                    styles.cellRight,
-                    {
-                      color:
-                        t.change24h === null ? COLORS.textMuted : t.change24h >= 0 ? COLORS.mintDark : COLORS.red,
-                    },
-                  ]}
-                  numberOfLines={1}
-                >
-                  {t.change24h === null ? '—' : fmtPct(t.change24h)}
-                </Text>
-              </View>
-              <Text style={styles.stats} numberOfLines={1}>
-                MC {compactUsd(t.marketCap)} · Vol {compactUsd(t.volume24h)} · Liq {compactUsd(t.liquidityUsd)}
-              </Text>
             </View>
-          </Pressable>
-        ))
-      )}
-      {showsFdvMc ? (
-        <Text style={styles.footnote}>* MC shows FDV where the feed does not report a market cap yet.</Text>
-      ) : null}
-    </ScrollView>
+            {dexOptions.length > 0 ? (
+              <>
+                <Text style={styles.filterLabel}>DEX</Text>
+                <View style={styles.filterRow}>
+                  <Pressable
+                    style={[styles.chip, dexFilter === null && styles.chipOn]}
+                    onPress={() => setDexFilter(null)}
+                  >
+                    <Text style={[styles.chipText, dexFilter === null && styles.chipTextOn]}>All DEXes</Text>
+                  </Pressable>
+                  {dexOptions.map((d) => (
+                    <Pressable
+                      key={d}
+                      style={[styles.chip, dexFilter === d && styles.chipOn]}
+                      onPress={() => setDexFilter(d)}
+                    >
+                      <Text style={[styles.chipText, dexFilter === d && styles.chipTextOn]}>{prettyDexId(d)}</Text>
+                    </Pressable>
+                  ))}
+                </View>
+              </>
+            ) : null}
+            {activeFilterCount > 0 ? (
+              <Pressable style={styles.clearBtn} onPress={clearFilters}>
+                <Text style={styles.clearBtnText}>Clear all filters</Text>
+              </Pressable>
+            ) : null}
+          </View>
+        ) : null}
+
+        {error ? <Text style={styles.error}>{error}</Text> : null}
+        {source ? (
+          <Text style={styles.source}>
+            Source: {source}
+            {updatedAt ? ` · Updated ${new Date(updatedAt).toLocaleTimeString()}` : ''}
+          </Text>
+        ) : null}
+
+        {loading ? (
+          <Text style={styles.loading}>Loading tokens…</Text>
+        ) : visible.length === 0 ? (
+          <EmptyState
+            title={debouncedQuery ? 'No tokens match that search' : 'No tokens found'}
+            body={
+              debouncedQuery
+                ? 'Try a different symbol, name or contract address.'
+                : activeFilterCount > 0
+                  ? 'Try loosening the filters — nothing in this list passes them.'
+                  : 'Tokens will appear here once the live feed returns data.'
+            }
+          />
+        ) : (
+          visible.map((t, i) => (
+            <Pressable
+              key={`${t.chainId}:${t.address}`}
+              style={styles.row}
+              onPress={() => router.push(tokenDetailRoute({ symbol: t.symbol, address: t.address, chainId: t.chainId }))}
+            >
+              <Text style={styles.rank}>{i + 1}</Text>
+              <TokenLogo chainId={t.chainId} address={t.address} symbol={t.symbol} size={38} logoUrl={t.iconUrl} fallbackTone="light" />
+              <View style={styles.mid}>
+                <View style={styles.line}>
+                  <Text style={styles.name} numberOfLines={1}>
+                    {t.symbol}
+                  </Text>
+                  <Text style={[styles.cell, styles.cellRight]} numberOfLines={1}>{t.priceUsd === null ? '—' : fmtPrice(t.priceUsd)}</Text>
+                </View>
+                <View style={styles.line}>
+                  <Text style={styles.sub} numberOfLines={1}>
+                    {t.name && t.name !== t.symbol ? `${t.name} · ` : ''}
+                    {prettyDexId(t.dexId)} · {formatTokenAge(t.pairCreatedAt)}
+                  </Text>
+                  <Text
+                    style={[
+                      styles.cell,
+                      styles.cellRight,
+                      {
+                        color:
+                          t.change24h === null ? COLORS.textMuted : t.change24h >= 0 ? COLORS.mintDark : COLORS.red,
+                      },
+                    ]}
+                    numberOfLines={1}
+                  >
+                    {t.change24h === null ? '—' : fmtPct(t.change24h)}
+                  </Text>
+                </View>
+                <Text style={styles.stats} numberOfLines={1}>
+                  MC {compactUsd(t.marketCap)} · Vol {compactUsd(t.volume24h)} · Liq {compactUsd(t.liquidityUsd)}
+                </Text>
+              </View>
+            </Pressable>
+          ))
+        )}
+        {showsFdvMc ? (
+          <Text style={styles.footnote}>* MC shows FDV where the feed does not report a market cap yet.</Text>
+        ) : null}
+      </ScrollView>
+    </KeyboardAvoidingView>
   );
 }
 

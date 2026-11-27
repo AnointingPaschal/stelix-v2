@@ -13,19 +13,14 @@ import { useApp } from '../store/AppContext';
 import { Btn, Card, ScreenHeader, centeredContent } from '../components/ui';
 
 export default function Receive() {
-  const { address, solanaAddress, chain } = useApp();
+  const { chain, chainAddress } = useApp();
   const insets = useSafeAreaInsets();
 
   const [copied, setCopied] = useState(false);
 
-  // The address shown must belong to the active chain: the EVM address
-  // is meaningless on Solana, and the old code QR'd the 0x address on
-  // every chain — funds sent to it on Solana would be lost. Wallets
-  // imported from a raw private key have no Solana address (no mnemonic
-  // to derive one from); that is stated, not papered over.
-  const isSolana = chain.kind === 'solana';
-  const displayAddress = isSolana ? solanaAddress : address;
-  const noSolanaAddress = isSolana && !solanaAddress;
+  // The address shown is the address for the active chain: the derived
+  // Solana address on Solana, the EVM address everywhere else.
+  const displayAddress = chainAddress;
 
   async function copy() {
     if (!displayAddress) return;
@@ -50,9 +45,7 @@ export default function Receive() {
       ) : (
         <Card style={styles.qrCard}>
           <Text style={styles.noAddr}>
-            {noSolanaAddress
-              ? 'No Solana address for this wallet — it was imported from a raw private key, so no Solana address could be derived. Import the seed phrase to receive on Solana.'
-              : 'No wallet address yet — create or import a wallet first.'}
+            No wallet address yet — create or import a wallet first.
           </Text>
         </Card>
       )}

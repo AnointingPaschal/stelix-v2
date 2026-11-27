@@ -160,6 +160,18 @@ describe('applyDiscoverFilters', () => {
     expect(applyDiscoverFilters(list, { chainId: 'bnb' })).toHaveLength(3);
   });
 
+  it('keeps tokens on every active chain when the filter is "all"', () => {
+    const mixed = [
+      token({ symbol: 'AAA', chainId: 'bnb' }),
+      token({ symbol: 'BBB', chainId: 'base' }),
+      token({ symbol: 'CCC', chainId: 'solana', address: 'So11111111111111111111111111111111111111112' }),
+      token({ symbol: 'DDD', chainId: 'arc' }),
+      token({ symbol: 'EEE', chainId: 'ethereum' }),
+      token({ symbol: 'FFF', chainId: 'polygon' }),
+    ];
+    expect(applyDiscoverFilters(mixed, { chainId: 'all' }).map((t) => t.symbol)).toEqual(['AAA', 'BBB', 'CCC', 'DDD', 'EEE', 'FFF']);
+  });
+
   it('maxAge and newOnly use pair age; unknown age is excluded', () => {
     expect(applyDiscoverFilters(list, { maxAgeMs: 60 * 60 * 1000 }, now).map((t) => t.symbol)).toEqual(['AAA']);
     expect(applyDiscoverFilters(list, { newOnly: true }, now).map((t) => t.symbol)).toEqual(['AAA']);
@@ -266,7 +278,7 @@ describe('fetchDiscoverTab (mocked network)', () => {
         pool_created_at: '2026-11-26T10:00:00Z',
       },
       relationships: {
-        base_token: { data: { id: 'solana_38M2z4UCfZEkUHFzD48vhKQhFhNyRGto8pZbLjNipump' } },
+        base_token: { data: { id: 'solana_So11111111111111111111111111111111111111112' } },
         network: { data: { id: 'solana' } },
         dex: { data: { id: 'pumpswap' } },
       },

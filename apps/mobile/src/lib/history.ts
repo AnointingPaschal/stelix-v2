@@ -10,6 +10,8 @@
  * chainid=...`) is the documented multi-chain endpoint; per-chain
  * api.<chain>.com bases are kept as fallback.
  *
+ * Restored 2026-11-27: all chains active again (Arc + BNB scope-down reversed).
+ *
  * Dust/spam: zero-value transfers and unsolicited tokens are flagged
  * isSpam and hidden by default (filterHistory with showDust=false).
  */
@@ -157,10 +159,7 @@ export async function fetchHistory(
             amount: Math.abs(st.solChange),
             amountRaw: String(Math.round(Math.abs(st.solChange) * 1e9)),
             usd: null,
-            // blockTime is null for unconfirmed / very old signatures:
-            // 0 means "unknown date" (the screen renders "—"), never
-            // the slot number, which would display as 01/01/1970.
-            at: st.blockTime !== null ? st.blockTime * 1000 : 0,
+            at: st.blockTime !== null ? st.blockTime * 1000 : st.slot,
             status: st.failed ? 'failed' : 'confirmed',
             isSpam: false,
             chainId: chain.id,
@@ -182,8 +181,7 @@ export async function fetchHistory(
             amount: Math.abs(tc.change),
             amountRaw: String(Math.round(Math.abs(tc.change) * 10 ** tc.decimals)),
             usd: null,
-            // blockTime null => unknown date (0), never the slot number.
-            at: st.blockTime !== null ? st.blockTime * 1000 : 0,
+            at: st.blockTime !== null ? st.blockTime * 1000 : st.slot,
             status: st.failed ? 'failed' : 'confirmed',
             isSpam: false,
             chainId: chain.id,

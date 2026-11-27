@@ -25,7 +25,14 @@ const post = <T,>(path: string, data?: unknown): Promise<T> =>
     body: data === undefined ? undefined : JSON.stringify(data),
   })
 
-type ChainRow = { id: string; name: string; chain_id: number; rpc_urls: string; explorer_url: string; native_token: string; stablecoin: string; stablecoin_address: string; dex_router: string; vault_address: string | null; status: Chain['status']; is_default: number }
+type ChainRow = {
+  id: string; name: string; chain_id: number; rpc_urls: string; explorer_url: string
+  native_token: string; native_decimals?: number | null
+  stablecoin: string; stablecoin_address: string; stablecoin_decimals?: number | null
+  gas_token?: string | null; dex_router: string; vault_address: string | null
+  status: Chain['status']; is_default: number
+  is_testnet?: number | null; active?: number | null; paired_chain_id?: string | null
+}
 type KeeperRow = { id: number; started_at: string; chain_id: string; locks_checked: number; triggers: number; executed: number; retried: number; failed: number; status: KeeperRun['status'] }
 type AuditRow = { id: number; created_at: string; actor: string; action: string; detail: string | null }
 type TokenRow = { id: number; symbol: string; chain_id: string; address: string; decimals: number; verified: number; featured: number }
@@ -33,9 +40,17 @@ type LockDbRow = { id: string; chain_id: string; owner: string; token_address: s
 
 const mapChain = (c: ChainRow): Chain => ({
   id: c.id, name: c.name, chainId: c.chain_id, rpcUrls: c.rpc_urls ? c.rpc_urls.split(',').map((s) => s.trim()).filter(Boolean) : [],
-  explorerUrl: c.explorer_url, nativeToken: c.native_token, stablecoin: c.stablecoin,
-  stablecoinAddress: c.stablecoin_address ?? '', dexRouter: c.dex_router ?? '',
+  explorerUrl: c.explorer_url, nativeToken: c.native_token,
+  nativeDecimals: typeof c.native_decimals === 'number' ? c.native_decimals : c.id === 'arc' ? 6 : c.id === 'solana' ? 9 : 18,
+  stablecoin: c.stablecoin,
+  stablecoinAddress: c.stablecoin_address ?? '',
+  stablecoinDecimals: typeof c.stablecoin_decimals === 'number' ? c.stablecoin_decimals : 6,
+  gasToken: c.gas_token ?? c.native_token,
+  dexRouter: c.dex_router ?? '',
   vaultAddress: c.vault_address, status: c.status, isDefault: c.is_default === 1,
+  isTestnet: typeof c.is_testnet === 'number' ? c.is_testnet === 1 : c.status === 'testnet',
+  active: typeof c.active === 'number' ? c.active === 1 : true,
+  pairedChainId: c.paired_chain_id ?? null,
 })
 const mapKeeper = (r: KeeperRow): KeeperRun => ({
   id: String(r.id), startedAt: r.started_at, chain: r.chain_id, locksChecked: r.locks_checked,
@@ -145,6 +160,41 @@ export interface AuditGate {
   note: string
 }
 
+export interface ChainCreateData {
+  id: string; name: string; chainId: number; rpcUrls: string | string[]; explorerUrl: string
+  nativeToken: string; nativeDecimals?: number
+  stablecoin: string; stablecoinAddress?: string; stablecoinDecimals?: number
+  gasToken?: string; dexRouter?: string; vaultAddress?: string | null
+  status: Chain['status']; isTestnet?: boolean; active?: boolean
+  pairedChainId?: string | null; isDefault?: boolean
+}
+
+const patchJson = async <T,>(path: string, data: unknown): Promise<T> => {
+  const r = await fetch(path, {
+    method: 'PATCH', credentials: 'same-origin',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify(data),
+  })
+  if (!r.ok) {
+    const body = (await r.json().catch(() => ({}))) as { error?: string }
+    throw new Error(body.error ?? `Update failed: ${r.status}`)
+  }
+  return r.json() as Promise<T>
+}
+
+const putJson = async <T,>(path: string, data: unknown): Promise<T> => {
+  const r = await fetch(path, {
+    method: 'PUT', credentials: 'same-origin',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify(data),
+  })
+  if (!r.ok) {
+    const body = (await r.json().catch(() => ({}))) as { error?: string }
+    throw new Error(body.error ?? `Update failed: ${r.status}`)
+  }
+  return r.json() as Promise<T>
+}
+
 export const api = {
   async getDashboard(): Promise<DashboardData> {
     return live<DashboardData>('/api/admin/dashboard')
@@ -153,15 +203,16 @@ export const api = {
     const d = await live<{ chains: ChainRow[] }>('/api/chains')
     return d.chains.map(mapChain)
   },
-  async createChain(data: {
-    id: string; name: string; chainId: number; rpcUrls: string; explorerUrl: string;
-    nativeToken: string; stablecoin: string; stablecoinAddress: string; dexRouter: string;
-    status: Chain['status']; isDefault?: boolean
-  }): Promise<{ ok: boolean; id: string }> {
+  async createChain(data: ChainCreateData): Promise<{ ok: boolean; id: string }> {
     return post<{ ok: boolean; id: string }>('/api/admin/chains', data)
   },
   async updateChain(id: string, data: Record<string, unknown>): Promise<{ ok: boolean }> {
-    return post<{ ok: boolean }>(`/api/admin/chains/${encodeURIComponent(id)}`, data)
+    return putJson<{ ok: boolean }>(`/api/admin/chains/${encodeURIComponent(id)}`, data)
+  },
+  /** Enable/disable a chain. Disabled chains disappear from the wallet
+   *  picker/Discover/Swap on the next registry refresh — no app rebuild. */
+  async setChainActive(id: string, active: boolean): Promise<{ ok: boolean; active: boolean }> {
+    return patchJson<{ ok: boolean; active: boolean }>(`/api/admin/chains/${encodeURIComponent(id)}/active`, { active })
   },
   async getTokens(): Promise<{ id: number; symbol: string; chain: string; address: string; decimals: number; verified: boolean; featured: boolean }[]> {
     const d = await live<{ tokens: TokenRow[] }>('/api/admin/tokens')

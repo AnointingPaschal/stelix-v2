@@ -8,7 +8,7 @@
  *  on react-native-web Alert.alert is an empty no-op, so a failure used
  *  to look like a silent dead button (2026-11-26 bug). */
 import { useState } from 'react';
-import { Pressable, ScrollView, StyleSheet, Text, TextInput, View } from 'react-native';
+import { KeyboardAvoidingView, Platform, Pressable, ScrollView, StyleSheet, Text, TextInput, View } from 'react-native';
 import { router } from 'expo-router';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Check } from 'lucide-react-native';
@@ -67,72 +67,75 @@ export default function CreateWallet() {
   }
 
   return (
-    <ScrollView style={styles.root} contentContainerStyle={[styles.inner, centeredContent, { paddingTop: 12 + insets.top, paddingBottom: 24 + insets.bottom }]}>
-      <Text style={styles.title}>Secure Your Vault</Text>
-      {step === 0 && (
-        <>
-          <Text style={styles.sub}>
-            Name your wallet and create a secure session password. This mathematically encrypts your private keys.
-          </Text>
-          <Text style={styles.label}>Wallet Name</Text>
-          <TextInput
-            style={styles.input}
-            placeholder="Wallet Name (e.g. Savings)"
-            value={name}
-            onChangeText={setName}
-            autoCapitalize="words"
-          />
-          <Text style={styles.label}>App password</Text>
-          <TextInput
-            style={styles.input}
-            secureTextEntry
-            placeholder="Enter a strong password (8+ chars)"
-            value={password}
-            onChangeText={setPassword}
-          />
-          <Text style={styles.label}>Confirm password</Text>
-          <TextInput
-            style={styles.input}
-            secureTextEntry
-            placeholder="Re-type your password"
-            value={confirm}
-            onChangeText={setConfirm}
-          />
-          <Text style={styles.hint}>
-            This password unlocks the wallet. Stelix cannot reset it — recovery needs your seed phrase.
-          </Text>
-          {error ? <Text style={styles.error}>{error}</Text> : null}
-          <Btn label={busy ? 'Generating Keys…' : 'Generate Keys'} onPress={handleCreate} loading={busy} />
-          <RiskNote />
-        </>
-      )}
-      {step === 1 && (
-        <>
-          <Text style={styles.sub}>Write down your seed phrase</Text>
-          <Card dark>
-            <Text style={styles.seed}>{mnemonic.join('  ')}</Text>
-          </Card>
-          <Text style={styles.hint}>
-            Never share these words. Anyone with them controls your funds. Stelix support will never ask for them.
-          </Text>
-          <Pressable
-            style={styles.checkRow}
-            onPress={() => {
-              setSaved((v) => !v);
-              setError('');
-            }}
-          >
-            <View style={[styles.checkBox, saved && styles.checkBoxOn]}>
-              {saved ? <Check size={14} color="#fff" /> : null}
-            </View>
-            <Text style={styles.checkLabel}>I have saved my seed phrase</Text>
-          </Pressable>
-          {error ? <Text style={styles.error}>{error}</Text> : null}
-          <Btn label="Continue to Wallet" onPress={finish} disabled={!saved} />
-          <RiskNote />
-        </>
-      )}
-    </ScrollView>
+    <KeyboardAvoidingView style={styles.root} behavior={Platform.OS === 'ios' ? 'padding' : 'height'} keyboardVerticalOffset={insets.top}>
+      <ScrollView style={{ flex: 1 }}
+        keyboardShouldPersistTaps="handled" contentContainerStyle={[styles.inner, centeredContent, { paddingTop: 12 + insets.top, paddingBottom: 32 + insets.bottom }]}>
+        <Text style={styles.title}>Secure Your Vault</Text>
+        {step === 0 && (
+          <>
+            <Text style={styles.sub}>
+              Name your wallet and create a secure session password. This mathematically encrypts your private keys.
+            </Text>
+            <Text style={styles.label}>Wallet Name</Text>
+            <TextInput
+              style={styles.input}
+              placeholder="Wallet Name (e.g. Savings)"
+              value={name}
+              onChangeText={setName}
+              autoCapitalize="words"
+            />
+            <Text style={styles.label}>App password</Text>
+            <TextInput
+              style={styles.input}
+              secureTextEntry
+              placeholder="Enter a strong password (8+ chars)"
+              value={password}
+              onChangeText={setPassword}
+            />
+            <Text style={styles.label}>Confirm password</Text>
+            <TextInput
+              style={styles.input}
+              secureTextEntry
+              placeholder="Re-type your password"
+              value={confirm}
+              onChangeText={setConfirm}
+            />
+            <Text style={styles.hint}>
+              This password unlocks the wallet. Stelix cannot reset it — recovery needs your seed phrase.
+            </Text>
+            {error ? <Text style={styles.error}>{error}</Text> : null}
+            <Btn label={busy ? 'Generating Keys…' : 'Generate Keys'} onPress={handleCreate} loading={busy} />
+            <RiskNote />
+          </>
+        )}
+        {step === 1 && (
+          <>
+            <Text style={styles.sub}>Write down your seed phrase</Text>
+            <Card dark>
+              <Text style={styles.seed}>{mnemonic.join('  ')}</Text>
+            </Card>
+            <Text style={styles.hint}>
+              Never share these words. Anyone with them controls your funds. Stelix support will never ask for them.
+            </Text>
+            <Pressable
+              style={styles.checkRow}
+              onPress={() => {
+                setSaved((v) => !v);
+                setError('');
+              }}
+            >
+              <View style={[styles.checkBox, saved && styles.checkBoxOn]}>
+                {saved ? <Check size={14} color="#fff" /> : null}
+              </View>
+              <Text style={styles.checkLabel}>I have saved my seed phrase</Text>
+            </Pressable>
+            {error ? <Text style={styles.error}>{error}</Text> : null}
+            <Btn label="Continue to Wallet" onPress={finish} disabled={!saved} />
+            <RiskNote />
+          </>
+        )}
+      </ScrollView>
+    </KeyboardAvoidingView>
   );
 }
 

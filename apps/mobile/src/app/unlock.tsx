@@ -11,7 +11,7 @@
  *  for 30 seconds (countdown shown) — the old copy promised a delay
  *  that nothing enforced. */
 import { useEffect, useState } from 'react';
-import { Pressable, StyleSheet, Text, TextInput, View } from 'react-native';
+import { KeyboardAvoidingView, Platform, Pressable, StyleSheet, Text, TextInput, View } from 'react-native';
 import { router } from 'expo-router';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import * as LocalAuthentication from 'expo-local-authentication';
@@ -166,59 +166,61 @@ export default function Unlock() {
   }
 
   return (
-    <View style={[styles.root, centeredContent, { paddingTop: 48 + insets.top, paddingBottom: 16 + insets.bottom }]}>
-      <View style={styles.lockBox}>
-        <Lock size={28} color="#fff" />
-      </View>
-      <Text style={styles.title}>Welcome Back</Text>
-      <Text style={styles.sub}>Enter your session password to access your decentralized wallet.</Text>
-
-      <Text style={styles.label}>PASSWORD</Text>
-      <TextInput
-        style={styles.input}
-        secureTextEntry
-        placeholder="••••••••"
-        placeholderTextColor={COLORS.textMuted}
-        value={password}
-        onChangeText={(v) => {
-          setPassword(v);
-          if (error) setError('');
-        }}
-        onSubmitEditing={unlockWithPassword}
-        editable={!lockedOut && !busy}
-      />
-      {error ? <Text style={styles.error}>{error}</Text> : null}
-      {lockedOut ? (
-        <Text style={styles.fails}>Locked — try again in {lockoutSecs}s.</Text>
-      ) : fails > 0 ? (
-        <Text style={styles.fails}>
-          {fails} failed attempt{fails > 1 ? 's' : ''} — unlocking locks for 30 seconds after {LOCKOUT_AFTER_FAILS}.
-        </Text>
-      ) : null}
-
-      <View style={styles.spacer} />
-      {bioAvailable ? (
-        <Pressable style={styles.bio} onPress={unlockWithBiometrics}>
-          <Fingerprint size={28} color={COLORS.navy} />
-          <Text style={styles.bioText}>Tap to unlock with Biometrics</Text>
-        </Pressable>
-      ) : null}
-      <Btn label={lockedOut ? `Locked — ${lockoutSecs}s` : 'Unlock Wallet'} onPress={unlockWithPassword} loading={busy} disabled={lockedOut} />
-      {confirmReset ? (
-        <View style={styles.resetConfirm}>
-          <Text style={styles.resetHint}>
-            This removes the wallet from this device. Your seed phrase is the only recovery — Stelix cannot reset
-            your password.
-          </Text>
-          <Btn label="Yes, Remove Wallet" variant="danger" onPress={() => void factoryReset()} />
-          <Btn label="Cancel" variant="ghost" onPress={() => setConfirmReset(false)} style={styles.resetCancel} />
+    <KeyboardAvoidingView style={styles.root} behavior={Platform.OS === 'ios' ? 'padding' : 'height'} keyboardVerticalOffset={insets.top}>
+      <View style={[styles.root, centeredContent, { paddingTop: 48 + insets.top, paddingBottom: 32 + insets.bottom }]}>
+        <View style={styles.lockBox}>
+          <Lock size={28} color="#fff" />
         </View>
-      ) : (
-        <Pressable onPress={() => setConfirmReset(true)} style={styles.reset}>
-          <Text style={styles.resetText}>Factory Reset App</Text>
-        </Pressable>
-      )}
-    </View>
+        <Text style={styles.title}>Welcome Back</Text>
+        <Text style={styles.sub}>Enter your session password to access your decentralized wallet.</Text>
+
+        <Text style={styles.label}>PASSWORD</Text>
+        <TextInput
+          style={styles.input}
+          secureTextEntry
+          placeholder="••••••••"
+          placeholderTextColor={COLORS.textMuted}
+          value={password}
+          onChangeText={(v) => {
+            setPassword(v);
+            if (error) setError('');
+          }}
+          onSubmitEditing={unlockWithPassword}
+          editable={!lockedOut && !busy}
+        />
+        {error ? <Text style={styles.error}>{error}</Text> : null}
+        {lockedOut ? (
+          <Text style={styles.fails}>Locked — try again in {lockoutSecs}s.</Text>
+        ) : fails > 0 ? (
+          <Text style={styles.fails}>
+            {fails} failed attempt{fails > 1 ? 's' : ''} — unlocking locks for 30 seconds after {LOCKOUT_AFTER_FAILS}.
+          </Text>
+        ) : null}
+
+        <View style={styles.spacer} />
+        {bioAvailable ? (
+          <Pressable style={styles.bio} onPress={unlockWithBiometrics}>
+            <Fingerprint size={28} color={COLORS.navy} />
+            <Text style={styles.bioText}>Tap to unlock with Biometrics</Text>
+          </Pressable>
+        ) : null}
+        <Btn label={lockedOut ? `Locked — ${lockoutSecs}s` : 'Unlock Wallet'} onPress={unlockWithPassword} loading={busy} disabled={lockedOut} />
+        {confirmReset ? (
+          <View style={styles.resetConfirm}>
+            <Text style={styles.resetHint}>
+              This removes the wallet from this device. Your seed phrase is the only recovery — Stelix cannot reset
+              your password.
+            </Text>
+            <Btn label="Yes, Remove Wallet" variant="danger" onPress={() => void factoryReset()} />
+            <Btn label="Cancel" variant="ghost" onPress={() => setConfirmReset(false)} style={styles.resetCancel} />
+          </View>
+        ) : (
+          <Pressable onPress={() => setConfirmReset(true)} style={styles.reset}>
+            <Text style={styles.resetText}>Factory Reset App</Text>
+          </Pressable>
+        )}
+      </View>
+    </KeyboardAvoidingView>
   );
 }
 

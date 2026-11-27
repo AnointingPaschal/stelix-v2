@@ -226,9 +226,10 @@ describe('Worker API (live endpoints, no sample data)', () => {
 
   beforeEach(async () => {
     db = new FakeD1()
-    // Seed the chain rows the other endpoints depend on (as migration 0002 does).
+    // Seed the chain rows the other endpoints depend on (as migrations 0002 + 0006 do).
     db.tables.chains = [
-      { id: 'arc', name: 'Arc', chain_id: 5042002, rpc_urls: 'https://rpc.testnet.arc.network', explorer_url: 'https://testnet.arcscan.app', native_token: 'USDC', stablecoin: 'USDC', stablecoin_address: '0x3600000000000000000000000000000000000000', dex_router: '', vault_address: null, status: 'testnet', is_default: 1 },
+      { id: 'arc', name: 'Arc Testnet', chain_id: 5042002, rpc_urls: 'https://rpc.testnet.arc.io', explorer_url: 'https://explorer.testnet.arc.io', native_token: 'USDC', stablecoin: 'USDC', stablecoin_address: '0x3600000000000000000000000000000000000000', dex_router: '0xfA845604F52843a7b5cfA4030120c6238741F420', vault_address: null, status: 'testnet', is_default: 1 },
+      { id: 'arc-mainnet', name: 'Arc Mainnet', chain_id: 5042, rpc_urls: 'https://rpc.mainnet.arc.io', explorer_url: 'https://explorer.arc.io', native_token: 'USDC', stablecoin: 'USDC', stablecoin_address: '0x3600000000000000000000000000000000000000', dex_router: '0x53BF6B0684Ec7eF91e1387Da3D1a1769bC5A6F77', vault_address: null, status: 'live', is_default: 0 },
       { id: 'bnb', name: 'BNB Smart Chain', chain_id: 56, rpc_urls: 'https://bsc-dataseed.bnbchain.org', explorer_url: 'https://bscscan.com', native_token: 'BNB', stablecoin: 'USDT', stablecoin_address: '0x55d398326f99059fF775485246999027B3197955', dex_router: '', vault_address: null, status: 'hidden', is_default: 0 },
     ]
     db.tables.keeper_state = [{ id: 1, paused: 0, keeper_address: null, updated_by: '', updated_at: new Date().toISOString() }]
@@ -238,7 +239,7 @@ describe('Worker API (live endpoints, no sample data)', () => {
     globalThis.fetch = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
       const url = String(input)
       if (url.includes('dexscreener')) return new Response(JSON.stringify({ pairs: [] }), { status: 200 })
-      if (url.includes('arcscan.app/api')) return new Response(JSON.stringify({ status: '1', result: [{ SourceCode: '' }] }), { status: 200 })
+      if (url.includes('explorer.testnet.arc.io/api') || url.includes('explorer.arc.io/api')) return new Response(JSON.stringify({ status: '1', result: [{ SourceCode: '' }] }), { status: 200 })
       let method = ''
       try { method = (JSON.parse(String(init?.body ?? '{}')) as { method?: string }).method ?? '' } catch { method = '' }
       if (method === 'eth_getTransactionByHash' || method === 'eth_getTransactionReceipt') {
@@ -302,6 +303,77 @@ describe('Worker API (live endpoints, no sample data)', () => {
     expect(res.status).toBe(201)
     const list = await call(env, '/api/chains', { token })
     expect((list.body.chains as { id: string }[]).some((c) => c.id === 'base')).toBe(true)
+  })
+
+  it('chains: GET /api/chains is public (no admin session) and returns the new fields', async () => {
+    const pub = await call(env, '/api/chains')
+    expect(pub.status).toBe(200)
+    const chains = pub.body.chains as Record<string, unknown>[]
+    expect(chains.some((c) => c.id === 'arc')).toBe(true)
+    const arc = chains.find((c) => c.id === 'arc') as Record<string, unknown>
+    expect(arc.chain_id).toBe(5042002)
+    expect(arc.rpc_urls).toMatch(/https:\/\//)
+    expect(arc.explorer_url).toMatch(/https:\/\//)
+    expect(arc.stablecoin).toBe('USDC')
+  })
+
+  it('chains: create rejects a bad chain id, http RPC, bad address, duplicate slug and duplicate chain id', async () => {
+    const base = { id: 'arbitrum', name: 'Arbitrum One', chainId: 42161, rpcUrls: 'https://arb1.arbitrum.io/rpc', explorerUrl: 'https://arbiscan.io', nativeToken: 'ETH', stablecoin: 'USDC', stablecoinAddress: '', dexRouter: '', status: 'testnet' }
+    const badId = await call(env, '/api/admin/chains', { method: 'POST', token, body: { ...base, chainId: 'not-a-number' } })
+    expect(badId.status).toBe(400)
+    expect(String(badId.body.error)).toMatch(/chain id/)
+    const badRpc = await call(env, '/api/admin/chains', { method: 'POST', token, body: { ...base, rpcUrls: 'http://arb1.arbitrum.io/rpc' } })
+    expect(badRpc.status).toBe(400)
+    expect(String(badRpc.body.error)).toMatch(/https/)
+    const badAddr = await call(env, '/api/admin/chains', { method: 'POST', token, body: { ...base, stablecoinAddress: '0x1234' } })
+    expect(badAddr.status).toBe(400)
+    expect(String(badAddr.body.error)).toMatch(/0x address/)
+    const badRouter = await call(env, '/api/admin/chains', { method: 'POST', token, body: { ...base, dexRouter: 'guess-me' } })
+    expect(badRouter.status).toBe(400)
+    const ok = await call(env, '/api/admin/chains', { method: 'POST', token, body: { ...base, nativeDecimals: 18, stablecoinDecimals: 6, gasToken: 'ETH', isTestnet: true, active: true } })
+    expect(ok.status).toBe(201)
+    const dupSlug = await call(env, '/api/admin/chains', { method: 'POST', token, body: { ...base, chainId: 42162 } })
+    expect(dupSlug.status).toBe(409)
+    expect(String(dupSlug.body.error)).toMatch(/slug/)
+    const dupChainId = await call(env, '/api/admin/chains', { method: 'POST', token, body: { ...base, id: 'arbitrum-2', chainId: 42161 } })
+    expect(dupChainId.status).toBe(409)
+    expect(String(dupChainId.body.error)).toMatch(/42161/)
+    // The valid row is readable publicly with its new fields intact.
+    const pub = await call(env, '/api/chains')
+    const row = (pub.body.chains as Record<string, unknown>[]).find((c) => c.id === 'arbitrum') as Record<string, unknown>
+    expect(row.native_decimals).toBe(18)
+    expect(row.stablecoin_decimals).toBe(6)
+    expect(row.gas_token).toBe('ETH')
+    expect(row.is_testnet).toBe(1)
+    expect(row.active).toBe(1)
+  })
+
+  it('chains: PUT edits a chain and PATCH /active disables / re-enables it; writes need a session', async () => {
+    const noAuth = await call(env, '/api/admin/chains', { method: 'POST', body: { id: 'x', name: 'X', chainId: 999, rpcUrls: 'https://example.com', explorerUrl: 'https://example.com', nativeToken: 'ETH', stablecoin: 'USDC', status: 'hidden' } })
+    expect(noAuth.status).toBe(401)
+    const created = await call(env, '/api/admin/chains', { method: 'POST', token, body: { id: 'optimism', name: 'Optimism', chainId: 10, rpcUrls: 'https://mainnet.optimism.io', explorerUrl: 'https://optimistic.etherscan.io', nativeToken: 'ETH', stablecoin: 'USDC', stablecoinAddress: '', dexRouter: '', status: 'hidden' } })
+    expect(created.status).toBe(201)
+    const edited = await call(env, '/api/admin/chains/optimism', { method: 'PUT', token, body: { name: 'OP Mainnet', nativeDecimals: 18, stablecoinAddress: '0x0b2C639c533813f4Aa9D7837CAf62653d097Ff85', status: 'testnet' } })
+    expect(edited.status).toBe(200)
+    const badEdit = await call(env, '/api/admin/chains/optimism', { method: 'PUT', token, body: { stablecoinAddress: '0x1234' } })
+    expect(badEdit.status).toBe(400)
+    const missing = await call(env, '/api/admin/chains/nope', { method: 'PUT', token, body: { name: 'Nope' } })
+    expect(missing.status).toBe(404)
+    const disabled = await call(env, '/api/admin/chains/optimism/active', { method: 'PATCH', token, body: { active: false } })
+    expect(disabled.status).toBe(200)
+    expect(disabled.body.active).toBe(false)
+    const pub = await call(env, '/api/chains')
+    const row = (pub.body.chains as Record<string, unknown>[]).find((c) => c.id === 'optimism') as Record<string, unknown>
+    expect(row.name).toBe('OP Mainnet')
+    expect(row.stablecoin_address).toBe('0x0b2C639c533813f4Aa9D7837CAf62653d097Ff85')
+    expect(row.active).toBe(0)
+    expect(row.is_testnet).toBe(1)
+    const badToggle = await call(env, '/api/admin/chains/optimism/active', { method: 'PATCH', token, body: { active: 'yes' } })
+    expect(badToggle.status).toBe(400)
+    const enabled = await call(env, '/api/admin/chains/optimism/active', { method: 'PATCH', token, body: { active: true } })
+    expect(enabled.status).toBe(200)
+    const pub2 = await call(env, '/api/chains')
+    expect((pub2.body.chains as Record<string, unknown>[]).find((c) => c.id === 'optimism')?.active).toBe(1)
   })
 
   it('announcements: publish to D1 and serve publicly to the app banner feed', async () => {
@@ -415,9 +487,29 @@ describe('Worker API (live endpoints, no sample data)', () => {
   it('deploy register: mainnet is gated without audit/testnet/smoke evidence', async () => {
     const res = await call(env, '/api/admin/deploy/register', {
       method: 'POST', token,
-      body: { ...DEPLOY_PARAMS, env: 'mainnet', address: '0x7777777777777777777777777777777777777777', sourceHash: '0b5e90fcf6bc5d0592ccecd1aa41e83fbc880ef844c3ad4eaee9adcecc6f0646', confirmation: 'Deploy StelixVault to Arc mainnet' },
+      body: { ...DEPLOY_PARAMS, env: 'mainnet', address: '0x7777777777777777777777777777777777777777', sourceHash: '0b5e90fcf6bc5d0592ccecd1aa41e83fbc880ef844c3ad4eaee9adcecc6f0646', confirmation: 'Deploy StelixVault to Arc Testnet mainnet' },
     })
     expect(res.status).toBe(403)
+  })
+
+  it('deploy prepare: mainnet gate for arc-mainnet counts a verified Arc testnet deployment', async () => {
+    const mainnet = { ...DEPLOY_PARAMS, chainId: 'arc-mainnet', env: 'mainnet', sourceHash: '0b5e90fcf6bc5d0592ccecd1aa41e83fbc880ef844c3ad4eaee9adcecc6f0646', confirmation: 'Deploy StelixVault to Arc Mainnet' }
+    // No audit / testnet deployment / smoke attestation yet: gated.
+    const gated = await call(env, '/api/admin/deploy/prepare', { method: 'POST', token, body: mainnet })
+    expect(gated.status).toBe(403)
+    // Passing automated audit + verified testnet deployment on "arc" +
+    // smoke attestation for "arc-mainnet": the gate passes and prepare
+    // returns the mainnet RPC and a CHAIN=arc-mainnet command.
+    db.tables.audit_runs = [{ id: 1, verdict: 'pass', findings_json: '[]' }]
+    db.tables.deployments = [{ id: 1, chain_id: 'arc', env: 'testnet', verification_status: 'verified' }]
+    db.tables.gate_attestations = [{ id: 1, chain_id: 'arc-mainnet', kind: 'smoke' }]
+    const listed = await call(env, '/api/admin/deployments', { token })
+    expect((listed.body.deployments as unknown[]).length).toBe(1)
+    const ok = await call(env, '/api/admin/deploy/prepare', { method: 'POST', token, body: mainnet })
+    expect(ok.status).toBe(200)
+    expect(ok.body.rpcUrl).toBe('https://rpc.mainnet.arc.io')
+    expect(String(ok.body.deployCommand)).toMatch(/CHAIN=arc-mainnet/)
+    expect(String(ok.body.note)).toMatch(/mainnet deployer key/)
   })
 
   it('audit log records admin actions', async () => {

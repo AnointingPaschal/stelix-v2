@@ -8,6 +8,7 @@
  * Validation is real: EVM addresses must pass ethers.isAddress,
  * Solana addresses must pass the PublicKey check in lib/solana.ts
  * (via lib/wallet.ts). Anything else is rejected with a message.
+ * Restored 2026-11-27: all chains active again.
  */
 import { kvGet, kvSet } from './storage';
 import { isValidEvmAddress, isValidSolanaAddress } from './wallet';

@@ -12,7 +12,7 @@
  *    clearLogoCache) and confirms inline.
  *  - About expands inline. Password change / wipe confirm inline. */
 import { useEffect, useState } from 'react';
-import { Pressable, ScrollView, StyleSheet, Switch, Text, TextInput, View } from 'react-native';
+import { KeyboardAvoidingView, Platform, Pressable, ScrollView, StyleSheet, Switch, Text, TextInput, View } from 'react-native';
 import { router } from 'expo-router';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import {
@@ -175,174 +175,177 @@ export default function Settings() {
   }
 
   return (
-    <ScrollView style={styles.root} contentContainerStyle={[styles.inner, centeredContent, { paddingTop: 12 + insets.top, paddingBottom: 24 + insets.bottom }]}>
-      <Text style={styles.title}>Advanced Settings</Text>
+    <KeyboardAvoidingView style={styles.root} behavior={Platform.OS === 'ios' ? 'padding' : 'height'} keyboardVerticalOffset={insets.top}>
+      <ScrollView style={{ flex: 1 }}
+        keyboardShouldPersistTaps="handled" contentContainerStyle={[styles.inner, centeredContent, { paddingTop: 12 + insets.top, paddingBottom: 32 + insets.bottom }]}>
+        <Text style={styles.title}>Advanced Settings</Text>
 
-      <Text style={styles.section}>SECURITY & BACKUP</Text>
-      <Card style={styles.group}>
-        <Row icon={<Fingerprint size={18} color={COLORS.text} />} title="Biometric Auth" sub="Require cryptographic signature via biometrics">
-          <Switch
-            value={settings.biometrics}
-            onValueChange={(v) => {
-              updateSettings({ biometrics: v });
-              // Switching biometrics off wipes the biometric-gated copy
-              // of the session password, so it can never sign again.
-              if (!v) void clearBiometricSessionPassword();
-            }}
-            trackColor={{ true: COLORS.mint }}
+        <Text style={styles.section}>SECURITY & BACKUP</Text>
+        <Card style={styles.group}>
+          <Row icon={<Fingerprint size={18} color={COLORS.text} />} title="Biometric Auth" sub="Require cryptographic signature via biometrics">
+            <Switch
+              value={settings.biometrics}
+              onValueChange={(v) => {
+                updateSettings({ biometrics: v });
+                // Switching biometrics off wipes the biometric-gated copy
+                // of the session password, so it can never sign again.
+                if (!v) void clearBiometricSessionPassword();
+              }}
+              trackColor={{ true: COLORS.mint }}
+            />
+          </Row>
+          <Divider />
+          <Row
+            icon={<Timer size={18} color={COLORS.text} />}
+            title="Auto-Lock Timer"
+            sub={autoLockLabel(settings.autoLockMinutes)}
+            onPress={cycleAutoLock}
           />
-        </Row>
-        <Divider />
-        <Row
-          icon={<Timer size={18} color={COLORS.text} />}
-          title="Auto-Lock Timer"
-          sub={autoLockLabel(settings.autoLockMinutes)}
-          onPress={cycleAutoLock}
-        />
-        <Divider />
-        <Row
-          icon={<Lock size={18} color={COLORS.text} />}
-          title="Change Password"
-          sub="Update transaction signature password"
-          onPress={() => setPwOpen((v) => !v)}
-        />
-        <Divider />
-        <Row
-          icon={<KeyRound size={18} color={COLORS.text} />}
-          title="Export Secrets"
-          sub="Backup Seed Phrases & Private Keys"
-          onPress={() => setExportOpen((v) => !v)}
-        />
-      </Card>
-
-      {pwOpen ? (
-        <Card style={styles.formCard}>
-          <Text style={styles.formTitle}>Change password</Text>
-          <TextInput style={styles.formInput} placeholder="Current password" secureTextEntry value={oldPw} onChangeText={setOldPw} autoCapitalize="none" />
-          <TextInput style={styles.formInput} placeholder="New password (min 8 characters)" secureTextEntry value={newPw} onChangeText={setNewPw} autoCapitalize="none" />
-          <TextInput style={styles.formInput} placeholder="Confirm new password" secureTextEntry value={newPw2} onChangeText={setNewPw2} autoCapitalize="none" />
-          {pwMsg ? <Text style={pwOk ? styles.formOk : styles.formErr}>{pwMsg}</Text> : null}
-          <Btn label={pwBusy ? 'Changing…' : 'Change Password'} onPress={() => void submitPasswordChange()} disabled={pwBusy || !oldPw || !newPw || !newPw2} />
+          <Divider />
+          <Row
+            icon={<Lock size={18} color={COLORS.text} />}
+            title="Change Password"
+            sub="Update transaction signature password"
+            onPress={() => setPwOpen((v) => !v)}
+          />
+          <Divider />
+          <Row
+            icon={<KeyRound size={18} color={COLORS.text} />}
+            title="Export Secrets"
+            sub="Backup Seed Phrases & Private Keys"
+            onPress={() => setExportOpen((v) => !v)}
+          />
         </Card>
-      ) : null}
 
-      {exportOpen ? (
-        <Card style={styles.formCard}>
-          <Text style={styles.formTitle}>Export secrets</Text>
-          <Text style={styles.formHint}>Your seed phrase or private key is shown once, after you re-enter your password. Never share it with anyone, including support.</Text>
-          {exported ? (
-            <>
-              <Text style={styles.secret} selectable>{exported}</Text>
-              <Btn
-                label="Copy Secret"
-                onPress={() => void Clipboard.setStringAsync(exported)}
-                style={styles.formBtn}
-              />
-              <Btn label="Hide Secret" variant="ghost" onPress={() => setExported('')} />
-            </>
-          ) : (
-            <>
-              <TextInput style={styles.formInput} placeholder="Password" secureTextEntry value={exportPw} onChangeText={setExportPw} autoCapitalize="none" />
-              {exportMsg ? <Text style={styles.formErr}>{exportMsg}</Text> : null}
-              <Btn label={exportBusy ? 'Checking…' : 'Reveal Secret'} onPress={() => void submitExport()} disabled={exportBusy || !exportPw} />
-            </>
-          )}
-        </Card>
-      ) : null}
-
-      <Text style={styles.section}>NETWORK & WEB3</Text>
-      <Card style={styles.group}>
-        <Row icon={<Globe size={18} color={COLORS.text} />} title="Active Network" sub={`${chain.name}${chain.testnet ? ' · Testnet' : ''}`} onPress={() => setNetOpen(true)} />
-      </Card>
-
-      <Text style={styles.section}>APP PREFERENCES</Text>
-      <Card style={styles.group}>
-        <Row
-          icon={<BookUser size={18} color={COLORS.text} />}
-          title="Address Book"
-          sub={contacts.length > 0 ? `${contacts.length} saved address${contacts.length === 1 ? '' : 'es'}` : 'Manage saved wallet addresses'}
-          onPress={() => setBookOpen((v) => !v)}
-        />
-        <Divider />
-        <Row icon={<Bell size={18} color={COLORS.text} />} title="Notifications" sub="Targets, maturity and security alerts" onPress={() => router.push('/notifications')} />
-        <Divider />
-        <Row icon={<Bell size={18} color={COLORS.text} />} title="Maturity reminders" sub="Lock maturing / matured alerts in Notifications">
-          <Switch value={settings.maturityReminders} onValueChange={(v) => updateSettings({ maturityReminders: v })} trackColor={{ true: COLORS.mint }} />
-        </Row>
-        <Divider />
-        <Row icon={<Paintbrush size={18} color={COLORS.text} />} title="Hide spam tokens" sub={settings.hideSpam ? 'On' : 'Off'}>
-          <Switch value={settings.hideSpam} onValueChange={(v) => updateSettings({ hideSpam: v })} trackColor={{ true: COLORS.mint }} />
-        </Row>
-      </Card>
-
-      {bookOpen ? (
-        <Card style={styles.formCard}>
-          <Text style={styles.formTitle}>Address book</Text>
-          <Text style={styles.formHint}>Saved recipients appear in Send. Only real wallet addresses can be saved.</Text>
-          {contacts.map((c) => (
-            <View key={c.id} style={styles.contactRow}>
-              <View style={styles.contactMid}>
-                <Text style={styles.contactLabel}>{c.label}</Text>
-                <Text style={styles.contactAddr}>{displaySavedAddress(c.address)}</Text>
-              </View>
-              <Pressable onPress={() => void Clipboard.setStringAsync(c.address)} hitSlop={8}>
-                <Copy size={16} color={COLORS.textMuted} />
-              </Pressable>
-              <Pressable onPress={() => void deleteContact(c.id)} hitSlop={8}>
-                <X size={16} color={COLORS.red} />
-              </Pressable>
-            </View>
-          ))}
-          {contacts.length === 0 ? <Text style={styles.formHint}>No saved addresses yet.</Text> : null}
-          <TextInput style={styles.formInput} placeholder="Label (e.g. Mum)" value={newLabel} onChangeText={setNewLabel} autoCapitalize="words" />
-          <TextInput style={styles.formInput} placeholder="Wallet address (0x… or Solana)" value={newAddress} onChangeText={setNewAddress} autoCapitalize="none" autoCorrect={false} />
-          {bookMsg ? <Text style={styles.formErr}>{bookMsg}</Text> : null}
-          <Btn label={bookBusy ? 'Saving…' : 'Add Address'} onPress={() => void submitAddContact()} disabled={bookBusy || !newLabel.trim() || !newAddress.trim()} />
-        </Card>
-      ) : null}
-
-      <Text style={styles.section}>SYSTEM</Text>
-      <Card style={styles.group}>
-        <Row
-          icon={<Trash2 size={18} color={COLORS.text} />}
-          title="Clear Cache"
-          sub="Free up application cache"
-          onPress={doClearCache}
-        />
-        <Divider />
-        <Row icon={<Info size={18} color={COLORS.text} />} title="About Stelix" sub="Version 2.0.0" onPress={() => setAboutOpen((v) => !v)} />
-      </Card>
-
-      {cacheMsg ? <Text style={styles.inlineOk}>{cacheMsg}</Text> : null}
-      {aboutOpen ? (
-        <Card style={styles.formCard}>
-          <Text style={styles.formTitle}>About Stelix</Text>
-          <Text style={styles.formHint}>
-            Stelix 2.0.0 · Non-custodial multichain vault wallet. Arc default · BNB · Base · Ethereum · Polygon ·
-            Solana. Your keys never leave this device; locks are enforced on-chain by the StelixVault contract.
-          </Text>
-        </Card>
-      ) : null}
-
-      <View style={styles.wipeWrap}>
-        {!showWipe ? (
-          <Pressable style={styles.wipeBtn} onPress={() => setShowWipe(true)}>
-            <Trash2 size={16} color={COLORS.red} />
-            <Text style={styles.wipeText}>Wipe Wallet Environment</Text>
-          </Pressable>
-        ) : (
-          <Card style={styles.wipeCard}>
-            <Text style={styles.wipeHint}>Type WIPE to remove the wallet from this device. Recovery needs your seed phrase.</Text>
-            <TextInput style={styles.wipeInput} placeholder="WIPE" autoCapitalize="characters" value={wipeText} onChangeText={setWipeText} />
-            {wipeMsg ? <Text style={styles.formErr}>{wipeMsg}</Text> : null}
-            <Btn label="Confirm Wipe" variant="danger" onPress={wipe} />
+        {pwOpen ? (
+          <Card style={styles.formCard}>
+            <Text style={styles.formTitle}>Change password</Text>
+            <TextInput style={styles.formInput} placeholder="Current password" secureTextEntry value={oldPw} onChangeText={setOldPw} autoCapitalize="none" />
+            <TextInput style={styles.formInput} placeholder="New password (min 8 characters)" secureTextEntry value={newPw} onChangeText={setNewPw} autoCapitalize="none" />
+            <TextInput style={styles.formInput} placeholder="Confirm new password" secureTextEntry value={newPw2} onChangeText={setNewPw2} autoCapitalize="none" />
+            {pwMsg ? <Text style={pwOk ? styles.formOk : styles.formErr}>{pwMsg}</Text> : null}
+            <Btn label={pwBusy ? 'Changing…' : 'Change Password'} onPress={() => void submitPasswordChange()} disabled={pwBusy || !oldPw || !newPw || !newPw2} />
           </Card>
-        )}
-      </View>
-      <RiskNote />
+        ) : null}
 
-      <NetworkSheet visible={netOpen} onClose={() => setNetOpen(false)} />
-    </ScrollView>
+        {exportOpen ? (
+          <Card style={styles.formCard}>
+            <Text style={styles.formTitle}>Export secrets</Text>
+            <Text style={styles.formHint}>Your seed phrase or private key is shown once, after you re-enter your password. Never share it with anyone, including support.</Text>
+            {exported ? (
+              <>
+                <Text style={styles.secret} selectable>{exported}</Text>
+                <Btn
+                  label="Copy Secret"
+                  onPress={() => void Clipboard.setStringAsync(exported)}
+                  style={styles.formBtn}
+                />
+                <Btn label="Hide Secret" variant="ghost" onPress={() => setExported('')} />
+              </>
+            ) : (
+              <>
+                <TextInput style={styles.formInput} placeholder="Password" secureTextEntry value={exportPw} onChangeText={setExportPw} autoCapitalize="none" />
+                {exportMsg ? <Text style={styles.formErr}>{exportMsg}</Text> : null}
+                <Btn label={exportBusy ? 'Checking…' : 'Reveal Secret'} onPress={() => void submitExport()} disabled={exportBusy || !exportPw} />
+              </>
+            )}
+          </Card>
+        ) : null}
+
+        <Text style={styles.section}>NETWORK & WEB3</Text>
+        <Card style={styles.group}>
+          <Row icon={<Globe size={18} color={COLORS.text} />} title="Active Network" sub={`${chain.name}${chain.testnet ? ' · Testnet' : ''}`} onPress={() => setNetOpen(true)} />
+        </Card>
+
+        <Text style={styles.section}>APP PREFERENCES</Text>
+        <Card style={styles.group}>
+          <Row
+            icon={<BookUser size={18} color={COLORS.text} />}
+            title="Address Book"
+            sub={contacts.length > 0 ? `${contacts.length} saved address${contacts.length === 1 ? '' : 'es'}` : 'Manage saved wallet addresses'}
+            onPress={() => setBookOpen((v) => !v)}
+          />
+          <Divider />
+          <Row icon={<Bell size={18} color={COLORS.text} />} title="Notifications" sub="Targets, maturity and security alerts" onPress={() => router.push('/notifications')} />
+          <Divider />
+          <Row icon={<Bell size={18} color={COLORS.text} />} title="Maturity reminders" sub="Lock maturing / matured alerts in Notifications">
+            <Switch value={settings.maturityReminders} onValueChange={(v) => updateSettings({ maturityReminders: v })} trackColor={{ true: COLORS.mint }} />
+          </Row>
+          <Divider />
+          <Row icon={<Paintbrush size={18} color={COLORS.text} />} title="Hide spam tokens" sub={settings.hideSpam ? 'On' : 'Off'}>
+            <Switch value={settings.hideSpam} onValueChange={(v) => updateSettings({ hideSpam: v })} trackColor={{ true: COLORS.mint }} />
+          </Row>
+        </Card>
+
+        {bookOpen ? (
+          <Card style={styles.formCard}>
+            <Text style={styles.formTitle}>Address book</Text>
+            <Text style={styles.formHint}>Saved recipients appear in Send. Only real wallet addresses can be saved.</Text>
+            {contacts.map((c) => (
+              <View key={c.id} style={styles.contactRow}>
+                <View style={styles.contactMid}>
+                  <Text style={styles.contactLabel}>{c.label}</Text>
+                  <Text style={styles.contactAddr}>{displaySavedAddress(c.address)}</Text>
+                </View>
+                <Pressable onPress={() => void Clipboard.setStringAsync(c.address)} hitSlop={8}>
+                  <Copy size={16} color={COLORS.textMuted} />
+                </Pressable>
+                <Pressable onPress={() => void deleteContact(c.id)} hitSlop={8}>
+                  <X size={16} color={COLORS.red} />
+                </Pressable>
+              </View>
+            ))}
+            {contacts.length === 0 ? <Text style={styles.formHint}>No saved addresses yet.</Text> : null}
+            <TextInput style={styles.formInput} placeholder="Label (e.g. Mum)" value={newLabel} onChangeText={setNewLabel} autoCapitalize="words" />
+            <TextInput style={styles.formInput} placeholder="Wallet address (0x… or Solana)" value={newAddress} onChangeText={setNewAddress} autoCapitalize="none" autoCorrect={false} />
+            {bookMsg ? <Text style={styles.formErr}>{bookMsg}</Text> : null}
+            <Btn label={bookBusy ? 'Saving…' : 'Add Address'} onPress={() => void submitAddContact()} disabled={bookBusy || !newLabel.trim() || !newAddress.trim()} />
+          </Card>
+        ) : null}
+
+        <Text style={styles.section}>SYSTEM</Text>
+        <Card style={styles.group}>
+          <Row
+            icon={<Trash2 size={18} color={COLORS.text} />}
+            title="Clear Cache"
+            sub="Free up application cache"
+            onPress={doClearCache}
+          />
+          <Divider />
+          <Row icon={<Info size={18} color={COLORS.text} />} title="About Stelix" sub="Version 2.0.0" onPress={() => setAboutOpen((v) => !v)} />
+        </Card>
+
+        {cacheMsg ? <Text style={styles.inlineOk}>{cacheMsg}</Text> : null}
+        {aboutOpen ? (
+          <Card style={styles.formCard}>
+            <Text style={styles.formTitle}>About Stelix</Text>
+            <Text style={styles.formHint}>
+              Stelix 2.0.0 · Non-custodial multichain vault wallet. Arc default · BNB · Base · Ethereum · Polygon ·
+              Solana. Your keys never leave this device; locks are enforced on-chain by the StelixVault contract.
+            </Text>
+          </Card>
+        ) : null}
+
+        <View style={styles.wipeWrap}>
+          {!showWipe ? (
+            <Pressable style={styles.wipeBtn} onPress={() => setShowWipe(true)}>
+              <Trash2 size={16} color={COLORS.red} />
+              <Text style={styles.wipeText}>Wipe Wallet Environment</Text>
+            </Pressable>
+          ) : (
+            <Card style={styles.wipeCard}>
+              <Text style={styles.wipeHint}>Type WIPE to remove the wallet from this device. Recovery needs your seed phrase.</Text>
+              <TextInput style={styles.wipeInput} placeholder="WIPE" autoCapitalize="characters" value={wipeText} onChangeText={setWipeText} />
+              {wipeMsg ? <Text style={styles.formErr}>{wipeMsg}</Text> : null}
+              <Btn label="Confirm Wipe" variant="danger" onPress={wipe} />
+            </Card>
+          )}
+        </View>
+        <RiskNote />
+
+        <NetworkSheet visible={netOpen} onClose={() => setNetOpen(false)} />
+      </ScrollView>
+    </KeyboardAvoidingView>
   );
 }
 

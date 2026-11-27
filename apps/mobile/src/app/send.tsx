@@ -7,7 +7,7 @@
  *  EVM chains only; Solana sends are refused honestly (no Solana send
  *  path is wired yet). */
 import { useEffect, useState } from 'react';
-import { Pressable, ScrollView, StyleSheet, Text, TextInput, View } from 'react-native';
+import { KeyboardAvoidingView, Platform, Pressable, ScrollView, StyleSheet, Text, TextInput, View } from 'react-native';
 import { router } from 'expo-router';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { ChevronDown, Clipboard as ClipboardIcon } from 'lucide-react-native';
@@ -180,141 +180,144 @@ export default function Send() {
   }
 
   return (
-    <ScrollView style={styles.root} contentContainerStyle={[styles.inner, centeredContent, { paddingTop: 12 + insets.top, paddingBottom: 24 + insets.bottom }]}>
-      <ScreenHeader title="Transfer Assets" onBack={() => router.back()} />
+    <KeyboardAvoidingView style={styles.root} behavior={Platform.OS === 'ios' ? 'padding' : 'height'} keyboardVerticalOffset={insets.top}>
+      <ScrollView style={{ flex: 1 }}
+        keyboardShouldPersistTaps="handled" contentContainerStyle={[styles.inner, centeredContent, { paddingTop: 12 + insets.top, paddingBottom: 32 + insets.bottom }]}>
+        <ScreenHeader title="Transfer Assets" onBack={() => router.back()} />
 
-      <View style={styles.chainPill}>
-        <View style={styles.netDot} />
-        <Text style={styles.chainText}>
-          {chain.name} · Native: {chain.nativeSymbol}
-        </Text>
-      </View>
-
-      <Text style={styles.label}>Asset</Text>
-      <Pressable style={styles.assetCard} onPress={() => setPickerOpen(true)}>
-        {token ? (
-          <TokenLogo chainId={token.chainId} address={token.address} symbol={token.symbol} size={36} fallbackTone="light" logoUrl={token.logoUrl} />
-        ) : (
-          <View style={styles.assetAvatar}>
-            <Text style={styles.assetAvatarText}>?</Text>
-          </View>
-        )}
-        <View style={styles.assetMid}>
-          <Text style={styles.assetName}>{token?.symbol ?? '—'}</Text>
-          <Text style={styles.assetSub}>Native Token</Text>
+        <View style={styles.chainPill}>
+          <View style={styles.netDot} />
+          <Text style={styles.chainText}>
+            {chain.name} · Native: {chain.nativeSymbol}
+          </Text>
         </View>
-        <ChevronDown size={16} color={COLORS.textMuted} />
-      </Pressable>
 
-      <View style={styles.recipientHead}>
-        <Text style={[styles.label, styles.labelNoTop]}>Recipient Address</Text>
-        <Pressable style={styles.savedBtn} onPress={() => setSavedOpen(true)}>
-          <Text style={styles.savedText}>Saved</Text>
-        </Pressable>
-      </View>
-      <View style={styles.addrWrap}>
-        <TextInput
-          style={styles.addrInput}
-          placeholder="0x…"
-          placeholderTextColor={COLORS.textMuted}
-          autoCapitalize="none"
-          autoCorrect={false}
-          value={to}
-          onChangeText={setTo}
-        />
-        <Pressable onPress={paste} hitSlop={8}>
-          <ClipboardIcon size={18} color={COLORS.text} />
-        </Pressable>
-      </View>
-      <Text style={styles.hint}>New-address warning: always double-check the first and last characters. Wrong-chain sends may be lost permanently.</Text>
-
-      <View style={styles.amountHead}>
-        <Text style={styles.label}>Amount</Text>
-        <Text style={styles.bal}>Bal: {fmtNum(spendableBalance, 6)} {token?.symbol ?? ''}</Text>
-        <Pressable style={styles.maxBtn} onPress={() => token && setAmount(String(spendableBalance))}>
-          <Text style={styles.maxText}>MAX</Text>
-        </Pressable>
-      </View>
-      <View style={styles.amountCard}>
-        <TextInput
-          style={styles.amountInput}
-          keyboardType="decimal-pad"
-          placeholder="0.00"
-          placeholderTextColor="#CBD5E1"
-          value={amount}
-          onChangeText={setAmount}
-        />
-        <Text style={styles.amountSym}>{token?.symbol ?? ''}</Text>
-      </View>
-      {token && token.locked > 0 ? (
-        <Text style={styles.hint}>{fmtNum(token.locked)} {token.symbol} is locked in the vault and unavailable.</Text>
-      ) : null}
-
-      {fee ? (
-        <Text style={styles.hint}>
-          Estimated network fee: {fee.feeNative} {chain.nativeSymbol}
-          {fee.feeUsd !== null ? ` (≈ ${fmtUsd(fee.feeUsd)})` : ''} · gas limit {fee.gasLimit.toString()}
-        </Text>
-      ) : null}
-      {feeError ? <Text style={styles.feeError}>{feeError}</Text> : null}
-      {formError ? <Text style={styles.feeError}>{formError}</Text> : null}
-      {sent ? (
-        <Text style={styles.sentLine}>
-          Sent — tx {sent.hash.slice(0, 12)}…{sent.hash.slice(-6)}
-          {sent.blockNumber !== null ? ` · block ${sent.blockNumber}` : ''}. Recorded in History.
-        </Text>
-      ) : null}
-
-      <View style={styles.spacer} />
-      <Btn
-        label={estimating ? 'Estimating fee…' : 'Review Transaction'}
-        variant={valid ? 'primary' : 'secondary'}
-        onPress={() => void review()}
-        disabled={!valid || estimating}
-      />
-      <RiskNote />
-
-      <SignTransactionModal
-        visible={signModal !== null}
-        request={signModal}
-        biometricsEnabled={settings.biometrics}
-        onClose={() => setSignModal(null)}
-        onSign={signSend}
-        onSigned={(res) => void onSendSigned(res)}
-      />
-
-      <OptionSheet
-        visible={savedOpen}
-        onClose={() => setSavedOpen(false)}
-        title="Saved Recipients"
-        options={savedContacts.map((c) => ({
-          key: c.address,
-          label: c.label,
-          sub: `${displaySavedAddress(c.address)} · ${c.kind === 'evm' ? 'EVM' : 'Solana'}`,
-        }))}
-        onSelect={(key) => setTo(key)}
-      />
-
-      <BottomSheet visible={pickerOpen} onClose={() => setPickerOpen(false)} title="Select Asset">
-        {spendable.map((t) => (
-          <Pressable
-            key={tokenKey(t)}
-            style={styles.pickRow}
-            onPress={() => {
-              setSelectedKey(tokenKey(t));
-              setPickerOpen(false);
-            }}
-          >
-            <TokenLogo chainId={t.chainId} address={t.address} symbol={t.symbol} size={36} fallbackTone="light" logoUrl={t.logoUrl} />
-            <View style={styles.assetMid}>
-              <Text style={styles.assetName}>{t.symbol}</Text>
-              <Text style={styles.assetSub}>{t.name}</Text>
+        <Text style={styles.label}>Asset</Text>
+        <Pressable style={styles.assetCard} onPress={() => setPickerOpen(true)}>
+          {token ? (
+            <TokenLogo chainId={token.chainId} address={token.address} symbol={token.symbol} size={36} fallbackTone="light" logoUrl={token.logoUrl} />
+          ) : (
+            <View style={styles.assetAvatar}>
+              <Text style={styles.assetAvatarText}>?</Text>
             </View>
-            <Text style={styles.pickBal}>{fmtNum(t.balance, 4)}</Text>
+          )}
+          <View style={styles.assetMid}>
+            <Text style={styles.assetName}>{token?.symbol ?? '—'}</Text>
+            <Text style={styles.assetSub}>Native Token</Text>
+          </View>
+          <ChevronDown size={16} color={COLORS.textMuted} />
+        </Pressable>
+
+        <View style={styles.recipientHead}>
+          <Text style={[styles.label, styles.labelNoTop]}>Recipient Address</Text>
+          <Pressable style={styles.savedBtn} onPress={() => setSavedOpen(true)}>
+            <Text style={styles.savedText}>Saved</Text>
           </Pressable>
-        ))}
-      </BottomSheet>
-    </ScrollView>
+        </View>
+        <View style={styles.addrWrap}>
+          <TextInput
+            style={styles.addrInput}
+            placeholder="0x…"
+            placeholderTextColor={COLORS.textMuted}
+            autoCapitalize="none"
+            autoCorrect={false}
+            value={to}
+            onChangeText={setTo}
+          />
+          <Pressable onPress={paste} hitSlop={8}>
+            <ClipboardIcon size={18} color={COLORS.text} />
+          </Pressable>
+        </View>
+        <Text style={styles.hint}>New-address warning: always double-check the first and last characters. Wrong-chain sends may be lost permanently.</Text>
+
+        <View style={styles.amountHead}>
+          <Text style={styles.label}>Amount</Text>
+          <Text style={styles.bal}>Bal: {fmtNum(spendableBalance, 6)} {token?.symbol ?? ''}</Text>
+          <Pressable style={styles.maxBtn} onPress={() => token && setAmount(String(spendableBalance))}>
+            <Text style={styles.maxText}>MAX</Text>
+          </Pressable>
+        </View>
+        <View style={styles.amountCard}>
+          <TextInput
+            style={styles.amountInput}
+            keyboardType="decimal-pad"
+            placeholder="0.00"
+            placeholderTextColor="#CBD5E1"
+            value={amount}
+            onChangeText={setAmount}
+          />
+          <Text style={styles.amountSym}>{token?.symbol ?? ''}</Text>
+        </View>
+        {token && token.locked > 0 ? (
+          <Text style={styles.hint}>{fmtNum(token.locked)} {token.symbol} is locked in the vault and unavailable.</Text>
+        ) : null}
+
+        {fee ? (
+          <Text style={styles.hint}>
+            Estimated network fee: {fee.feeNative} {chain.nativeSymbol}
+            {fee.feeUsd !== null ? ` (≈ ${fmtUsd(fee.feeUsd)})` : ''} · gas limit {fee.gasLimit.toString()}
+          </Text>
+        ) : null}
+        {feeError ? <Text style={styles.feeError}>{feeError}</Text> : null}
+        {formError ? <Text style={styles.feeError}>{formError}</Text> : null}
+        {sent ? (
+          <Text style={styles.sentLine}>
+            Sent — tx {sent.hash.slice(0, 12)}…{sent.hash.slice(-6)}
+            {sent.blockNumber !== null ? ` · block ${sent.blockNumber}` : ''}. Recorded in History.
+          </Text>
+        ) : null}
+
+        <View style={styles.spacer} />
+        <Btn
+          label={estimating ? 'Estimating fee…' : 'Review Transaction'}
+          variant={valid ? 'primary' : 'secondary'}
+          onPress={() => void review()}
+          disabled={!valid || estimating}
+        />
+        <RiskNote />
+
+        <SignTransactionModal
+          visible={signModal !== null}
+          request={signModal}
+          biometricsEnabled={settings.biometrics}
+          onClose={() => setSignModal(null)}
+          onSign={signSend}
+          onSigned={(res) => void onSendSigned(res)}
+        />
+
+        <OptionSheet
+          visible={savedOpen}
+          onClose={() => setSavedOpen(false)}
+          title="Saved Recipients"
+          options={savedContacts.map((c) => ({
+            key: c.address,
+            label: c.label,
+            sub: `${displaySavedAddress(c.address)} · ${c.kind === 'evm' ? 'EVM' : 'Solana'}`,
+          }))}
+          onSelect={(key) => setTo(key)}
+        />
+
+        <BottomSheet visible={pickerOpen} onClose={() => setPickerOpen(false)} title="Select Asset">
+          {spendable.map((t) => (
+            <Pressable
+              key={tokenKey(t)}
+              style={styles.pickRow}
+              onPress={() => {
+                setSelectedKey(tokenKey(t));
+                setPickerOpen(false);
+              }}
+            >
+              <TokenLogo chainId={t.chainId} address={t.address} symbol={t.symbol} size={36} fallbackTone="light" logoUrl={t.logoUrl} />
+              <View style={styles.assetMid}>
+                <Text style={styles.assetName}>{t.symbol}</Text>
+                <Text style={styles.assetSub}>{t.name}</Text>
+              </View>
+              <Text style={styles.pickBal}>{fmtNum(t.balance, 4)}</Text>
+            </Pressable>
+          ))}
+        </BottomSheet>
+      </ScrollView>
+    </KeyboardAvoidingView>
   );
 }
 

@@ -1,16 +1,38 @@
 /**
  * Multichain registry — live data, no placeholder values.
  *
+ * RESTORED (2026-11-27): all six chains are active again at the user's
+ * instruction ("work with all chains from beginning"). The scope-down
+ * of 2026-11-27 (Arc + BNB only) is reversed. ACTIVE_CHAINS is the
+ * only list the UI and fetchers may use; CHAINS is the full registry.
+ * The `active` flag stays so a chain can be disabled again later
+ * (e.g. from the admin Chain Manager — see apps/mobile/SCOPE.md).
+ *
  * Arc is the DEFAULT chain and is TESTNET-FIRST (chain id 5042002).
- * Verified against Arc docs / Circle docs (2026-11-26):
+ * Verified against Arc docs (docs.arc.io, 2026-11-27):
  *   - Arc Testnet chain id: 5042002 (0x4cef52)
- *   - Arc Testnet RPC (primary, resolves): https://rpc.testnet.arc.network
- *   - Arc Testnet explorer: https://testnet.arcscan.app (Blockscout)
+ *   - Arc Testnet RPC (primary): https://rpc.testnet.arc.io
+ *     (the old hostname https://rpc.testnet.arc.network no longer
+ *     resolves — UnknownHostException on device — and is absent from
+ *     current Arc docs; do not restore it)
+ *   - Arc Testnet fallbacks (docs.arc.io):
+ *     https://rpc.blockdaemon.testnet.arc.io,
+ *     https://rpc.drpc.testnet.arc.io,
+ *     https://rpc.quicknode.testnet.arc.io
+ *   - Arc Testnet explorer: https://explorer.testnet.arc.io
  *   - Native gas asset: USDC, 6 decimals (NOT 18)
- *   - Arc Mainnet chain id 5042 / https://rpc.mainnet.arc.io is reported by
- *     third-party RPC lists, but Stelix stays on Arc TESTNET until a
- *     mainnet deployment is explicitly approved — do not flip this file
- *     to mainnet without that decision.
+ * Arc MAINNET (chain id 5042, live 2026-09-16) is registered below as
+ * `arc-mainnet` with active: false — DISABLED in the wallet until a
+ * mainnet deployment is explicitly approved. Chain id 5042 is verified
+ * against docs.arc.io ("Connect to Arc" and "RPC endpoints", checked
+ * 2026-11-27: mainnet 5042 / testnet 5042002, RPC
+ * https://rpc.mainnet.arc.io, explorer https://explorer.arc.io) and
+ * matches the admin registry (apps/admin/src/lib/arcNetworks.ts) —
+ * 5042001 is not an Arc chain id. The wallet stays
+ * testnet-first for Arc and the picker shows only active chains, so
+ * mainnet is not selectable until that decision. Its RPC, explorer,
+ * USDC and Uniswap router addresses are recorded here so Contract
+ * Studio / admin can read them from the registry without re-verifying.
  * The old values `https://rpc.arc.network` / `https://explorer.arc.network`
  * were unverified and did not resolve; they have been removed.
  *
@@ -46,17 +68,33 @@ export interface ChainConfig {
   /** GeckoTerminal network slug used in api.geckoterminal.com URLs. */
   geckoTerminalNetwork: string;
   dex: string;
+  /** Uniswap V3 SwapRouter02 address on this chain (undefined = none confirmed). */
+  uniswapV3Router?: string | null;
+  /** Uniswap V2 Router02 address on this chain (undefined = none confirmed). */
+  uniswapV2Router?: string | null;
   vaultContract: string | null; // null = not deployed yet
   status: 'live' | 'testnet' | 'paused' | 'coming-soon';
   isDefault?: boolean;
   testnet?: boolean;
+  /**
+   * Scope flag — false = disabled (chain stays in the registry so it
+   * can be re-enabled by flipping this to true, e.g. from the admin
+   * Chain Manager — see apps/mobile/SCOPE.md); while false the chain
+   * must not appear in any picker, list or fetch. All six chains are
+   * active as restored 2026-11-27 at the user's instruction.
+   */
+  active: boolean;
 }
 
-/** Env override for a chain's RPC, e.g. EXPO_PUBLIC_ARC_RPC_URL. Never a key. */
-function rpcFromEnv(chainId: string, fallback: string): string {
+/** Env override for a chain's RPC, e.g. EXPO_PUBLIC_ARC_RPC_URL. Never a key.
+ *  `envId` overrides the env-var stem (needed when the chain id contains
+ *  a hyphen, e.g. 'arc-mainnet' -> EXPO_PUBLIC_ARC_MAINNET_RPC_URL). */
+function rpcFromEnv(chainId: string, fallback: string, envId?: string): string {
   const v =
     typeof process !== 'undefined'
-      ? (process.env as Record<string, string | undefined>)[`EXPO_PUBLIC_${chainId.toUpperCase()}_RPC_URL`]
+      ? (process.env as Record<string, string | undefined>)[
+          `EXPO_PUBLIC_${(envId ?? chainId).toUpperCase()}_RPC_URL`
+        ]
       : undefined;
   return v && v.startsWith('http') ? v : fallback;
 }
@@ -74,16 +112,17 @@ export const CHAINS: ChainConfig[] = [
     exitStablecoinLabel: 'auto-sell to USDC',
     // Arc testnet USDC as native gas asset. Address is the well-known
     // native-USDC precompile address reported in Arc testnet guides;
-    // TO-CONFIRM on testnet.arcscan.app before any mainnet use.
+    // TO-CONFIRM on explorer.testnet.arc.io before any mainnet use.
     exitStablecoinAddress: '0x3600000000000000000000000000000000000000',
-    rpcUrl: rpcFromEnv('arc', 'https://rpc.testnet.arc.network'),
+    rpcUrl: rpcFromEnv('arc', 'https://rpc.testnet.arc.io'),
     rpcUrls: [
-      'https://rpc.testnet.arc.network',
-      'https://rpc.blockdaemon.testnet.arc.network',
-      'https://rpc.drpc.testnet.arc.network',
+      'https://rpc.testnet.arc.io',
+      'https://rpc.blockdaemon.testnet.arc.io',
+      'https://rpc.drpc.testnet.arc.io',
+      'https://rpc.quicknode.testnet.arc.io',
     ],
-    explorerUrl: 'https://testnet.arcscan.app',
-    explorerApiUrl: 'https://testnet.arcscan.app/api',
+    explorerUrl: 'https://explorer.testnet.arc.io',
+    explorerApiUrl: 'https://explorer.testnet.arc.io/api',
     dexScreenerChainId: 'arc',
     geckoTerminalNetwork: 'arc',
     dex: 'Arc DEX / aggregator (admin registry)',
@@ -91,6 +130,42 @@ export const CHAINS: ChainConfig[] = [
     status: 'testnet',
     isDefault: true,
     testnet: true,
+    active: true,
+  },
+  {
+    id: 'arc-mainnet',
+    name: 'Arc Mainnet',
+    chainId: 5042,
+    kind: 'evm',
+    nativeSymbol: 'USDC',
+    nativeName: 'USD Coin (Arc gas asset)',
+    nativeDecimals: 6,
+    exitStablecoin: 'USDC',
+    exitStablecoinLabel: 'auto-sell to USDC',
+    // Arc mainnet USDC — same well-known native-USDC precompile address
+    // as testnet (0x3600...0000).
+    exitStablecoinAddress: '0x3600000000000000000000000000000000000000',
+    rpcUrl: rpcFromEnv('arc-mainnet', 'https://rpc.mainnet.arc.io', 'arc_mainnet'),
+    rpcUrls: ['https://rpc.mainnet.arc.io'],
+    explorerUrl: 'https://explorer.arc.io',
+    explorerApiUrl: 'https://explorer.arc.io/api',
+    dexScreenerChainId: 'arc',
+    geckoTerminalNetwork: 'arc',
+    dex: 'Uniswap V3 (SwapRouter02) / V2 (Router02)',
+    // Uniswap routers published for Arc MAINNET (5042) only — verified
+    // via Uniswap contracts PR 144 / docs.arc.io. NEVER use these on
+    // Arc testnet (5042002); testnet has no verified router yet.
+    uniswapV3Router: '0x53BF6B0684Ec7eF91e1387Da3D1a1769bC5A6F77',
+    uniswapV2Router: '0x1f7d7550B1b028f7571E69A784071F0205FD2EfA',
+    vaultContract: null,
+    status: 'live',
+    // DISABLED in the wallet: Arc stays TESTNET-FIRST until a mainnet
+    // deployment is explicitly approved. The entry exists so Contract
+    // Studio / admin can read mainnet RPC, explorer, USDC and routers
+    // from the registry; the picker only shows active chains, so this
+    // is not selectable. Re-enable by flipping active: true (see
+    // apps/mobile/SCOPE.md) — only after that mainnet decision.
+    active: false,
   },
   {
     id: 'bnb',
@@ -116,6 +191,7 @@ export const CHAINS: ChainConfig[] = [
     dex: 'PancakeSwap + aggregator',
     vaultContract: null,
     status: 'live',
+    active: true,
   },
   {
     id: 'base',
@@ -137,6 +213,7 @@ export const CHAINS: ChainConfig[] = [
     dex: 'Base DEX aggregator',
     vaultContract: null,
     status: 'live',
+    active: true,
   },
   {
     id: 'ethereum',
@@ -158,6 +235,7 @@ export const CHAINS: ChainConfig[] = [
     dex: 'Mainnet aggregator',
     vaultContract: null,
     status: 'live',
+    active: true,
   },
   {
     id: 'polygon',
@@ -179,6 +257,7 @@ export const CHAINS: ChainConfig[] = [
     dex: 'Polygon aggregator',
     vaultContract: null,
     status: 'live',
+    active: true,
   },
   {
     id: 'solana',
@@ -200,10 +279,25 @@ export const CHAINS: ChainConfig[] = [
     dex: 'Jupiter aggregator',
     vaultContract: null, // Anchor program ID registered in admin Chain Manager
     status: 'live',
+    active: true,
   },
 ];
 
 export const DEFAULT_CHAIN = CHAINS.find((c) => c.isDefault) ?? CHAINS[0];
+
+/**
+ * The chains the wallet may use: every chain with active: true
+ * (all six, as restored 2026-11-27). Every picker, token list,
+ * fetcher and Discover filter must read this list (or isChainActive),
+ * never CHAINS directly — CHAINS includes disabled entries kept only
+ * so they can be re-enabled later.
+ */
+export const ACTIVE_CHAINS: ChainConfig[] = CHAINS.filter((c) => c.active);
+
+/** True when the chain id is active. */
+export function isChainActive(id: string): boolean {
+  return CHAINS.some((c) => c.id === id && c.active);
+}
 
 export function getChain(id: string): ChainConfig {
   return CHAINS.find((c) => c.id === id) ?? DEFAULT_CHAIN;
@@ -234,6 +328,7 @@ export const VAULT_NOT_DEPLOYED_MESSAGE =
 
 export const VAULT_ADDRESSES: Record<string, string | null> = {
   arc: null,
+  'arc-mainnet': null,
   bnb: null,
   base: null,
   ethereum: null,
@@ -283,6 +378,7 @@ export const LAUNCHPAD_NOT_DEPLOYED_MESSAGE =
 
 export const TOKEN_FACTORY_ADDRESSES: Record<string, string | null> = {
   arc: null,
+  'arc-mainnet': null,
   bnb: null,
   base: null,
   ethereum: null,
@@ -292,6 +388,7 @@ export const TOKEN_FACTORY_ADDRESSES: Record<string, string | null> = {
 
 export const LAUNCHPAD_ADDRESSES: Record<string, string | null> = {
   arc: null,
+  'arc-mainnet': null,
   bnb: null,
   base: null,
   ethereum: null,

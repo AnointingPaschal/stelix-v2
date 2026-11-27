@@ -26,6 +26,12 @@
 import * as fs from 'fs';
 import * as path from 'path';
 
+// PBKDF2-HMAC-SHA-256 at 600,000 iterations (async, so it yields) takes
+// seconds per encrypt/decrypt on a throttled VM, and several tests here
+// do 2 KDFs each — Jest's 5s default is not a product limit (same
+// rationale as crypto.test.ts). The iteration count must not be lowered.
+jest.setTimeout(120_000);
+
 type GlobalWithMock = typeof globalThis & {
   __stelixMockAsyncMap?: Map<string, string>;
   navigator?: { product?: string };

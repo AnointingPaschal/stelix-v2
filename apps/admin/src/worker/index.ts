@@ -9,11 +9,13 @@
 // password hash (ADMIN_EMAIL var, ADMIN_PASSWORD_HASH secret) server-side,
 // with per-IP rate limiting (5 failures -> 15 min lock) and an audit_log entry.
 // On success it sets an HttpOnly signed session cookie (HMAC-SHA256 with
-// ADMIN_SESSION_SECRET, 8h). All /api/admin/*, /api/chains, /api/keeper/runs
-// and /api/support require it. /api/health, /api/config, /api/announcements
-// and /api/launches stay public: config is signed and served to the app;
-// announcements are the public in-app banner feed; launches is the public
-// approved-launch feed for the mobile Launchpad tab.
+// ADMIN_SESSION_SECRET, 8h). All /api/admin/*, /api/keeper/runs
+// and /api/support require it. /api/health, /api/config, /api/announcements,
+// /api/launches and /api/chains stay public: config is signed and served to
+// the app; announcements are the public in-app banner feed; launches is the
+// public approved-launch feed for the mobile Launchpad tab; chains is the
+// public chain registry the wallet reads (GET only — every chain write
+// stays behind the admin session).
 // No secrets in code: password hash, session secret, config signing secret,
 // keeper run key and explorer key are Pages/Worker secrets (see wrangler.toml).
 //
@@ -29,7 +31,8 @@
 // small-value smoke-test attestation, and the typed confirmation phrase.
 import { runStaticAudit, sha256Hex, type AuditFinding } from '../lib/auditCheck'
 import { validateFeePayload, type FeeConfig } from '../lib/fees'
-import { isAddress, mainnetConfirmPhrase, validateDeployParams } from '../lib/deployParams'
+import { isAddress, mainnetConfirmPhrase, testnetChainIdFor, validateDeployParams } from '../lib/deployParams'
+import { validateChainInput, type ChainInput } from '../lib/chainValidation'
 import artifact from '../contracts/StelixVault.artifact.json'
 
 export interface Env {
@@ -230,12 +233,20 @@ type ChainRow = {
   rpc_urls: string
   explorer_url: string
   native_token: string
+  native_decimals?: number | null
   stablecoin: string
   stablecoin_address: string
+  stablecoin_decimals?: number | null
+  gas_token?: string | null
   dex_router: string
   vault_address: string | null
   status: string
   is_default: number
+  is_testnet?: number | null
+  active?: number | null
+  paired_chain_id?: string | null
+  launchpad_address?: string | null
+  token_factory_address?: string | null
 }
 
 async function getChains(env: Env): Promise<ChainRow[]> {
@@ -291,9 +302,13 @@ async function mainnetGate(env: Env, chainId: string): Promise<{ pass: boolean; 
   if (!automatedPass && !external) {
     reasons.push('No passing audit: run the automated audit with zero open critical/high findings, or record a passing independent audit.')
   }
+  // The verified testnet deployment that gates a mainnet deploy lives
+  // under the testnet counterpart row: a mainnet deploy of "arc-mainnet"
+  // is gated by the verified testnet deployment on "arc", not by a
+  // testnet deployment on "arc-mainnet" (which can never exist).
   const testnet = await env.DB.prepare(
     "SELECT * FROM deployments WHERE chain_id = ? AND env = 'testnet' AND verification_status = 'verified' ORDER BY id DESC LIMIT 1",
-  ).bind(chainId).first<{ id: number }>()
+  ).bind(testnetChainIdFor(chainId)).first<{ id: number }>()
   if (!testnet) reasons.push('No verified testnet deployment on this chain yet.')
   const smoke = await env.DB.prepare(
     "SELECT * FROM gate_attestations WHERE chain_id = ? AND kind = 'smoke' ORDER BY id DESC LIMIT 1",
@@ -396,6 +411,18 @@ export default {
       })
     }
 
+    // Public chain registry for the mobile app (no admin session).
+    // The wallet reads this to list chains (apps/mobile/src/lib/adminChains.ts)
+    // so a chain added here appears in the picker/Discover/Swap with no app
+    // rebuild. Every chain WRITE stays behind the admin session below.
+    // A chain listed here is NOT usable for locks/swaps until its vault and
+    // DEX router are verified on the explorer and registered — the wallet
+    // must say that honestly.
+    if (path === '/api/chains' && req.method === 'GET') {
+      const chains = await getChains(env)
+      return json({ chains })
+    }
+
     // Everything below requires a valid admin session.
     const authed = await readSession(req, env)
     if (!authed && path.startsWith('/api/')) {
@@ -486,70 +513,86 @@ export default {
     }
 
     // ---- Chains ----
-    if (path === '/api/chains' && req.method === 'GET') {
-      const chains = await getChains(env)
-      return json({ chains })
-    }
+    // GET /api/chains is public (above, before the auth gate) — the wallet
+    // reads the registry from it. Everything here writes and needs a session.
     if (path === '/api/admin/chains' && req.method === 'POST') {
       const body = await readJson(req)
-      const id = String(body.id ?? '').trim().toLowerCase()
-      const name = String(body.name ?? '').trim()
-      const chainId = Number(body.chainId ?? body.chain_id)
-      const rpcUrls = Array.isArray(body.rpcUrls) ? body.rpcUrls.join(',') : String(body.rpcUrls ?? body.rpc_urls ?? '')
-      const explorerUrl = String(body.explorerUrl ?? body.explorer_url ?? '').trim()
-      const nativeToken = String(body.nativeToken ?? body.native_token ?? '').trim()
-      const stablecoin = String(body.stablecoin ?? '').trim()
-      const stablecoinAddress = String(body.stablecoinAddress ?? body.stablecoin_address ?? '').trim()
-      const dexRouter = String(body.dexRouter ?? body.dex_router ?? '').trim()
-      const status = String(body.status ?? 'hidden')
-      if (!/^[a-z0-9-]{2,32}$/.test(id)) return json({ error: 'id must be a lowercase slug (2-32 chars)' }, 400)
-      if (!name || !Number.isInteger(chainId) || !rpcUrls || !explorerUrl || !nativeToken || !stablecoin) {
-        return json({ error: 'name, chainId, rpcUrls, explorerUrl, nativeToken and stablecoin are required' }, 400)
+      const { value, errors } = validateChainInput(body)
+      if (!value || !value.id || !value.name || value.chainId === undefined) {
+        const first = Object.values(errors)[0] ?? 'invalid chain'
+        return json({ error: first, details: errors }, 400)
       }
-      if (stablecoinAddress && !isAddress(stablecoinAddress)) return json({ error: 'stablecoinAddress must be a valid 0x address' }, 400)
-      if (dexRouter && dexRouter.startsWith('0x') && !isAddress(dexRouter)) return json({ error: 'dexRouter must be a valid 0x address' }, 400)
-      if (!['testnet', 'live', 'paused', 'hidden'].includes(status)) return json({ error: 'status must be testnet, live, paused or hidden' }, 400)
-      const existing = await env.DB.prepare('SELECT id FROM chains WHERE id = ? OR chain_id = ?').bind(id, chainId).first()
-      if (existing) return json({ error: 'A chain with that id or chainId already exists' }, 409)
-      const isDefault = body.isDefault === true || body.is_default === 1 ? 1 : 0
+      const chain = value as ChainInput
+      const bySlug = await env.DB.prepare('SELECT id FROM chains WHERE id = ?').bind(chain.id).first()
+      if (bySlug) return json({ error: 'A chain with that slug already exists', details: { id: 'A chain with that slug already exists' } }, 409)
+      const byChainId = await env.DB.prepare('SELECT id FROM chains WHERE chain_id = ?').bind(chain.chainId).first<{ id: string }>()
+      if (byChainId) return json({ error: `Chain id ${chain.chainId} is already used by "${byChainId.id}"`, details: { chainId: `Chain id ${chain.chainId} is already used by "${byChainId.id}"` } }, 409)
+      const isDefault = chain.isDefault ? 1 : 0
       if (isDefault) await env.DB.prepare('UPDATE chains SET is_default = 0').run()
       await env.DB.prepare(
-        'INSERT INTO chains (id, name, chain_id, rpc_urls, explorer_url, native_token, stablecoin, stablecoin_address, dex_router, vault_address, status, is_default) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?)',
-      ).bind(id, name, chainId, rpcUrls, explorerUrl, nativeToken, stablecoin, stablecoinAddress, dexRouter, status, isDefault).run()
-      await audit(env, authed, 'chain.create', `chain ${id} (${name}, chainId ${chainId}) created`)
-      return json({ ok: true, id }, 201)
+        'INSERT INTO chains (id, name, chain_id, rpc_urls, explorer_url, native_token, native_decimals, stablecoin, stablecoin_address, stablecoin_decimals, gas_token, dex_router, vault_address, status, is_testnet, active, paired_chain_id, is_default) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
+      ).bind(
+        chain.id, chain.name, chain.chainId, chain.rpcUrls.join(','), chain.explorerUrl,
+        chain.nativeToken, chain.nativeDecimals, chain.stablecoin, chain.stablecoinAddress,
+        chain.stablecoinDecimals, chain.gasToken, chain.dexRouter, chain.vaultAddress,
+        chain.status, chain.isTestnet ? 1 : 0, chain.active ? 1 : 0, chain.pairedChainId, isDefault,
+      ).run()
+      await audit(env, authed, 'chain.create', `chain ${chain.id} (${chain.name}, chainId ${chain.chainId}) created`)
+      return json({ ok: true, id: chain.id }, 201)
     }
-    const chainUpdate = /^\/api\/admin\/chains\/([a-z0-9-]+)$/.exec(path)
-    if (chainUpdate && req.method === 'POST') {
-      const id = chainUpdate[1]
+    const chainToggle = /^\/api\/admin\/chains\/([a-z0-9-]+)\/active$/.exec(path)
+    if (chainToggle && req.method === 'PATCH') {
+      const id = chainToggle[1]
       const body = await readJson(req)
+      if (typeof body.active !== 'boolean') return json({ error: 'active must be true or false' }, 400)
       const chain = await env.DB.prepare('SELECT * FROM chains WHERE id = ?').bind(id).first<ChainRow>()
       if (!chain) return json({ error: 'chain not found' }, 404)
+      await env.DB.prepare("UPDATE chains SET active = ?, updated_at = datetime('now') WHERE id = ?").bind(body.active ? 1 : 0, id).run()
+      await audit(env, authed, body.active ? 'chain.enable' : 'chain.disable', `chain ${id} ${body.active ? 'enabled' : 'disabled'} (active=${body.active})`)
+      return json({ ok: true, id, active: body.active })
+    }
+    const chainUpdate = /^\/api\/admin\/chains\/([a-z0-9-]+)$/.exec(path)
+    if (chainUpdate && (req.method === 'POST' || req.method === 'PUT')) {
+      const id = chainUpdate[1]
+      const body = await readJson(req)
+      const { value, errors } = validateChainInput(body, { partial: true })
+      if (!value) {
+        const first = Object.values(errors)[0] ?? 'invalid chain update'
+        return json({ error: first, details: errors }, 400)
+      }
+      if (value.pairedChainId !== undefined && value.pairedChainId !== null && value.pairedChainId === id) {
+        return json({ error: 'a chain cannot be paired with itself', details: { pairedChainId: 'a chain cannot be paired with itself' } }, 400)
+      }
+      const chain = await env.DB.prepare('SELECT * FROM chains WHERE id = ?').bind(id).first<ChainRow>()
+      if (!chain) return json({ error: 'chain not found' }, 404)
+      if (value.chainId !== undefined && value.chainId !== chain.chain_id) {
+        const clash = await env.DB.prepare('SELECT id FROM chains WHERE chain_id = ?').bind(value.chainId).first<{ id: string }>()
+        if (clash) return json({ error: `Chain id ${value.chainId} is already used by "${clash.id}"`, details: { chainId: `Chain id ${value.chainId} is already used by "${clash.id}"` } }, 409)
+      }
       const updates: string[] = []
       const values: unknown[] = []
       const set = (col: string, val: unknown) => { updates.push(`${col} = ?`); values.push(val) }
-      if (body.name !== undefined) set('name', String(body.name))
-      if (body.rpcUrls !== undefined) set('rpc_urls', Array.isArray(body.rpcUrls) ? body.rpcUrls.join(',') : String(body.rpcUrls))
-      if (body.explorerUrl !== undefined) set('explorer_url', String(body.explorerUrl))
-      if (body.nativeToken !== undefined) set('native_token', String(body.nativeToken))
-      if (body.stablecoin !== undefined) set('stablecoin', String(body.stablecoin))
-      if (body.stablecoinAddress !== undefined) {
-        if (body.stablecoinAddress !== '' && !isAddress(body.stablecoinAddress)) return json({ error: 'stablecoinAddress must be a valid 0x address' }, 400)
-        set('stablecoin_address', String(body.stablecoinAddress))
+      if (value.name !== undefined) set('name', value.name)
+      if (value.chainId !== undefined) set('chain_id', value.chainId)
+      if (value.rpcUrls !== undefined) set('rpc_urls', value.rpcUrls.join(','))
+      if (value.explorerUrl !== undefined) set('explorer_url', value.explorerUrl)
+      if (value.nativeToken !== undefined) set('native_token', value.nativeToken)
+      if (value.nativeDecimals !== undefined) set('native_decimals', value.nativeDecimals)
+      if (value.stablecoin !== undefined) set('stablecoin', value.stablecoin)
+      if (value.stablecoinAddress !== undefined) set('stablecoin_address', value.stablecoinAddress)
+      if (value.stablecoinDecimals !== undefined) set('stablecoin_decimals', value.stablecoinDecimals)
+      if (value.gasToken !== undefined) set('gas_token', value.gasToken === '' ? chain.native_token : value.gasToken)
+      if (value.dexRouter !== undefined) set('dex_router', value.dexRouter)
+      if (value.vaultAddress !== undefined) set('vault_address', value.vaultAddress)
+      if (value.status !== undefined) {
+        set('status', value.status)
+        // A status change implies the testnet flag unless it was set explicitly.
+        if (value.isTestnet === undefined) set('is_testnet', value.status === 'testnet' ? 1 : 0)
       }
-      if (body.dexRouter !== undefined) {
-        if (body.dexRouter !== '' && String(body.dexRouter).startsWith('0x') && !isAddress(body.dexRouter)) return json({ error: 'dexRouter must be a valid 0x address' }, 400)
-        set('dex_router', String(body.dexRouter))
-      }
-      if (body.vaultAddress !== undefined) {
-        if (body.vaultAddress !== null && body.vaultAddress !== '' && !isAddress(body.vaultAddress)) return json({ error: 'vaultAddress must be a valid 0x address' }, 400)
-        set('vault_address', body.vaultAddress === '' ? null : body.vaultAddress)
-      }
-      if (body.status !== undefined) {
-        if (!['testnet', 'live', 'paused', 'hidden'].includes(String(body.status))) return json({ error: 'status must be testnet, live, paused or hidden' }, 400)
-        set('status', String(body.status))
-      }
-      if (body.isDefault === true) {
+      if (value.isTestnet !== undefined) set('is_testnet', value.isTestnet ? 1 : 0)
+      if (value.active !== undefined) set('active', value.active ? 1 : 0)
+      if (value.pairedChainId !== undefined) set('paired_chain_id', value.pairedChainId)
+      if (value.isDefault === true) {
         await env.DB.prepare('UPDATE chains SET is_default = 0').run()
         set('is_default', 1)
       }
@@ -721,6 +764,11 @@ export default {
           id: c.id, name: c.name, chainId: c.chain_id, status: c.status, isDefault: c.is_default === 1,
           vaultAddress: c.vault_address, stablecoin: c.stablecoin, stablecoinAddress: c.stablecoin_address,
           dexRouter: c.dex_router, explorerUrl: c.explorer_url,
+          active: (c.active ?? 1) === 1, isTestnet: (c.is_testnet ?? (c.status === 'testnet' ? 1 : 0)) === 1,
+          nativeToken: c.native_token, nativeDecimals: c.native_decimals ?? 18,
+          stablecoinDecimals: c.stablecoin_decimals ?? 6, gasToken: c.gas_token ?? c.native_token,
+          rpcUrls: c.rpc_urls ? c.rpc_urls.split(',').map((s) => s.trim()).filter(Boolean) : [],
+          pairedChainId: c.paired_chain_id ?? null,
         })),
         publishedAt: new Date().toISOString(),
       }
@@ -1121,6 +1169,9 @@ export default {
         return json({ error: 'Source hash does not match the compiled artifact. Recompile with `npm run compile:contract` first.' }, 400)
       }
       const rpcUrl = (chain.rpc_urls.split(',')[0] ?? '').trim()
+      const deployNote = params.env === 'mainnet'
+        ? 'The deploy itself is broadcast by the Foundry deployer flow with a mainnet deployer key (never stored here). After it confirms, register the address with POST /api/admin/deploy/register — the Worker verifies on-chain code and explorer source status before writing anything to D1.'
+        : 'The deploy itself is broadcast by the Foundry deployer flow with a testnet-only key (never stored here). After it confirms, register the address with POST /api/admin/deploy/register — the Worker verifies on-chain code and explorer source status before writing anything to D1.'
       return json({
         ok: true,
         chain: chain.name,
@@ -1131,7 +1182,7 @@ export default {
           `CHAIN=${params.chainId} OWNER=${params.owner} KEEPER=${params.keeper} ROUTER=${params.router} PRICE_FEED=${params.priceFeed} PENALTY_RECIPIENT=${params.penaltyRecipient} FEE_RECIPIENT=${params.feeRecipient} FEE_BPS=${params.autoSellFeeBps}`,
           'forge script script/DeployStelixVault.s.sol --rpc-url $RPC_URL --broadcast',
         ].join(' '),
-        note: 'The deploy itself is broadcast by the Foundry deployer flow with a testnet-only key (never stored here). After it confirms, register the address with POST /api/admin/deploy/register — the Worker verifies on-chain code and explorer source status before writing anything to D1.',
+        note: deployNote,
         rpcUrl,
       })
     }

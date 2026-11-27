@@ -12,6 +12,7 @@
  *   5. Chain token lists (PancakeSwap extended for BSC, Uniswap default
  *      for Ethereum/Base/Polygon/Arbitrum) — logoURI by contract address
  *
+ * Restored 2026-11-27: all chains active again (Arc + BNB scope-down reversed).
  * Every candidate URL is verified with a HEAD request (GET fallback — some
  * CDNs reject HEAD) before it is trusted. Results are cached in memory and
  * in local storage (7 days for a found logo, 24h for "none") so My Assets

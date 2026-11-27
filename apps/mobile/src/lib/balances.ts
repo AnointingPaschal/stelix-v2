@@ -6,8 +6,13 @@
  * is stored locally and is EMPTY by default — the user adds tokens by
  * address; nothing is pre-seeded.
  *
- * - Native balance: ethers JsonRpcProvider.getBalance (per-chain public RPC,
+ * - Native balance: ethers provider.getBalance (per-chain public RPCs,
  *   env-overridable via EXPO_PUBLIC_<CHAIN>_RPC_URL — see chains.ts).
+ *   Reads go through getProvider(), an ethers FallbackProvider over ALL
+ *   registry RPCs for the chain (quorum 1), so one dead RPC hostname
+ *   can no longer break balances / Import Token / send / swap — Arc
+ *   testnet's old rpc.testnet.arc.network hostname stopped resolving
+ *   on device (2026-11-27) and the wallet had no fallback.
  * - ERC-20 balanceOf via a minimal ABI (balanceOf / decimals / symbol / name).
  * - Prices come from prices.ts (DexScreener/CoinGecko) and are labelled
  *   with source + timestamp; a token with no live price has priceUsd null
@@ -15,6 +20,7 @@
  * - Solana: SOL + SPL tokens via @solana/web3.js (see lib/solana.ts).
  *   The caller passes the wallet's derived Solana address (stored in the
  *   wallet meta) as `address`; the EVM address is meaningless on Solana.
+ *   Restored 2026-11-27 (all chains active again).
  */
 import { ethers } from 'ethers';
 import { getChain, type ChainConfig } from './chains';
@@ -80,11 +86,54 @@ export function visibleTokens<T extends { isSpam: boolean }>(tokens: T[], showSp
 
 const IMPORTED_TOKENS_KEY = 'stelix_imported_tokens_v2';
 
-export function getProvider(chain: ChainConfig): ethers.JsonRpcProvider {
+/** Ordered RPC URLs for a chain: the (env-overridable) primary first,
+ *  then the registry fallbacks, de-duplicated. The env override wins
+ *  when EXPO_PUBLIC_<CHAIN>_RPC_URL is set — it is already baked into
+ *  chain.rpcUrl by chains.ts, so it sorts first here. */
+export function getRpcUrls(chain: ChainConfig): string[] {
+  const urls = [chain.rpcUrl, ...chain.rpcUrls];
+  return [...new Set(urls.filter((u) => typeof u === 'string' && u.startsWith('http')))];
+}
+
+/**
+ * Provider for an EVM chain, with RPC fallback.
+ *
+ * The old code used only chain.rpcUrl: when that one hostname died
+ * (Arc testnet rpc.testnet.arc.network stopped resolving — see
+ * chains.ts), every balance / import-token / send / swap read broke.
+ * This builds an ethers FallbackProvider over ALL registry RPCs in
+ * order (primary first), quorum 1 so a single live RPC is enough, and
+ * the default 400 ms stall timeout so a dead primary fails over fast.
+ * One dead hostname can no longer break the wallet.
+ *
+ * Callers keep using it as a normal ethers provider (getBalance, call,
+ * estimateGas, getFeeData, signer.connect); the return type is
+ * ethers.AbstractProvider because a FallbackProvider is not a
+ * JsonRpcProvider. A chain with a single RPC still gets a plain
+ * JsonRpcProvider (no fallback overhead).
+ *
+ * Sub-providers are built with `{ staticNetwork: true }`: the chain id
+ * is pinned by the registry, so no eth_chainId detection round-trip is
+ * needed — and a dead host's provider would otherwise retry detection
+ * every 1s forever (ethers _start loop), spamming the console and
+ * leaking a timer per getProvider() call while the host is down. The
+ * FallbackProvider still requires all sub-providers to agree on the
+ * network (it reads each one's static network at initial sync).
+ */
+export function getProvider(chain: ChainConfig): ethers.AbstractProvider {
   if (chain.kind !== 'evm' || chain.chainId === null) {
     throw new Error(`${chain.name} is not an EVM chain — use its native RPC client, not ethers.`);
   }
-  return new ethers.JsonRpcProvider(chain.rpcUrl, chain.chainId);
+  const chainId: number = chain.chainId;
+  const urls = getRpcUrls(chain);
+  if (urls.length === 1) {
+    return new ethers.JsonRpcProvider(urls[0], chainId, { staticNetwork: true });
+  }
+  return new ethers.FallbackProvider(
+    urls.map((url) => new ethers.JsonRpcProvider(url, chainId, { staticNetwork: true })),
+    chainId,
+    { quorum: 1 },
+  );
 }
 
 export async function loadImportedTokens(): Promise<ImportedToken[]> {
@@ -125,11 +174,20 @@ export async function removeImportedToken(chainId: string, address: string): Pro
   return next;
 }
 
-/** Resolve an ERC-20's symbol/name/decimals from chain (used when adding a token by address). */
+/** Resolve an ERC-20's symbol/name/decimals from chain (used when adding a token by address).
+ * EVM-only: on Solana the import sheet must refuse before calling this
+ * (SPL tokens are discovered from the wallet's token accounts, not by
+ * pasting a mint) — the raw getProvider() error ('not an EVM chain')
+ * used to leak into the import preview as a confusing message. */
 export async function resolveTokenMetadata(
   chain: ChainConfig,
   address: string,
 ): Promise<{ symbol: string; name: string; decimals: number }> {
+  if (chain.kind !== 'evm' || chain.chainId === null) {
+    throw new Error(
+      `${chain.name} is not an EVM chain — tokens are added by contract address on EVM chains only. On Solana, tokens appear automatically from the wallet's token accounts.`,
+    );
+  }
   const provider = getProvider(chain);
   const contract = new ethers.Contract(address, ERC20_MIN_ABI, provider);
   const [symbol, name, decimals] = await Promise.all([
@@ -142,7 +200,7 @@ export async function resolveTokenMetadata(
 
 async function fetchNativeBalance(
   chain: ChainConfig,
-  provider: ethers.JsonRpcProvider,
+  provider: ethers.AbstractProvider,
   address: string,
 ): Promise<TokenBalance> {
   const raw = await provider.getBalance(address);
@@ -166,7 +224,7 @@ async function fetchNativeBalance(
 
 async function fetchErc20Balance(
   chain: ChainConfig,
-  provider: ethers.JsonRpcProvider,
+  provider: ethers.AbstractProvider,
   address: string,
   token: ImportedToken,
 ): Promise<TokenBalance> {
@@ -208,9 +266,12 @@ export async function fetchBalances(
 ): Promise<BalancesResult> {
   const chain = getChain(chainId);
   const startedAt = Date.now();
-  if (!ethers.isAddress(address)) {
-    return { chain, address, tokens: [], totalUsd: 0, loading: false, error: 'Invalid wallet address.', updatedAt: startedAt };
-  }
+  // NOTE (2026-11-27): the EVM address check MUST come after the Solana
+  // branch below. A valid base58 Solana address fails ethers.isAddress,
+  // so validating it here rejected every Solana balance read with
+  // 'Invalid wallet address.' — Solana showed an empty portfolio even
+  // though the Solana branch itself was correctly placed. EVM chains
+  // are validated just before getProvider() further down.
   if (chain.kind === 'solana') {
     if (!address || address.startsWith('0x')) {
       return {
@@ -276,6 +337,12 @@ export async function fetchBalances(
       };
     }
   }
+  // EVM-only address check (see the note above the Solana branch): a
+  // base58 Solana address must never reach this point — it returns
+  // inside the Solana branch above.
+  if (!ethers.isAddress(address)) {
+    return { chain, address, tokens: [], totalUsd: 0, loading: false, error: 'Invalid wallet address.', updatedAt: startedAt };
+  }
   const provider = getProvider(chain);
   const imported = (importedTokens ?? (await loadImportedTokens())).filter((t) => t.chainId === chain.id);
   let native: TokenBalance;
@@ -288,7 +355,7 @@ export async function fetchBalances(
       tokens: [],
       totalUsd: 0,
       loading: false,
-      error: `Could not read ${chain.name} balance from ${chain.rpcUrl}: ${e instanceof Error ? e.message : String(e)}`,
+      error: `Could not read ${chain.name} balance from ${chain.rpcUrl} (tried ${getRpcUrls(chain).join(', ')}): ${e instanceof Error ? e.message : String(e)}`,
       updatedAt: startedAt,
     };
   }

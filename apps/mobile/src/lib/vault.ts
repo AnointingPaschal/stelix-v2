@@ -19,6 +19,7 @@
  */
 import { ethers } from 'ethers';
 import { getChain, requireVaultAddress, VAULT_NOT_DEPLOYED_MESSAGE } from './chains';
+import { getProvider } from './balances';
 import { fmtPrice } from './format';
 
 /** Minimal StelixVault ABI — only the functions the app calls.
@@ -141,7 +142,9 @@ export async function getUserLocksOnChain(
   } catch {
     return { chainId, deployed: false, note: VAULT_NOT_DEPLOYED_MESSAGE, lockIds: [], locks: [] };
   }
-  const provider = new ethers.JsonRpcProvider(chain.rpcUrl, chain.chainId);
+  // Reads go through getProvider() (balances.ts) so a dead primary RPC
+  // fails over to the registry fallbacks instead of breaking vault reads.
+  const provider = getProvider(chain);
   const vault = new ethers.Contract(vaultAddress, STELIX_VAULT_ABI, provider);
   const ids = (await vault.getUserLocks(userAddress)) as bigint[];
   const locks: ChainLock[] = [];

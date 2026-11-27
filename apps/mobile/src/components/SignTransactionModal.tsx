@@ -224,6 +224,10 @@ export function SignTransactionModal({
             ) : null}
 
             <Text style={styles.authLabel}>Authenticate to sign</Text>
+            {/* Keyboard avoidance lives in BottomSheet (KeyboardAvoidingView
+                + sheet shrinks by keyboard height + ScrollView scrolls to
+                the end on keyboard show), so this input and the Sign button
+                below it stay above the keyboard. */}
             <TextInput
               style={styles.passwordInput}
               secureTextEntry
@@ -236,6 +240,7 @@ export function SignTransactionModal({
               }}
               autoCapitalize="none"
               autoCorrect={false}
+              returnKeyType="go"
               editable={phase !== 'signing'}
               onSubmitEditing={() => void signWith(password)}
             />

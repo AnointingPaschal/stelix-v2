@@ -4,10 +4,9 @@
  *  default. Empty state: "No transactions yet".
  *
  *  The source is the Etherscan-family explorer API on EVM chains
- *  (needs EXPO_PUBLIC_EXPLORER_API_KEY) and the Solana RPC on Solana —
- *  NOT Ankr; the old "via Ankr" subtitle was wrong. Refresh re-fetches
- *  balances, locks AND history from the store, so the spinner means new
- *  on-chain data, not a timer. */
+ *  (needs EXPO_PUBLIC_EXPLORER_API_KEY) — NOT Ankr; the old "via Ankr"
+ *  subtitle was wrong. Refresh re-fetches balances, locks AND history
+ *  from the store, so the spinner means new on-chain data, not a timer. */
 import { useState } from 'react';
 import { Pressable, RefreshControl, ScrollView, StyleSheet, Text, View, useWindowDimensions } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';

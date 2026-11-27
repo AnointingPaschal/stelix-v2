@@ -9,7 +9,8 @@
  */
 import React, { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from 'react';
 import { AppState as RNAppState } from 'react-native';
-import { CHAINS, DEFAULT_CHAIN, VAULT_NOT_DEPLOYED_MESSAGE, type ChainConfig } from '../lib/chains';
+import { ACTIVE_CHAINS, CHAINS, DEFAULT_CHAIN, VAULT_NOT_DEPLOYED_MESSAGE, type ChainConfig } from '../lib/chains';
+import { fetchAdminChains, mergeAdminChains } from '../lib/adminChains';
 import { fetchBalances, loadImportedTokens, type TokenBalance } from '../lib/balances';
 import { fetchHistory, filterHistory, type TxRecord } from '../lib/history';
 import { getUserLocksOnChain, lockedByToken, mapChainLockToBullLock, type BullLock } from '../lib/vault';
@@ -81,7 +82,16 @@ interface AppState {
    *  wallets imported from a raw private key). Used for Solana balances
    *  and history; the EVM address is meaningless on Solana. */
   solanaAddress: string;
+  /** Address for the active chain (Solana address on Solana, EVM address
+   *  everywhere else) — what Receive shows and what balances/history
+   *  are fetched for. */
+  chainAddress: string;
   chain: ChainConfig;
+  /** All chains the picker may show: built-in registry merged with the
+   *  admin registry (admin-added chains appear here after a refresh, no
+   *  rebuild; built-ins are the fallback when the admin API is down). */
+  availableChains: ChainConfig[];
+  refreshChains: () => Promise<void>;
   tokens: TokenBalance[];
   locks: BullLock[];
   history: TxRecord[];
@@ -129,6 +139,26 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
   const [address, setAddress] = useState('');
   const [solanaAddress, setSolanaAddress] = useState('');
   const [chain, setChainState] = useState<ChainConfig>(DEFAULT_CHAIN);
+  const [availableChains, setAvailableChains] = useState<ChainConfig[]>(ACTIVE_CHAINS);
+
+  /** Pull the admin chain registry once and merge it over the built-in
+   *  registry. On ANY failure fetchAdminChains returns null and the
+   *  merge returns the built-ins unchanged — the app never breaks
+   *  because the admin is down. A chain added in admin appears in the
+   *  picker after this runs; its vault/router still need verified
+   *  contract addresses before locks/swaps go live on it. */
+  const refreshChains = useCallback(async () => {
+    try {
+      const remote = await fetchAdminChains();
+      setAvailableChains(mergeAdminChains(CHAINS, remote));
+    } catch {
+      setAvailableChains(ACTIVE_CHAINS);
+    }
+  }, []);
+
+  useEffect(() => {
+    void refreshChains();
+  }, [refreshChains]);
   const [tokens, setTokens] = useState<TokenBalance[]>([]);
   const [locks, setLocks] = useState<BullLock[]>([]);
   const [allHistory, setAllHistory] = useState<TxRecord[]>([]);
@@ -354,7 +384,8 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
 
   const value = useMemo<AppState>(
     () => ({
-      onboarded, unlocked, address, solanaAddress, chain,
+      onboarded, unlocked, address, solanaAddress, chainAddress, chain,
+      availableChains, refreshChains,
       tokens, locks, history, allHistory, notifications, settings,
       discipline,
       loading, hydrated, error, balancesError, historyError, vaultNote, showDust,
@@ -362,7 +393,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
       addLock, updateLock, addTx, markNotificationsRead, updateSettings,
       setShowDust, refreshBalances, refreshLocks, refreshAll, resetState,
     }),
-    [onboarded, unlocked, address, solanaAddress, chain, tokens, locks, history, allHistory, notifications, settings,
+    [onboarded, unlocked, address, solanaAddress, chainAddress, chain, availableChains, refreshChains, tokens, locks, history, allHistory, notifications, settings,
      discipline, loading, hydrated, error, balancesError, historyError, vaultNote, showDust,
      setChain, addLock, updateLock, addTx, markNotificationsRead, updateSettings,
      refreshBalances, refreshLocks, refreshAll, resetState],
@@ -377,4 +408,4 @@ export function useApp(): AppState {
   return ctx;
 }
 
-export { CHAINS };
+export { ACTIVE_CHAINS };

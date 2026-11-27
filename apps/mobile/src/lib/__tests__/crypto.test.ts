@@ -5,8 +5,10 @@
  * They prove the new pure-JS implementation is byte-compatible: wallets
  * encrypted by the old build still unlock, and vice versa.
  */
+import * as fs from 'fs';
 import * as nodeCrypto from 'crypto';
-import { decryptSecret, encryptSecret } from '../crypto';
+import * as path from 'path';
+import { decryptSecret, encryptSecret, isRandomSourceDegraded } from '../crypto';
 
 // PBKDF2-HMAC-SHA-256 at 600,000 iterations in pure JS takes several
 // seconds on a throttled CI VM — Jest's 5s default is not a product
@@ -162,14 +164,48 @@ describe('PBKDF2/AES-GCM wallet encryption', () => {
     }
   });
 
-  it('fails closed — never Math.random — when NO secure random source exists', async () => {
-    // Hermes-like: no `crypto` global, and expo-crypto's native module
-    // is absent in Jest, so the expo-crypto fallback cannot run either.
+  it('with global crypto present, encrypt round-trips and the source is NOT degraded', async () => {
+    expect(isRandomSourceDegraded()).toBe(false);
+    const enc = await encryptSecret(SECRET, PASSWORD);
+    await expect(decryptSecret(enc, PASSWORD)).resolves.toBe(SECRET);
+    expect(isRandomSourceDegraded()).toBe(false);
+  });
+
+  it('DEGRADES instead of failing closed when NO platform random source exists', async () => {
+    // Hermes-like + old Expo Go: no `crypto` global, and no native
+    // module for the probe to find in Jest either. Encryption must
+    // still work — via the labelled ChaCha20 DRBG — with different
+    // ciphertexts each time and the degraded flag set. A fresh module
+    // instance is used so the degraded flag does not leak into the
+    // other tests in this file.
     const restore = stubGlobalCrypto(undefined);
     try {
-      await expect(encryptSecret(SECRET, PASSWORD)).rejects.toThrow(/No secure random source/);
+      jest.resetModules();
+      const fresh = require('../crypto') as typeof import('../crypto');
+      expect(fresh.isRandomSourceDegraded()).toBe(false);
+      const a = await fresh.encryptSecret(SECRET, PASSWORD);
+      const b = await fresh.encryptSecret(SECRET, PASSWORD);
+      expect(a).not.toBe(b);
+      await expect(fresh.decryptSecret(a, PASSWORD)).resolves.toBe(SECRET);
+      await expect(fresh.decryptSecret(b, PASSWORD)).resolves.toBe(SECRET);
+      expect(fresh.isRandomSourceDegraded()).toBe(true);
     } finally {
       restore();
+    }
+  });
+
+  it('never loads the Expo crypto package — no such reference in crypto.ts or wallet.ts', () => {
+    // The package's JS throws at load when its native module is absent,
+    // which crashed the app in old Expo Go (2026-11-27). It is
+    // uninstalled; assert no code path can load it again. (The literal
+    // package name must not appear at all — not even in a comment — so
+    // this grep stays airtight.)
+    for (const file of ['../crypto.ts', '../wallet.ts']) {
+      const src = fs.readFileSync(path.join(__dirname, file), 'utf8');
+      expect(src).not.toContain('expo-crypto');
+      expect(src).not.toMatch(/from\s+['"]expo-crypto['"]/);
+      expect(src).not.toMatch(/require\(\s*['"]expo-crypto['"]/);
+      expect(src).not.toMatch(/import\(\s*['"]expo-crypto['"]/);
     }
   });
 });

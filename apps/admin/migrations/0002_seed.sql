@@ -11,7 +11,7 @@ CREATE TABLE IF NOT EXISTS login_attempts (
 -- Real RPC/explorer/stablecoin values are filled in by the owner before a
 -- chain is set live; vault_address is NULL until a contract is deployed.
 INSERT OR IGNORE INTO chains (id, name, chain_id, rpc_urls, explorer_url, native_token, stablecoin, stablecoin_address, dex_router, vault_address, status, is_default) VALUES
-('arc', 'Arc', 5042002, 'https://rpc.testnet.arc.network', 'https://testnet.arcscan.app', 'USDC', 'USDC', '', '', NULL, 'testnet', 1),
+('arc', 'Arc', 5042002, 'https://rpc.testnet.arc.io', 'https://explorer.testnet.arc.io', 'USDC', 'USDC', '0x3600000000000000000000000000000000000000', '0xfA845604F52843a7b5cfA4030120c6238741F420', NULL, 'testnet', 1),
 ('bnb', 'BNB Smart Chain', 56, 'https://bsc-dataseed.bnbchain.org', 'https://bscscan.com', 'BNB', 'USDT', '', '', NULL, 'hidden', 0),
 ('base', 'Base', 8453, 'https://mainnet.base.org', 'https://basescan.org', 'ETH', 'USDC', '', '', NULL, 'hidden', 0),
 ('ethereum', 'Ethereum', 1, 'https://eth.llamarpc.com', 'https://etherscan.io', 'ETH', 'USDC', '', '', NULL, 'hidden', 0),

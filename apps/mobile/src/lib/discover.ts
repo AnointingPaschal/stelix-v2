@@ -40,10 +40,15 @@
  * (usually 1-3). There is no auto-refresh polling — the user refreshes
  * manually — so a normal session stays far under the limit.
  *
+ * Restored 2026-11-27: all chains active again. Results are still
+ * filtered to ACTIVE_CHAINS (see lib/chains.ts) so a chain disabled
+ * later (e.g. from admin) never appears, even when an upstream feed
+ * returns it. See apps/mobile/SCOPE.md.
+ *
  * No secrets, no keys. Pure helpers are unit-testable with an injected
  * fetch implementation.
  */
-import { CHAINS, getChain } from './chains';
+import { ACTIVE_CHAINS, getChain, isChainActive } from './chains';
 import { normalizeChainId } from './tokenLogos';
 import type { TokenMarketData } from './prices';
 import { fetchTokenMarketData } from './prices';
@@ -130,14 +135,14 @@ function num(v: unknown): number | null {
 }
 
 /** Stelix chain ids shown in the Discover chain filter. */
-export const DISCOVER_CHAINS: { id: string; label: string }[] = CHAINS.map((c) => ({
+export const DISCOVER_CHAINS: { id: string; label: string }[] = ACTIVE_CHAINS.map((c) => ({
   id: c.id,
   label: c.id === 'bnb' ? 'BNB' : c.name,
 }));
 
 /** GeckoTerminal network slugs for the Stelix chains (from chains.ts). */
 export function discoverNetworks(chainId: string | 'all'): string[] {
-  if (chainId === 'all') return CHAINS.map((c) => c.geckoTerminalNetwork);
+  if (chainId === 'all') return ACTIVE_CHAINS.map((c) => c.geckoTerminalNetwork);
   return [getChain(chainId).geckoTerminalNetwork];
 }
 
@@ -315,7 +320,10 @@ export function dedupeDiscoverTokens(tokens: DiscoverToken[]): DiscoverToken[] {
 }
 
 /** Client-side advanced filters. Tokens with an unknown pair age are
- *  excluded by maxAgeMs / newOnly — their age cannot be verified. */
+ *  excluded by maxAgeMs / newOnly — their age cannot be verified.
+ *  Tokens on chains that are not active are always dropped, even when
+ *  the caller asks for 'all' (all six chains are active as restored
+ *  2026-11-27, so this is a no-op until a chain is disabled again). */
 export function applyDiscoverFilters(
   tokens: DiscoverToken[],
   filters: DiscoverFilters,
@@ -323,6 +331,7 @@ export function applyDiscoverFilters(
 ): DiscoverToken[] {
   const q = (filters.query ?? '').trim().toLowerCase();
   return tokens.filter((t) => {
+    if (!isChainActive(t.chainId)) return false;
     if (filters.chainId && filters.chainId !== 'all' && t.chainId !== filters.chainId) return false;
     if (filters.dexId && t.dexId !== filters.dexId) return false;
     if (filters.minLiquidityUsd != null && (t.liquidityUsd ?? 0) < filters.minLiquidityUsd) return false;
@@ -557,7 +566,8 @@ export async function fetchTokenProfilesNew(
     const profiles: DexScreenerProfile[] = Array.isArray(json) ? json : [];
     const wanted = chainId === 'all' ? null : getChain(chainId).dexScreenerChainId;
     const seeds: DiscoverToken[] = profiles
-      .filter((p) => p.tokenAddress && (!wanted || p.chainId === wanted))
+      // Profiles on inactive chains never become rows.
+      .filter((p) => p.tokenAddress && isChainActive(normalizeChainId(p.chainId ?? '')) && (!wanted || p.chainId === wanted))
       .slice(0, limit)
       .map((p) => ({
         symbol: '',
@@ -679,7 +689,10 @@ export async function searchTokens(query: string, limit = 20): Promise<DiscoverR
     const json = await res.json();
     const pairs: DexScreenerPairLike[] = Array.isArray(json?.pairs) ? json.pairs : [];
     const tokens = dedupeDiscoverTokens(
-      pairs.map(mapDexScreenerPair).filter((t) => t.symbol && t.address),
+      pairs
+        .map(mapDexScreenerPair)
+        // Search is global upstream — keep active-chain rows only.
+        .filter((t) => t.symbol && t.address && isChainActive(t.chainId)),
     ).slice(0, limit);
     return { tokens, source: 'dexscreener', error: null, updatedAt: Date.now() };
   } catch (e) {

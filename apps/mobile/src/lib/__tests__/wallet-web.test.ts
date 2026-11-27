@@ -9,6 +9,13 @@
  * proves createWallet stores the encrypted wallet in localStorage and
  * unlocks it again, without ever touching SecureStore.
  */
+
+// PBKDF2-HMAC-SHA-256 at 600,000 iterations (async, so it yields) takes
+// seconds per encrypt/decrypt on a throttled VM, and create + unlock is
+// 2 KDFs — Jest's 5s default is not a product limit (same rationale as
+// crypto.test.ts). The iteration count must not be lowered.
+jest.setTimeout(120_000);
+
 describe('createWallet on web (SecureStore skipped)', () => {
   const store = new Map<string, string>();
 

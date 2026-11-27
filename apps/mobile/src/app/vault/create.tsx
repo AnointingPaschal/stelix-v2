@@ -10,7 +10,7 @@
  *  theatre, not a check. The signing modal's session password is the
  *  real confirmation. */
 import { useMemo, useState } from 'react';
-import { ScrollView, StyleSheet, Text, TextInput, View } from 'react-native';
+import { KeyboardAvoidingView, Platform, ScrollView, StyleSheet, Text, TextInput, View } from 'react-native';
 import { router, useLocalSearchParams } from 'expo-router';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { COLORS } from '../../theme';
@@ -275,192 +275,198 @@ export default function CreateLock() {
 
   if (created) {
     return (
-      <ScrollView style={styles.root} contentContainerStyle={[styles.inner, centeredContent, { paddingTop: 12 + insets.top, paddingBottom: 24 + insets.bottom }]}>
-        <Card style={styles.done}>
-          <Text style={styles.doneTitle}>Lock created on-chain</Text>
-          <Text style={styles.doneBody}>Lock ID {created.id}</Text>
-          <Text style={styles.doneBody}>Receipt: {fmtNum(created.amount)} {created.tokenSymbol} · {fmtUsd(created.amount * created.entryPrice)}</Text>
-          <Text style={styles.doneBody}>Unlock: {new Date(created.unlockTime).toLocaleDateString('en-GB', { day: 'numeric', month: 'long', year: 'numeric' })}</Text>
-          <Text style={styles.doneBody}>Tx: {created.txHash ? `${created.txHash.slice(0, 12)}…${created.txHash.slice(-6)}` : '—'}</Text>
-          <Text style={styles.doneBody}>Maturity and target alerts will appear in Notifications as the lock progresses.</Text>
-        </Card>
-        <Btn label="View Lock" onPress={() => router.replace(`/vault/${created.id}`)} />
-        <Btn label="Back to Vault" variant="ghost" onPress={() => router.replace('/(tabs)/vault')} />
-      </ScrollView>
+      <KeyboardAvoidingView style={styles.root} behavior={Platform.OS === 'ios' ? 'padding' : 'height'} keyboardVerticalOffset={insets.top}>
+        <ScrollView style={{ flex: 1 }}
+          keyboardShouldPersistTaps="handled" contentContainerStyle={[styles.inner, centeredContent, { paddingTop: 12 + insets.top, paddingBottom: 32 + insets.bottom }]}>
+          <Card style={styles.done}>
+            <Text style={styles.doneTitle}>Lock created on-chain</Text>
+            <Text style={styles.doneBody}>Lock ID {created.id}</Text>
+            <Text style={styles.doneBody}>Receipt: {fmtNum(created.amount)} {created.tokenSymbol} · {fmtUsd(created.amount * created.entryPrice)}</Text>
+            <Text style={styles.doneBody}>Unlock: {new Date(created.unlockTime).toLocaleDateString('en-GB', { day: 'numeric', month: 'long', year: 'numeric' })}</Text>
+            <Text style={styles.doneBody}>Tx: {created.txHash ? `${created.txHash.slice(0, 12)}…${created.txHash.slice(-6)}` : '—'}</Text>
+            <Text style={styles.doneBody}>Maturity and target alerts will appear in Notifications as the lock progresses.</Text>
+          </Card>
+          <Btn label="View Lock" onPress={() => router.replace(`/vault/${created.id}`)} />
+          <Btn label="Back to Vault" variant="ghost" onPress={() => router.replace('/(tabs)/vault')} />
+        </ScrollView>
+      </KeyboardAvoidingView>
     );
   }
 
   return (
-    <ScrollView style={styles.root} contentContainerStyle={[styles.inner, centeredContent, { paddingTop: 12 + insets.top, paddingBottom: 24 + insets.bottom }]}>
-      <Text style={styles.title}>Create Lock</Text>
-      <Text style={styles.steps}>Step {step} of 4 · {['Token & amount', 'Date & target', 'Exit plan', 'Review & confirm'][step - 1]}</Text>
-      <View style={styles.progress}>
-        {[1, 2, 3, 4].map((s) => (
-          <View key={s} style={[styles.dot, s <= step && styles.dotOn]} />
-        ))}
-      </View>
+    <KeyboardAvoidingView style={styles.root} behavior={Platform.OS === 'ios' ? 'padding' : 'height'} keyboardVerticalOffset={insets.top}>
+      <ScrollView style={{ flex: 1 }}
+        keyboardShouldPersistTaps="handled" contentContainerStyle={[styles.inner, centeredContent, { paddingTop: 12 + insets.top, paddingBottom: 32 + insets.bottom }]}>
+        <Text style={styles.title}>Create Lock</Text>
+        <Text style={styles.steps}>Step {step} of 4 · {['Token & amount', 'Date & target', 'Exit plan', 'Review & confirm'][step - 1]}</Text>
+        <View style={styles.progress}>
+          {[1, 2, 3, 4].map((s) => (
+            <View key={s} style={[styles.dot, s <= step && styles.dotOn]} />
+          ))}
+        </View>
 
-      {step === 1 && (
-        <>
-          <SectionTitle title="Token" />
-          <View style={styles.pills}>
-            {tokens.filter((t) => !t.isSpam).map((t) => (
-              <Btn key={t.symbol} label={t.symbol} variant={symbol === t.symbol ? 'primary' : 'ghost'} onPress={() => setSymbol(t.symbol)} style={styles.pill} />
-            ))}
-          </View>
-          {tokens.filter((t) => !t.isSpam).length === 0 && <Text style={styles.hint}>No tokens yet — receive funds first.</Text>}
-          <SectionTitle title="Amount to lock" />
-          <TextInput style={styles.amountInput} keyboardType="decimal-pad" placeholder="0.0" value={amount} onChangeText={setAmount} />
-          <View style={styles.pctRow}>
-            {[25, 50, 75, 100].map((p) => (
-              <Btn key={p} label={`${p}%`} variant="ghost" onPress={() => token && setAmount(String((spendable * p) / 100))} style={styles.pctBtn} />
-            ))}
-          </View>
-          {token && (
-            <Text style={styles.hint}>
-              Spendable: {fmtNum(spendable)} {token.symbol} ({fmtUsd(spendable * (token.price ?? 0))}) · after lock:{' '}
-              {fmtUsd(Math.max(0, spendable - amt) * (token.price ?? 0))}
-            </Text>
-          )}
-        </>
-      )}
-
-      {step === 2 && (
-        <>
-          <SectionTitle title="Duration" />
-          <View style={styles.pills}>
-            {DURATIONS.map((d) => (
-              <Btn key={d.label} label={d.label} variant={days === d.days ? 'primary' : 'ghost'} onPress={() => setDays(d.days)} style={styles.pill} />
-            ))}
-          </View>
-          <Text style={styles.hint}>Unlocks {new Date(unlockTime).toLocaleDateString('en-GB', { day: 'numeric', month: 'long', year: 'numeric' })}.</Text>
-          <SectionTitle title="Price target" />
-          <View style={styles.pills}>
-            {TARGETS.map((t) => (
-              <Btn key={t.label} label={t.label} variant={target === t.multiple ? 'primary' : 'ghost'} onPress={() => setTarget(t.multiple)} style={styles.pill} />
-            ))}
-          </View>
-          {target !== null && (
-            <>
-              <TextInput
-                style={styles.input}
-                keyboardType="decimal-pad"
-                placeholder={`Custom target price (default ${fmtPrice(entryPrice * target)})`}
-                value={customPrice}
-                onChangeText={setCustomPrice}
-              />
-              <Card style={styles.targetCard}>
-                <Text style={styles.targetText}>Entry {fmtPrice(entryPrice)}</Text>
-                <Text style={styles.targetText}>Target {targetPrice ? fmtPrice(targetPrice) : '—'}</Text>
-                <Text style={styles.targetText}>Est. value at target: {fmtUsd(amt * (targetPrice ?? entryPrice))}</Text>
-              </Card>
-            </>
-          )}
-        </>
-      )}
-
-      {step === 3 && (
-        <>
-          <SectionTitle title="On target hit" />
-          <View style={styles.pills}>
-            <Btn label={`${exitLabel} (auto-sell)`} variant={autoSell ? 'mint' : 'ghost'} onPress={() => setAutoSell(true)} style={styles.wideBtn} />
-            <Btn label="Unlock to wallet (manual)" variant={!autoSell ? 'primary' : 'ghost'} onPress={() => setAutoSell(false)} style={styles.wideBtn} />
-          </View>
-          <SectionTitle title="Profit ladder" />
-          <View style={styles.pills}>
-            <Btn label="Ladder on" variant={ladderOn ? 'mint' : 'ghost'} onPress={() => setLadderOn(true)} style={styles.pill} />
-            <Btn label="Ladder off (sell all at target)" variant={!ladderOn ? 'primary' : 'ghost'} onPress={() => setLadderOn(false)} style={styles.pill} />
-          </View>
-          {ladderOn && (
-            <Card>
-              {ladder.map((s, i) => (
-                <View key={s.multiple} style={styles.ladderRow}>
-                  <Text style={styles.ladderLabel}>{s.multiple}x</Text>
-                  <TextInput
-                    style={styles.ladderInput}
-                    keyboardType="number-pad"
-                    value={String(s.percent)}
-                    onChangeText={(v) => {
-                      const next = [...ladder];
-                      next[i] = { ...s, percent: parseInt(v, 10) || 0 };
-                      setLadder(next);
-                    }}
-                  />
-                  <Text style={styles.ladderPct}>%</Text>
-                </View>
+        {step === 1 && (
+          <>
+            <SectionTitle title="Token" />
+            <View style={styles.pills}>
+              {tokens.filter((t) => !t.isSpam).map((t) => (
+                <Btn key={t.symbol} label={t.symbol} variant={symbol === t.symbol ? 'primary' : 'ghost'} onPress={() => setSymbol(t.symbol)} style={styles.pill} />
               ))}
-              {ladderError && <Text style={styles.error}>{ladderError}</Text>}
-            </Card>
-          )}
-          <SectionTitle title="Trailing stop" />
-          <View style={styles.pills}>
-            {[
-              { label: 'Off', v: null },
-              { label: '10%', v: 1000 },
-              { label: '15%', v: 1500 },
-              { label: '20%', v: 2000 },
-            ].map((o) => (
-              <Btn key={o.label} label={o.label} variant={trailing === o.v ? 'primary' : 'ghost'} onPress={() => setTrailing(o.v)} style={styles.pill} />
-            ))}
-          </View>
-          <Text style={styles.hint}>
-            After any target is hit, a fall of the chosen % from the peak auto-sells the remainder {exitLabel}. Slippage
-            default 1.5% · minimum receive shown at review.
-          </Text>
-          <SectionTitle title="Break mode" />
-          <View style={styles.pills}>
-            <Btn label="Immutable (strongest)" variant={breakMode === 'immutable' ? 'primary' : 'ghost'} onPress={() => setBreakMode('immutable')} style={styles.wideBtn} />
-            <Btn label="Penalty break (5%, 24h cooling-off)" variant={breakMode === 'penalty' ? 'primary' : 'ghost'} onPress={() => setBreakMode('penalty')} style={styles.wideBtn} />
-            <Btn label="Guardian break (Phase 2)" variant={breakMode === 'guardian' ? 'primary' : 'ghost'} onPress={() => setBreakMode('guardian')} style={styles.wideBtn} />
-          </View>
-          <Text style={styles.hint}>No penalty is ever charged when a price target or the maturity date triggers the exit.</Text>
-        </>
-      )}
-
-      {step === 4 && (
-        <>
-          <Card dark>
-            <Text style={styles.reviewTitle}>Review your lock</Text>
-            <ReviewRow label="Token" value={`${fmtNum(amt)} ${token?.symbol ?? symbol} (${fmtUsd(amt * entryPrice)})`} />
-            <ReviewRow label="Chain" value={`${chain.name}${chain.testnet ? ' (testnet)' : ''}`} />
-            <ReviewRow label="Vault contract" value={vaultStatus.deployed ? vaultStatus.address : 'Not deployed yet — testnet deploy required'} />
-            <ReviewRow label="Unlock date" value={new Date(unlockTime).toLocaleDateString('en-GB', { day: 'numeric', month: 'long', year: 'numeric' })} />
-            <ReviewRow label="Target" value={targetPrice ? `${target}x · ${fmtPrice(targetPrice)}` : 'None — date lock'} />
-            <ReviewRow label="Exit" value={targetPrice ? (autoSell ? exitLabel : 'Unlock to wallet') : 'Unlock to wallet'} />
-            <ReviewRow label="Ladder" value={ladderOn ? ladder.map((s) => `${s.percent}% @ ${s.multiple}x`).join(' · ') : 'Off'} />
-            <ReviewRow label="Trailing stop" value={trailing ? `${trailing / 100}%` : 'Off'} />
-            <ReviewRow label="Break mode" value={breakMode === 'immutable' ? 'Immutable — no early break' : breakMode === 'penalty' ? 'Penalty break — 5% after 24h cooling-off' : 'Guardian break — approval + 48h delay'} />
-            <ReviewRow label="Slippage" value="1.5% (default)" />
-            <ReviewRow label="Minimum receive" value={targetPrice ? fmtUsd(minReceiveUsd) : '—'} />
-            <ReviewRow label="Stelix fee" value={`${VAULT_DEFAULTS.autoSellFeeBps / 100}% (set in admin before mainnet)`} />
-            <ReviewRow label="Network fee" value="Shown by the wallet before signing" />
-          </Card>
-          <Text style={styles.sentence}>{lockSummarySentence(preview, exitLabel)}</Text>
-          <Text style={styles.hint}>Review the terms above, then confirm in the signing sheet — your session password authorises the lock.</Text>
-        </>
-      )}
-
-      {formError ? <Text style={styles.error}>{formError}</Text> : null}
-
-      <View style={styles.nav}>
-        {step > 1 && <Btn label="Back" variant="ghost" onPress={() => setStep((s) => s - 1)} style={styles.navBtn} />}
-        {step < 4 ? (
-          <Btn label="Continue" onPress={next} style={styles.navBtn} />
-        ) : (
-          <Btn label="Confirm Lock" variant="mint" onPress={() => void confirm()} style={styles.navBtn} />
+            </View>
+            {tokens.filter((t) => !t.isSpam).length === 0 && <Text style={styles.hint}>No tokens yet — receive funds first.</Text>}
+            <SectionTitle title="Amount to lock" />
+            <TextInput style={styles.amountInput} keyboardType="decimal-pad" placeholder="0.0" value={amount} onChangeText={setAmount} />
+            <View style={styles.pctRow}>
+              {[25, 50, 75, 100].map((p) => (
+                <Btn key={p} label={`${p}%`} variant="ghost" onPress={() => token && setAmount(String((spendable * p) / 100))} style={styles.pctBtn} />
+              ))}
+            </View>
+            {token && (
+              <Text style={styles.hint}>
+                Spendable: {fmtNum(spendable)} {token.symbol} ({fmtUsd(spendable * (token.price ?? 0))}) · after lock:{' '}
+                {fmtUsd(Math.max(0, spendable - amt) * (token.price ?? 0))}
+              </Text>
+            )}
+          </>
         )}
-      </View>
-      <RiskNote />
 
-      <SignTransactionModal
-        visible={signModal !== null}
-        request={signModal}
-        biometricsEnabled={settings.biometrics}
-        onClose={() => setSignModal(null)}
-        onSign={signLock}
-        onSigned={(res) => void onLockSigned(res)}
-      />
-    </ScrollView>
+        {step === 2 && (
+          <>
+            <SectionTitle title="Duration" />
+            <View style={styles.pills}>
+              {DURATIONS.map((d) => (
+                <Btn key={d.label} label={d.label} variant={days === d.days ? 'primary' : 'ghost'} onPress={() => setDays(d.days)} style={styles.pill} />
+              ))}
+            </View>
+            <Text style={styles.hint}>Unlocks {new Date(unlockTime).toLocaleDateString('en-GB', { day: 'numeric', month: 'long', year: 'numeric' })}.</Text>
+            <SectionTitle title="Price target" />
+            <View style={styles.pills}>
+              {TARGETS.map((t) => (
+                <Btn key={t.label} label={t.label} variant={target === t.multiple ? 'primary' : 'ghost'} onPress={() => setTarget(t.multiple)} style={styles.pill} />
+              ))}
+            </View>
+            {target !== null && (
+              <>
+                <TextInput
+                  style={styles.input}
+                  keyboardType="decimal-pad"
+                  placeholder={`Custom target price (default ${fmtPrice(entryPrice * target)})`}
+                  value={customPrice}
+                  onChangeText={setCustomPrice}
+                />
+                <Card style={styles.targetCard}>
+                  <Text style={styles.targetText}>Entry {fmtPrice(entryPrice)}</Text>
+                  <Text style={styles.targetText}>Target {targetPrice ? fmtPrice(targetPrice) : '—'}</Text>
+                  <Text style={styles.targetText}>Est. value at target: {fmtUsd(amt * (targetPrice ?? entryPrice))}</Text>
+                </Card>
+              </>
+            )}
+          </>
+        )}
+
+        {step === 3 && (
+          <>
+            <SectionTitle title="On target hit" />
+            <View style={styles.pills}>
+              <Btn label={`${exitLabel} (auto-sell)`} variant={autoSell ? 'mint' : 'ghost'} onPress={() => setAutoSell(true)} style={styles.wideBtn} />
+              <Btn label="Unlock to wallet (manual)" variant={!autoSell ? 'primary' : 'ghost'} onPress={() => setAutoSell(false)} style={styles.wideBtn} />
+            </View>
+            <SectionTitle title="Profit ladder" />
+            <View style={styles.pills}>
+              <Btn label="Ladder on" variant={ladderOn ? 'mint' : 'ghost'} onPress={() => setLadderOn(true)} style={styles.pill} />
+              <Btn label="Ladder off (sell all at target)" variant={!ladderOn ? 'primary' : 'ghost'} onPress={() => setLadderOn(false)} style={styles.pill} />
+            </View>
+            {ladderOn && (
+              <Card>
+                {ladder.map((s, i) => (
+                  <View key={s.multiple} style={styles.ladderRow}>
+                    <Text style={styles.ladderLabel}>{s.multiple}x</Text>
+                    <TextInput
+                      style={styles.ladderInput}
+                      keyboardType="number-pad"
+                      value={String(s.percent)}
+                      onChangeText={(v) => {
+                        const next = [...ladder];
+                        next[i] = { ...s, percent: parseInt(v, 10) || 0 };
+                        setLadder(next);
+                      }}
+                    />
+                    <Text style={styles.ladderPct}>%</Text>
+                  </View>
+                ))}
+                {ladderError && <Text style={styles.error}>{ladderError}</Text>}
+              </Card>
+            )}
+            <SectionTitle title="Trailing stop" />
+            <View style={styles.pills}>
+              {[
+                { label: 'Off', v: null },
+                { label: '10%', v: 1000 },
+                { label: '15%', v: 1500 },
+                { label: '20%', v: 2000 },
+              ].map((o) => (
+                <Btn key={o.label} label={o.label} variant={trailing === o.v ? 'primary' : 'ghost'} onPress={() => setTrailing(o.v)} style={styles.pill} />
+              ))}
+            </View>
+            <Text style={styles.hint}>
+              After any target is hit, a fall of the chosen % from the peak auto-sells the remainder {exitLabel}. Slippage
+              default 1.5% · minimum receive shown at review.
+            </Text>
+            <SectionTitle title="Break mode" />
+            <View style={styles.pills}>
+              <Btn label="Immutable (strongest)" variant={breakMode === 'immutable' ? 'primary' : 'ghost'} onPress={() => setBreakMode('immutable')} style={styles.wideBtn} />
+              <Btn label="Penalty break (5%, 24h cooling-off)" variant={breakMode === 'penalty' ? 'primary' : 'ghost'} onPress={() => setBreakMode('penalty')} style={styles.wideBtn} />
+              <Btn label="Guardian break (Phase 2)" variant={breakMode === 'guardian' ? 'primary' : 'ghost'} onPress={() => setBreakMode('guardian')} style={styles.wideBtn} />
+            </View>
+            <Text style={styles.hint}>No penalty is ever charged when a price target or the maturity date triggers the exit.</Text>
+          </>
+        )}
+
+        {step === 4 && (
+          <>
+            <Card dark>
+              <Text style={styles.reviewTitle}>Review your lock</Text>
+              <ReviewRow label="Token" value={`${fmtNum(amt)} ${token?.symbol ?? symbol} (${fmtUsd(amt * entryPrice)})`} />
+              <ReviewRow label="Chain" value={`${chain.name}${chain.testnet ? ' (testnet)' : ''}`} />
+              <ReviewRow label="Vault contract" value={vaultStatus.deployed ? vaultStatus.address : 'Not deployed yet — testnet deploy required'} />
+              <ReviewRow label="Unlock date" value={new Date(unlockTime).toLocaleDateString('en-GB', { day: 'numeric', month: 'long', year: 'numeric' })} />
+              <ReviewRow label="Target" value={targetPrice ? `${target}x · ${fmtPrice(targetPrice)}` : 'None — date lock'} />
+              <ReviewRow label="Exit" value={targetPrice ? (autoSell ? exitLabel : 'Unlock to wallet') : 'Unlock to wallet'} />
+              <ReviewRow label="Ladder" value={ladderOn ? ladder.map((s) => `${s.percent}% @ ${s.multiple}x`).join(' · ') : 'Off'} />
+              <ReviewRow label="Trailing stop" value={trailing ? `${trailing / 100}%` : 'Off'} />
+              <ReviewRow label="Break mode" value={breakMode === 'immutable' ? 'Immutable — no early break' : breakMode === 'penalty' ? 'Penalty break — 5% after 24h cooling-off' : 'Guardian break — approval + 48h delay'} />
+              <ReviewRow label="Slippage" value="1.5% (default)" />
+              <ReviewRow label="Minimum receive" value={targetPrice ? fmtUsd(minReceiveUsd) : '—'} />
+              <ReviewRow label="Stelix fee" value={`${VAULT_DEFAULTS.autoSellFeeBps / 100}% (set in admin before mainnet)`} />
+              <ReviewRow label="Network fee" value="Shown by the wallet before signing" />
+            </Card>
+            <Text style={styles.sentence}>{lockSummarySentence(preview, exitLabel)}</Text>
+            <Text style={styles.hint}>Review the terms above, then confirm in the signing sheet — your session password authorises the lock.</Text>
+          </>
+        )}
+
+        {formError ? <Text style={styles.error}>{formError}</Text> : null}
+
+        <View style={styles.nav}>
+          {step > 1 && <Btn label="Back" variant="ghost" onPress={() => setStep((s) => s - 1)} style={styles.navBtn} />}
+          {step < 4 ? (
+            <Btn label="Continue" onPress={next} style={styles.navBtn} />
+          ) : (
+            <Btn label="Confirm Lock" variant="mint" onPress={() => void confirm()} style={styles.navBtn} />
+          )}
+        </View>
+        <RiskNote />
+
+        <SignTransactionModal
+          visible={signModal !== null}
+          request={signModal}
+          biometricsEnabled={settings.biometrics}
+          onClose={() => setSignModal(null)}
+          onSign={signLock}
+          onSigned={(res) => void onLockSigned(res)}
+        />
+      </ScrollView>
+    </KeyboardAvoidingView>
   );
 }
 

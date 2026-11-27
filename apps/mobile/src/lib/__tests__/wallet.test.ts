@@ -1,14 +1,40 @@
 /** Wallet password change — decrypt with old, re-encrypt under new. */
 import { ethers } from 'ethers';
+
+// PBKDF2-HMAC-SHA-256 at 600,000 iterations in pure JS takes seconds
+// per encrypt/decrypt on a throttled CI VM, and several tests do 2–3
+// KDFs each — Jest's 5s default is not a product limit, so the wallet
+// suite gets a longer budget (same as crypto.test.ts). Under a full
+// parallel run on a shared-CPU VM the async KDF stretches further, so
+// the budget is 180s. The iteration count itself is the security
+// parameter and must not be lowered.
+jest.setTimeout(180_000);
+
 import {
   changePassword,
   createWallet,
   exportSecret,
+  generateMnemonic,
   getWalletMeta,
   importWallet,
   unlockWallet,
   wipeWallet,
 } from '../wallet';
+
+/** Temporarily replace globalThis.crypto (e.g. to simulate Hermes, which
+ *  has no `crypto` global at all). Restored by the returned function. */
+function stubGlobalCrypto(value: unknown): () => void {
+  const desc = Object.getOwnPropertyDescriptor(globalThis, 'crypto');
+  Object.defineProperty(globalThis, 'crypto', {
+    value,
+    configurable: true,
+    writable: true,
+  });
+  return () => {
+    if (desc) Object.defineProperty(globalThis, 'crypto', desc);
+    else delete (globalThis as unknown as Record<string, unknown>).crypto;
+  };
+}
 
 describe('createWallet', () => {
   beforeEach(async () => {
@@ -105,5 +131,28 @@ describe('importWallet (fresh mnemonic generated per run — never a reused phra
   it('rejects a password shorter than 8 characters at import time', async () => {
     const phrase = ethers.Wallet.createRandom().mnemonic?.phrase ?? '';
     await expect(importWallet(phrase, 'short')).rejects.toThrow(/at least 8/);
+  });
+});
+
+describe('generateMnemonic with NO platform random source (degraded DRBG path)', () => {
+  it('still generates a valid 12-word mnemonic and flags the source degraded', () => {
+    // Hermes-like + old Expo Go: no `crypto` global, no native module.
+    // ethers draws entropy through the registered randomBytesSync,
+    // which falls back to the labelled ChaCha20 DRBG instead of
+    // throwing. Fresh module instances so the degraded flag and the
+    // ethers registration do not leak into the other tests.
+    const restore = stubGlobalCrypto(undefined);
+    try {
+      jest.resetModules();
+      const freshWallet = require('../wallet') as typeof import('../wallet');
+      const freshCrypto = require('../crypto') as typeof import('../crypto');
+      expect(freshCrypto.isRandomSourceDegraded()).toBe(false);
+      const phrase = freshWallet.generateMnemonic();
+      expect(phrase.split(' ').length).toBe(12);
+      expect(ethers.Mnemonic.isValidMnemonic(phrase)).toBe(true);
+      expect(freshCrypto.isRandomSourceDegraded()).toBe(true);
+    } finally {
+      restore();
+    }
   });
 });

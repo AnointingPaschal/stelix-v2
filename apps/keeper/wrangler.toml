@@ -19,7 +19,7 @@ DEFAULT_SLIPPAGE_BPS = "150"
 MAX_RETRIES = "3"
 # Chain RPC + vault addresses (public config, not secrets). Fill in after the
 # Arc testnet deploy; the keeper skips a chain whose vault is unset.
-RPC_URL_ARC = "https://rpc.testnet.arc.network"
+RPC_URL_ARC = "https://rpc.testnet.arc.io"
 VAULT_ADDRESS_ARC = ""
 # Secrets (set via `wrangler secret put <NAME>` — never commit values):
 # KEEPER_PRIVATE_KEY (keeper wallet; can ONLY call executeTrigger/pokePrice per contract),

@@ -1,3 +1,12 @@
+// MUST be the first import, before every other import: installs
+// global.crypto.getRandomValues on Hermes (which ships no crypto global
+// at all) before ethers / wallet / crypto code runs. No-op on web
+// (its index.web.js is empty — web already has crypto). It does NOT
+// load the Expo crypto package: the polyfill only touches a native
+// module at call time, and crypto.ts falls back gracefully (Expo native
+// module probe, then a labelled degraded DRBG) if the host Expo Go
+// lacks one.
+import 'react-native-get-random-values';
 import { Image, StyleSheet, Text, View } from 'react-native';
 import { Stack } from 'expo-router';
 import { StatusBar } from 'expo-status-bar';

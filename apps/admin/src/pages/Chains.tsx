@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react'
 import { Link2, Pencil, Plus, ShieldCheck, X } from 'lucide-react'
 import { api } from '../lib/api'
+import { validateChainInput, type ChainFieldErrors, type ChainInput, type ChainStatus } from '../lib/chainValidation'
 import type { Chain } from '../lib/types'
 import { LiveNote, PageHeader } from '../components/ui'
 
@@ -10,9 +11,61 @@ const CHAIN_COLORS: Record<string, string> = {
   ethereum: '#627EEA', polygon: '#8247E5', solana: '#9945FF',
 }
 
-const emptyForm = {
+interface ChainFormState {
+  id: string; name: string; chainId: string; rpcUrls: string; explorerUrl: string
+  nativeToken: string; nativeDecimals: string
+  stablecoin: string; stablecoinAddress: string; stablecoinDecimals: string
+  gasToken: string; dexRouter: string; vaultAddress: string
+  status: ChainStatus; isTestnet: boolean; active: boolean
+  pairedChainId: string; isDefault: boolean
+}
+
+const emptyForm: ChainFormState = {
   id: '', name: '', chainId: '', rpcUrls: '', explorerUrl: '',
-  nativeToken: '', stablecoin: '', stablecoinAddress: '', dexRouter: '', status: 'hidden' as Chain['status'],
+  nativeToken: '', nativeDecimals: '18',
+  stablecoin: '', stablecoinAddress: '', stablecoinDecimals: '6',
+  gasToken: '', dexRouter: '', vaultAddress: '',
+  status: 'testnet', isTestnet: true, active: true,
+  pairedChainId: '', isDefault: false,
+}
+
+const fromChain = (c: Chain): ChainFormState => ({
+  id: c.id, name: c.name, chainId: String(c.chainId), rpcUrls: c.rpcUrls.join(', '),
+  explorerUrl: c.explorerUrl, nativeToken: c.nativeToken, nativeDecimals: String(c.nativeDecimals),
+  stablecoin: c.stablecoin, stablecoinAddress: c.stablecoinAddress,
+  stablecoinDecimals: String(c.stablecoinDecimals),
+  gasToken: c.gasToken, dexRouter: c.dexRouter, vaultAddress: c.vaultAddress ?? '',
+  status: c.status, isTestnet: c.isTestnet, active: c.active,
+  pairedChainId: c.pairedChainId ?? '', isDefault: c.isDefault ?? false,
+})
+
+const toInput = (f: ChainFormState) => ({
+  id: f.id.trim().toLowerCase(),
+  name: f.name.trim(),
+  chainId: f.chainId.trim(),
+  rpcUrls: f.rpcUrls.trim(),
+  explorerUrl: f.explorerUrl.trim(),
+  nativeToken: f.nativeToken.trim(),
+  nativeDecimals: f.nativeDecimals.trim(),
+  stablecoin: f.stablecoin.trim(),
+  stablecoinAddress: f.stablecoinAddress.trim(),
+  stablecoinDecimals: f.stablecoinDecimals.trim(),
+  gasToken: f.gasToken.trim(),
+  dexRouter: f.dexRouter.trim(),
+  vaultAddress: f.vaultAddress.trim(),
+  status: f.status,
+  isTestnet: f.isTestnet,
+  active: f.active,
+  pairedChainId: f.pairedChainId.trim(),
+  isDefault: f.isDefault,
+})
+
+const errStyle = { color: '#e5484d', fontSize: 12, margin: '4px 0 0' } as const
+const checkStyle = { display: 'flex', alignItems: 'center', gap: 8, margin: '12px 0 0', fontSize: 13, fontWeight: 600, color: 'var(--muted)' } as const
+
+function FieldError({ errors, field }: { errors: ChainFieldErrors; field: string }) {
+  const msg = errors[field]
+  return msg ? <p style={errStyle}>{msg}</p> : null
 }
 
 export default function Chains() {
@@ -20,23 +73,43 @@ export default function Chains() {
   const [error, setError] = useState('')
   const [notice, setNotice] = useState('')
   const [showAdd, setShowAdd] = useState(false)
-  const [form, setForm] = useState(emptyForm)
+  const [form, setForm] = useState<ChainFormState>(emptyForm)
+  const [addErrors, setAddErrors] = useState<ChainFieldErrors>({})
   const [editing, setEditing] = useState<Chain | null>(null)
-  const [edit, setEdit] = useState({ status: 'hidden' as Chain['status'], vaultAddress: '', dexRouter: '', stablecoinAddress: '' })
+  const [edit, setEdit] = useState<ChainFormState>(emptyForm)
+  const [editErrors, setEditErrors] = useState<ChainFieldErrors>({})
+  const [toggling, setToggling] = useState('')
 
   const load = () => { api.getChains().then(setChains).catch((e: Error) => setError(e.message)) }
   useEffect(() => { load() }, [])
 
+  const set = (patch: Partial<ChainFormState>, which: 'add' | 'edit') => {
+    if (which === 'add') setForm((f) => ({ ...f, ...patch }))
+    else setEdit((f) => ({ ...f, ...patch }))
+  }
+
   const addChain = async () => {
     setError('')
+    const { value, errors } = validateChainInput(toInput(form))
+    const local: ChainFieldErrors = { ...errors }
+    if (value && chains.some((c) => c.id === value.id)) local.id = `A chain with the slug "${value.id}" already exists`
+    if (value && chains.some((c) => c.chainId === value.chainId)) local.chainId = `Chain id ${value.chainId} is already used by "${chains.find((c) => c.chainId === value.chainId)?.id}"`
+    if (value === null || Object.keys(local).length > 0) { setAddErrors(local); return }
+    setAddErrors({})
+    // Validation passed, so every required field is present.
+    const chain = value as ChainInput
     try {
       await api.createChain({
-        id: form.id.trim().toLowerCase(), name: form.name.trim(), chainId: Number(form.chainId),
-        rpcUrls: form.rpcUrls.trim(), explorerUrl: form.explorerUrl.trim(), nativeToken: form.nativeToken.trim(),
-        stablecoin: form.stablecoin.trim(), stablecoinAddress: form.stablecoinAddress.trim(),
-        dexRouter: form.dexRouter.trim(), status: form.status,
+        id: chain.id, name: chain.name, chainId: chain.chainId, rpcUrls: chain.rpcUrls,
+        explorerUrl: chain.explorerUrl, nativeToken: chain.nativeToken,
+        nativeDecimals: chain.nativeDecimals, stablecoin: chain.stablecoin,
+        stablecoinAddress: chain.stablecoinAddress, stablecoinDecimals: chain.stablecoinDecimals,
+        gasToken: chain.gasToken, dexRouter: chain.dexRouter,
+        vaultAddress: chain.vaultAddress, status: chain.status,
+        isTestnet: chain.isTestnet, active: chain.active,
+        pairedChainId: chain.pairedChainId, isDefault: chain.isDefault,
       })
-      setNotice(`Chain ${form.name.trim()} added.`)
+      setNotice(`Chain ${chain.name} added. It appears in the wallet picker on the next registry refresh — locks/swaps stay unavailable until its vault and DEX router are verified on the explorer.`)
       setShowAdd(false)
       setForm(emptyForm)
       load()
@@ -46,27 +119,120 @@ export default function Chains() {
   const saveEdit = async () => {
     if (!editing) return
     setError('')
+    const { value, errors } = validateChainInput(toInput(edit))
+    const local: ChainFieldErrors = { ...errors }
+    if (value && chains.some((c) => c.id !== editing.id && c.chainId === value.chainId)) {
+      local.chainId = `Chain id ${value.chainId} is already used by "${chains.find((c) => c.id !== editing.id && c.chainId === value.chainId)?.id}"`
+    }
+    if (value === null || Object.keys(local).length > 0) { setEditErrors(local); return }
+    setEditErrors({})
     try {
-      await api.updateChain(editing.id, {
-        status: edit.status,
-        vaultAddress: edit.vaultAddress.trim() === '' ? null : edit.vaultAddress.trim(),
-        dexRouter: edit.dexRouter, stablecoinAddress: edit.stablecoinAddress,
-      })
+      // The slug never changes; every other field is sent as edited.
+      // Verified values are prefilled from the row, never from defaults,
+      // so saving without touching a field leaves it exactly as it was.
+      const { id: _slug, ...rest } = value
+      void _slug
+      await api.updateChain(editing.id, rest)
       setNotice(`Chain ${editing.name} updated.`)
       setEditing(null)
       load()
     } catch (e) { setError(e instanceof Error ? e.message : 'Could not update chain.') }
   }
 
+  const toggleActive = async (c: Chain) => {
+    setError('')
+    setToggling(c.id)
+    try {
+      await api.setChainActive(c.id, !c.active)
+      setNotice(`Chain ${c.name} ${c.active ? 'disabled — it will disappear from the wallet picker on the next registry refresh.' : 'enabled — it will reappear in the wallet picker on the next registry refresh.'}`)
+      load()
+    } catch (e) { setError(e instanceof Error ? e.message : 'Could not change chain status.') }
+    finally { setToggling('') }
+  }
+
+  const renderForm = (f: ChainFormState, errors: ChainFieldErrors, which: 'add' | 'edit') => (
+    <>
+      {which === 'add' && (
+        <>
+          <label>Chain slug (id, e.g. arbitrum)</label>
+          <input value={f.id} onChange={(e) => set({ id: e.target.value }, 'add')} placeholder="arbitrum" />
+          <FieldError errors={errors} field="id" />
+        </>
+      )}
+      {which === 'edit' && (
+        <p className="muted small">Slug: <span className="kbd">{f.id}</span> (the slug never changes — it is the chain&apos;s id in D1 and in the wallet)</p>
+      )}
+      <label>Name</label>
+      <input value={f.name} onChange={(e) => set({ name: e.target.value }, which)} placeholder="Arbitrum One" />
+      <FieldError errors={errors} field="name" />
+      <label>Chain ID (number)</label>
+      <input value={f.chainId} inputMode="numeric" onChange={(e) => set({ chainId: e.target.value }, which)} placeholder="42161" />
+      <FieldError errors={errors} field="chainId" />
+      <label>RPC URLs (comma-separated, https only)</label>
+      <input value={f.rpcUrls} onChange={(e) => set({ rpcUrls: e.target.value }, which)} placeholder="https://arb1.arbitrum.io/rpc" />
+      <FieldError errors={errors} field="rpcUrls" />
+      <label>Explorer URL (https)</label>
+      <input value={f.explorerUrl} onChange={(e) => set({ explorerUrl: e.target.value }, which)} placeholder="https://arbiscan.io" />
+      <FieldError errors={errors} field="explorerUrl" />
+      <label>Native currency symbol</label>
+      <input value={f.nativeToken} onChange={(e) => set({ nativeToken: e.target.value }, which)} placeholder="ETH" />
+      <FieldError errors={errors} field="nativeToken" />
+      <label>Native currency decimals</label>
+      <input value={f.nativeDecimals} inputMode="numeric" onChange={(e) => set({ nativeDecimals: e.target.value }, which)} placeholder="18 (Arc USDC gas is 6)" />
+      <FieldError errors={errors} field="nativeDecimals" />
+      <label>Gas token symbol (blank = same as native currency)</label>
+      <input value={f.gasToken} onChange={(e) => set({ gasToken: e.target.value }, which)} placeholder="ETH" />
+      <FieldError errors={errors} field="gasToken" />
+      <label>Stablecoin symbol</label>
+      <input value={f.stablecoin} onChange={(e) => set({ stablecoin: e.target.value }, which)} placeholder="USDC" />
+      <FieldError errors={errors} field="stablecoin" />
+      <label>Stablecoin address (0x — verified on explorer only, leave blank if unknown)</label>
+      <input value={f.stablecoinAddress} onChange={(e) => set({ stablecoinAddress: e.target.value }, which)} placeholder="0x… (blank = not confirmed yet)" />
+      <FieldError errors={errors} field="stablecoinAddress" />
+      <label>Stablecoin decimals</label>
+      <input value={f.stablecoinDecimals} inputMode="numeric" onChange={(e) => set({ stablecoinDecimals: e.target.value }, which)} placeholder="6" />
+      <FieldError errors={errors} field="stablecoinDecimals" />
+      <label>DEX router address (0x — verified on explorer only, leave blank if unknown; never guess one)</label>
+      <input value={f.dexRouter} onChange={(e) => set({ dexRouter: e.target.value }, which)} placeholder="0x… (blank = not confirmed yet)" />
+      <FieldError errors={errors} field="dexRouter" />
+      <label>Vault address (0x — verified on explorer only, leave blank if unknown; normally set by Contract Studio registration)</label>
+      <input value={f.vaultAddress} onChange={(e) => set({ vaultAddress: e.target.value }, which)} placeholder="0x… (blank = not deployed)" />
+      <FieldError errors={errors} field="vaultAddress" />
+      <label>Status</label>
+      <select value={f.status} onChange={(e) => set({ status: e.target.value as ChainStatus, isTestnet: e.target.value === 'testnet' }, which)}>
+        <option value="testnet">testnet</option>
+        <option value="live">live</option>
+        <option value="paused">paused</option>
+        <option value="hidden">hidden</option>
+      </select>
+      <FieldError errors={errors} field="status" />
+      <label>Paired chain slug (testnet ↔ mainnet pair, e.g. arc — blank if unpaired)</label>
+      <input value={f.pairedChainId} onChange={(e) => set({ pairedChainId: e.target.value }, which)} placeholder="arc" />
+      <FieldError errors={errors} field="pairedChainId" />
+      <label style={checkStyle}>
+        <input type="checkbox" checked={f.isTestnet} onChange={(e) => set({ isTestnet: e.target.checked }, which)} />
+        Testnet chain
+      </label>
+      <label style={checkStyle}>
+        <input type="checkbox" checked={f.active} onChange={(e) => set({ active: e.target.checked }, which)} />
+        Enabled — listed in the wallet (uncheck to hide it without deleting it)
+      </label>
+      <label style={checkStyle}>
+        <input type="checkbox" checked={f.isDefault} onChange={(e) => set({ isDefault: e.target.checked }, which)} />
+        Default chain in the wallet
+      </label>
+    </>
+  )
+
   return (
     <div>
       <PageHeader
         icon={<Link2 />}
         title="Chain Manager"
-        sub="Add / edit chains: RPCs, explorer, native token, stablecoin, DEX router, status. Pausing stops new locks in the app within one config refresh. Arc is the default chain."
+        sub="Add / edit chains: RPCs, explorer, native token, stablecoin, DEX router, status. A chain added here appears in the wallet picker on the next registry refresh — no app rebuild. Disabling hides it again. Locks/swaps stay unavailable on a chain until its vault and router are verified on the explorer. Arc is the default chain."
         pill={<LiveNote />}
         actions={
-          <button className="btn mint" onClick={() => { setShowAdd((v) => !v); setNotice('') }}>
+          <button className="btn mint" onClick={() => { setShowAdd((v) => !v); setNotice(''); setAddErrors({}) }}>
             <Plus />Add chain
           </button>
         }
@@ -77,34 +243,10 @@ export default function Chains() {
       {showAdd && (
         <div className="card">
           <h2>Add chain</h2>
-          <label>Chain slug (id, e.g. arc)</label>
-          <input value={form.id} onChange={(e) => setForm({ ...form, id: e.target.value })} placeholder="arc" />
-          <label>Name</label>
-          <input value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} placeholder="Arc" />
-          <label>Chain ID (number)</label>
-          <input value={form.chainId} inputMode="numeric" onChange={(e) => setForm({ ...form, chainId: e.target.value })} placeholder="5042002" />
-          <label>RPC URLs (comma-separated)</label>
-          <input value={form.rpcUrls} onChange={(e) => setForm({ ...form, rpcUrls: e.target.value })} placeholder="https://rpc.testnet.arc.network" />
-          <label>Explorer URL</label>
-          <input value={form.explorerUrl} onChange={(e) => setForm({ ...form, explorerUrl: e.target.value })} placeholder="https://testnet.arcscan.app" />
-          <label>Native token</label>
-          <input value={form.nativeToken} onChange={(e) => setForm({ ...form, nativeToken: e.target.value })} placeholder="USDC" />
-          <label>Stablecoin symbol</label>
-          <input value={form.stablecoin} onChange={(e) => setForm({ ...form, stablecoin: e.target.value })} placeholder="USDC" />
-          <label>Stablecoin address (0x, leave blank until confirmed on the explorer)</label>
-          <input value={form.stablecoinAddress} onChange={(e) => setForm({ ...form, stablecoinAddress: e.target.value })} placeholder="0x…" />
-          <label>DEX router address (0x, leave blank until confirmed — never guess one)</label>
-          <input value={form.dexRouter} onChange={(e) => setForm({ ...form, dexRouter: e.target.value })} placeholder="0x…" />
-          <label>Status</label>
-          <select value={form.status} onChange={(e) => setForm({ ...form, status: e.target.value as Chain['status'] })}>
-            <option value="testnet">testnet</option>
-            <option value="live">live</option>
-            <option value="paused">paused</option>
-            <option value="hidden">hidden</option>
-          </select>
+          {renderForm(form, addErrors, 'add')}
           <div style={{ display: 'flex', gap: 8, marginTop: 14 }}>
             <button className="btn mint" onClick={addChain}><Plus />Save chain to D1</button>
-            <button className="btn ghost" onClick={() => setShowAdd(false)}><X />Cancel</button>
+            <button className="btn ghost" onClick={() => { setShowAdd(false); setAddErrors({}) }}><X />Cancel</button>
           </div>
         </div>
       )}
@@ -112,22 +254,10 @@ export default function Chains() {
       {editing && (
         <div className="card">
           <h2>Edit {editing.name}</h2>
-          <label>Status</label>
-          <select value={edit.status} onChange={(e) => setEdit({ ...edit, status: e.target.value as Chain['status'] })}>
-            <option value="testnet">testnet</option>
-            <option value="live">live</option>
-            <option value="paused">paused</option>
-            <option value="hidden">hidden</option>
-          </select>
-          <label>Vault address (0x — set by Contract Studio registration, or paste a verified address)</label>
-          <input value={edit.vaultAddress} onChange={(e) => setEdit({ ...edit, vaultAddress: e.target.value })} placeholder="0x… (blank = not deployed)" />
-          <label>DEX router address (0x)</label>
-          <input value={edit.dexRouter} onChange={(e) => setEdit({ ...edit, dexRouter: e.target.value })} placeholder="0x…" />
-          <label>Stablecoin address (0x)</label>
-          <input value={edit.stablecoinAddress} onChange={(e) => setEdit({ ...edit, stablecoinAddress: e.target.value })} placeholder="0x…" />
+          {renderForm(edit, editErrors, 'edit')}
           <div style={{ display: 'flex', gap: 8, marginTop: 14 }}>
             <button className="btn mint" onClick={saveEdit}>Save changes</button>
-            <button className="btn ghost" onClick={() => setEditing(null)}><X />Cancel</button>
+            <button className="btn ghost" onClick={() => { setEditing(null); setEditErrors({}) }}><X />Cancel</button>
           </div>
         </div>
       )}
@@ -135,10 +265,10 @@ export default function Chains() {
       <div className="card">
         <div className="table-wrap">
           <table className="rtable">
-            <thead><tr><th>Chain</th><th>Chain ID</th><th>Native / Stablecoin</th><th>DEX router</th><th>Vault</th><th>Status</th><th></th></tr></thead>
+            <thead><tr><th>Chain</th><th>Chain ID</th><th>Native / Stablecoin</th><th>DEX router</th><th>Vault</th><th>Status</th><th>Listed</th><th></th></tr></thead>
             <tbody>
               {chains.length === 0 && (
-                <tr><td colSpan={7}><p className="empty">No chains configured yet.</p></td></tr>
+                <tr><td colSpan={8}><p className="empty">No chains configured yet.</p></td></tr>
               )}
               {chains.map((c) => (
                 <tr key={c.id}>
@@ -147,21 +277,31 @@ export default function Chains() {
                       <span className="chain-dot" style={{ background: CHAIN_COLORS[c.id] ?? '#8A99AF' }} />
                       <b>{c.name}</b>
                       {c.isDefault && <span className="badge b-mint">Default</span>}
+                      {c.isTestnet && <span className="badge b-blue">Testnet</span>}
+                      {c.pairedChainId && <span className="muted small">↔ {c.pairedChainId}</span>}
                     </span>
                     <br /><span className="muted small">{c.explorerUrl}</span>
                   </td>
                   <td data-label="Chain ID">{c.chainId}</td>
                   <td data-label="Native / Stablecoin">
-                    {c.nativeToken} / {c.stablecoin}<br />
+                    {c.nativeToken} ({c.nativeDecimals} dec) / {c.stablecoin} ({c.stablecoinDecimals} dec)<br />
                     <span className="muted kbd">{c.stablecoinAddress ? c.stablecoinAddress.slice(0, 18) + '…' : 'not confirmed yet'}</span>
                   </td>
                   <td data-label="DEX router">{c.dexRouter ? <span className="kbd">{c.dexRouter.slice(0, 18)}…</span> : <span className="muted">Not confirmed yet</span>}</td>
                   <td data-label="Vault">{c.vaultAddress ? <span className="kbd">{c.vaultAddress.slice(0, 18)}…</span> : <span className="muted">Not deployed yet — deploy from Contract Studio</span>}</td>
                   <td data-label="Status"><span className={'badge ' + badge(c.status)}>{c.status}</span></td>
+                  <td data-label="Listed">
+                    <span className={'badge ' + (c.active ? 'b-green' : 'b-grey')}>{c.active ? 'Enabled' : 'Disabled'}</span>
+                  </td>
                   <td data-label="Edit">
-                    <button className="btn ghost" onClick={() => { setEditing(c); setEdit({ status: c.status, vaultAddress: c.vaultAddress ?? '', dexRouter: c.dexRouter, stablecoinAddress: c.stablecoinAddress }) }}>
-                      <Pencil />Edit
-                    </button>
+                    <span style={{ display: 'inline-flex', gap: 6 }}>
+                      <button className="btn ghost" onClick={() => { setEditing(c); setEdit(fromChain(c)); setEditErrors({}); setNotice('') }}>
+                        <Pencil />Edit
+                      </button>
+                      <button className="btn ghost" disabled={toggling === c.id} onClick={() => toggleActive(c)}>
+                        {c.active ? 'Disable' : 'Enable'}
+                      </button>
+                    </span>
                   </td>
                 </tr>
               ))}
@@ -171,7 +311,7 @@ export default function Chains() {
       </div>
       <div className="notice info">
         <ShieldCheck />
-        <span><b>Testnet-first rule:</b> every chain goes testnet → full lock → target → auto-sell test → verify → mainnet. The app shows a Testnet badge whenever a testnet chain is selected.</span>
+        <span><b>Testnet-first rule:</b> every chain goes testnet → full lock → target → auto-sell test → verify → mainnet. The app shows a Testnet badge whenever a testnet chain is selected. Router and vault addresses are only ever pasted from the explorer — a chain with no verified router/vault is listed for viewing only, and the wallet says so.</span>
       </div>
     </div>
   )

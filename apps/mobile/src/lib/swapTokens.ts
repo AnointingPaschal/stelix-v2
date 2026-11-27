@@ -42,7 +42,7 @@ export interface SwapToken extends SwapTokenEntry {
   logoUrl?: string | null;
 }
 
-/** Well-known swap tokens per Stelix chain id. */
+/** Well-known swap tokens per Stelix chain id (all chains, restored 2026-11-27). */
 export const SWAP_CATALOGUE: Record<string, SwapTokenEntry[]> = {
   arc: [
     { symbol: 'USDC', name: 'USD Coin (Arc gas asset)', chainId: 'arc', address: '', decimals: 6, coingeckoId: 'usd-coin' },

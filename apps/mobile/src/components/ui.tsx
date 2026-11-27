@@ -1,22 +1,26 @@
 /** Shared UI primitives — v1 compact: 11px labels, 14px body, 16–18px titles,
  *  tight 12–16px padding, small cards and buttons. White bg, navy, mint. */
-import React from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import {
   ActivityIndicator,
+  Keyboard,
+  KeyboardAvoidingView,
   Modal,
+  Platform,
   Pressable,
   ScrollView,
   StyleSheet,
   Text,
   useWindowDimensions,
   View,
+  type ScrollViewInstance,
   type StyleProp,
   type ViewStyle,
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Check, ChevronLeft, X } from 'lucide-react-native';
 import { COLORS, FONT, RADIUS, SHADOW } from '../theme';
-import { CHAINS, useApp } from '../store/AppContext';
+import { ACTIVE_CHAINS, useApp } from '../store/AppContext';
 
 /** Responsive breakpoints (Group B): phones 320–430px, tablets ≥768px,
  *  web/desktop ≥1024px. Screens centre their content in a max-width
@@ -228,7 +232,13 @@ export function Skeleton({ height = 14, width = '100%' }: { height?: number; wid
  *  the backdrop Pressable, so on web a click inside the contract-address
  *  textbox bubbled up to the backdrop's onPress and closed the modal the
  *  instant the user tried to type — the reported Import Token "crash"
- *  (2026-11-26). Taps inside the sheet now never reach the backdrop. */
+ *  (2026-11-26). Taps inside the sheet now never reach the backdrop.
+ *
+ *  Keyboard: the modal content is wrapped in a KeyboardAvoidingView and
+ *  the sheet's max-height shrinks by the live keyboard height, so the
+ *  keyboard never covers the sheet's TextInput or primary button. When
+ *  the keyboard opens the ScrollView scrolls to the end, bringing the
+ *  focused input and the button at the bottom into view. */
 export function BottomSheet({
   visible,
   onClose,
@@ -241,27 +251,60 @@ export function BottomSheet({
   children: React.ReactNode;
 }) {
   const insets = useSafeAreaInsets();
+  const { height: windowHeight } = useWindowDimensions();
+  const [keyboardHeight, setKeyboardHeight] = useState(0);
+  const scrollRef = useRef<ScrollViewInstance>(null);
+
+  useEffect(() => {
+    const show = Keyboard.addListener('keyboardDidShow', (e) => {
+      setKeyboardHeight(e.endCoordinates.height);
+      // After the sheet shrinks, scroll the focused input and the
+      // primary button at the bottom into view above the keyboard.
+      setTimeout(() => scrollRef.current?.scrollToEnd({ animated: true }), 150);
+    });
+    const hide = Keyboard.addListener('keyboardDidHide', () => setKeyboardHeight(0));
+    return () => {
+      show.remove();
+      hide.remove();
+    };
+  }, []);
+
+  // Shrink the sheet above the keyboard when it is open; otherwise keep
+  // the 85% max-height. The 16px gap keeps the sheet off the keyboard
+  // edge, and the 240px floor keeps a usable sliver on small phones.
+  const sheetMaxHeight =
+    keyboardHeight > 0 ? Math.max(240, windowHeight - keyboardHeight - 16) : '85%';
+
   return (
     <Modal visible={visible} transparent animationType="slide" onRequestClose={onClose}>
-      <View style={styles.sheetBackdrop}>
-        <Pressable style={StyleSheet.absoluteFill} onPress={onClose} accessibilityLabel="Close sheet" />
-        <View style={[styles.sheet, { paddingBottom: 24 + insets.bottom }]}>
-          <View style={styles.sheetHead}>
-            <Text style={styles.sheetTitle}>{title}</Text>
-            <Pressable onPress={onClose} hitSlop={8}>
-              <X size={18} color={COLORS.textMuted} />
-            </Pressable>
+      <KeyboardAvoidingView
+        style={styles.sheetAvoiding}
+        behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
+        keyboardVerticalOffset={0}
+        enabled
+      >
+        <View style={styles.sheetBackdrop}>
+          <Pressable style={StyleSheet.absoluteFill} onPress={onClose} accessibilityLabel="Close sheet" />
+          <View style={[styles.sheet, { paddingBottom: 24 + insets.bottom, maxHeight: sheetMaxHeight }]}>
+            <View style={styles.sheetHead}>
+              <Text style={styles.sheetTitle}>{title}</Text>
+              <Pressable onPress={onClose} hitSlop={8}>
+                <X size={18} color={COLORS.textMuted} />
+              </Pressable>
+            </View>
+            <ScrollView
+              ref={scrollRef}
+              style={styles.sheetScroll}
+              contentContainerStyle={styles.sheetContent}
+              showsVerticalScrollIndicator={false}
+              keyboardShouldPersistTaps="handled"
+              keyboardDismissMode="on-drag"
+            >
+              {children}
+            </ScrollView>
           </View>
-          <ScrollView
-            style={styles.sheetScroll}
-            contentContainerStyle={styles.sheetContent}
-            showsVerticalScrollIndicator={false}
-            keyboardShouldPersistTaps="handled"
-          >
-            {children}
-          </ScrollView>
         </View>
-      </View>
+      </KeyboardAvoidingView>
     </Modal>
   );
 }
@@ -313,22 +356,26 @@ export function OptionSheet({
   );
 }
 
-/** Network picker — all chains from the registry, Arc first (default). */
+/** Network picker — all ACTIVE chains from the merged registry
+ *  (built-in + admin-added, see AppContext.availableChains), Arc first
+ *  (default). All six built-in chains are active as restored 2026-11-27;
+ *  a chain added in admin appears here after a refresh, no rebuild. */
 export function NetworkSheet({ visible, onClose }: { visible: boolean; onClose: () => void }) {
-  const { chain, setChain } = useApp();
+  const { chain, setChain, availableChains } = useApp();
+  const chains = availableChains.filter((c) => c.active);
   return (
     <OptionSheet
       visible={visible}
       onClose={onClose}
       title="Select Network"
-      options={CHAINS.map((c) => ({
+      options={chains.map((c) => ({
         key: c.id,
         label: c.name,
-        sub: `${c.testnet ? 'Testnet' : 'Mainnet'} · Native: ${c.nativeSymbol}${c.isDefault ? ' · Default' : ''}`,
+        sub: `${c.testnet ? 'Testnet' : 'Mainnet'} · Native: ${c.nativeSymbol}${c.isDefault ? ' · Default' : ''}${c.vaultContract ? '' : ' · Vault not deployed'}`,
         selected: chain.id === c.id,
       }))}
       onSelect={(id) => {
-        const c = CHAINS.find((x) => x.id === id);
+        const c = chains.find((x) => x.id === id);
         if (c) setChain(c);
       }}
     />
@@ -414,6 +461,7 @@ const styles = StyleSheet.create({
     paddingBottom: 24,
     width: '100%',
   },
+  sheetAvoiding: { flex: 1 },
   sheetBackdrop: { alignItems: 'center', backgroundColor: 'rgba(11,18,32,0.45)', flex: 1, justifyContent: 'flex-end' },
   sheetContent: { paddingBottom: 4 },
   sheetScroll: { flexShrink: 1 },

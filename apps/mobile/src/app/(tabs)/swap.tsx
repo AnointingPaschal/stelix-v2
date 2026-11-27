@@ -16,7 +16,7 @@
  *  swap. Signing happens only in the shared SignTransactionModal — there
  *  is no password field on this page. */
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { Pressable, ScrollView, StyleSheet, Text, TextInput, View, useWindowDimensions } from 'react-native';
+import { KeyboardAvoidingView, Platform, Pressable, ScrollView, StyleSheet, Text, TextInput, View, useWindowDimensions } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { ArrowDownUp, ChevronDown, Search, Settings } from 'lucide-react-native';
 import { useLocalSearchParams } from 'expo-router';
@@ -468,278 +468,281 @@ export default function Swap() {
   const otherSideSymbol = pickSide === 'from' ? toSymbol : fromSymbol;
 
   return (
-    <ScrollView
-      style={styles.root}
-      contentContainerStyle={[
-        styles.inner,
-        {
-          paddingTop: 12 + insets.top,
-          paddingBottom: 24 + insets.bottom,
-          ...(isWide ? { maxWidth: 768, width: '100%', alignSelf: 'center' } : null),
-        },
-      ]}
-    >
-      <View style={styles.head}>
-        <View style={styles.headSide} />
-        <Text style={styles.title} numberOfLines={1} adjustsFontSizeToFit minimumFontScale={0.85}>Swap Assets</Text>
-        <View style={styles.headRight}>
-          <Pressable onPress={() => setSlipOpen(true)} style={styles.gear} hitSlop={6}>
-            <Settings size={18} color={COLORS.navy} />
-            <View style={styles.slipBadge}>
-              <Text style={styles.slipBadgeText}>{slippage}%</Text>
-            </View>
-          </Pressable>
-          <Pressable style={styles.chainBtn} onPress={() => setNetOpen(true)}>
-            <Text style={styles.chainText}>{chain.id === 'bnb' ? 'BSC' : chain.name}</Text>
-            <ChevronDown size={14} color={COLORS.textMuted} />
-          </Pressable>
+    <KeyboardAvoidingView style={styles.root} behavior={Platform.OS === 'ios' ? 'padding' : 'height'} keyboardVerticalOffset={insets.top}>
+      <ScrollView
+        style={{ flex: 1 }}
+        keyboardShouldPersistTaps="handled"
+        contentContainerStyle={[
+          styles.inner,
+          {
+            paddingTop: 12 + insets.top,
+            paddingBottom: 32 + insets.bottom,
+            ...(isWide ? { maxWidth: 768, width: '100%', alignSelf: 'center' } : null),
+          },
+        ]}
+      >
+        <View style={styles.head}>
+          <View style={styles.headSide} />
+          <Text style={styles.title} numberOfLines={1} adjustsFontSizeToFit minimumFontScale={0.85}>Swap Assets</Text>
+          <View style={styles.headRight}>
+            <Pressable onPress={() => setSlipOpen(true)} style={styles.gear} hitSlop={6}>
+              <Settings size={18} color={COLORS.navy} />
+              <View style={styles.slipBadge}>
+                <Text style={styles.slipBadgeText}>{slippage}%</Text>
+              </View>
+            </Pressable>
+            <Pressable style={styles.chainBtn} onPress={() => setNetOpen(true)}>
+              <Text style={styles.chainText}>{chain.id === 'bnb' ? 'BSC' : chain.name}</Text>
+              <ChevronDown size={14} color={COLORS.textMuted} />
+            </Pressable>
+          </View>
         </View>
-      </View>
 
-      <Card style={styles.payCard}>
-        <View style={styles.cardHead}>
-          <Text style={styles.cardLabel}>You Pay</Text>
-          <Text style={styles.bal}>
-            Bal: {fmtNum(fromToken?.balance ?? 0, 4)} {fromToken?.symbol ?? ''}
-            {fromPrice !== null && amt > 0 ? ` · ≈ ${fmtUsd(amt * fromPrice)}` : ''}
-          </Text>
-        </View>
-        <View style={styles.payRow}>
-          <Pressable style={styles.tokenBtn} onPress={() => setPickSide('from')}>
-            {fromToken ? (
-              <TokenLogo chainId={fromToken.chainId} address={fromToken.address} symbol={fromToken.symbol} size={28} fallbackTone="light" logoUrl={fromToken.logoUrl} />
-            ) : null}
-            <Text style={styles.tokenSymbol} numberOfLines={1}>{fromToken?.symbol ?? '—'}</Text>
-            <ChevronDown size={14} color={COLORS.textMuted} />
-          </Pressable>
-          <TextInput
-            style={styles.amountInput}
-            keyboardType="decimal-pad"
-            placeholder="0.00"
-            placeholderTextColor="#CBD5E1"
-            value={amount}
-            onChangeText={(v) => {
-              setAmount(v);
-              setFormError('');
-            }}
-          />
-          <Pressable style={styles.maxBtn} onPress={() => fromToken && setAmount(String(fromToken.balance))}>
-            <Text style={styles.maxText}>MAX</Text>
-          </Pressable>
-        </View>
-        <Text style={styles.tokenPrice}>
-          {fromPrice !== null ? fmtPrice(fromPrice) : 'Price unavailable'}
-          {liveChange(fromToken) !== null ? ` · ${liveChange(fromToken)! >= 0 ? '+' : ''}${fmtPct(liveChange(fromToken)!)} 24h` : ''}
-        </Text>
-      </Card>
-
-      <View style={styles.flipWrap}>
-        <Pressable onPress={flip} style={styles.flipBtn}>
-          <ArrowDownUp size={18} color={COLORS.navy} />
-        </Pressable>
-      </View>
-
-      <Card style={styles.payCard}>
-        <View style={styles.cardHead}>
-          <Text style={styles.cardLabel}>You Receive</Text>
-          <Text style={styles.bal}>
-            {toPrice !== null && outAmount > 0 ? `≈ ${fmtUsd(outAmount * toPrice)}` : ''}
-          </Text>
-        </View>
-        <View style={styles.payRow}>
-          <Pressable style={styles.tokenBtn} onPress={() => setPickSide('to')}>
-            {toToken ? (
-              <TokenLogo chainId={toToken.chainId} address={toToken.address} symbol={toToken.symbol} size={28} fallbackTone="light" logoUrl={toToken.logoUrl} />
-            ) : null}
-            <Text style={styles.tokenSymbol} numberOfLines={1}>{toToken?.symbol ?? '—'}</Text>
-            <ChevronDown size={14} color={COLORS.textMuted} />
-          </Pressable>
-          <Text style={styles.amountText}>{amt > 0 ? fmtNum(outAmount, 4) : '0.00'}</Text>
-        </View>
-        <Text style={styles.tokenPrice}>
-          {toPrice !== null ? fmtPrice(toPrice) : 'Price unavailable'}
-          {toChange24h !== null ? ` · ${toChange24h >= 0 ? '+' : ''}${fmtPct(toChange24h)} 24h` : ''}
-          {quoteStatus === 'loading' ? ' · Updating quote…' : quoteStatus === 'live' ? ' · Live quote' : ''}
-        </Text>
-      </Card>
-
-      {toToken ? (
-        <Card style={styles.chartCard}>
+        <Card style={styles.payCard}>
           <View style={styles.cardHead}>
-            <Text style={styles.cardLabel}>
-              {toToken.symbol} / USD · 1d
-            </Text>
-            <Text style={[styles.changeText, (toChange24h ?? 0) >= 0 ? styles.changeUp : styles.changeDown]}>
-              {toChange24h !== null ? `${toChange24h >= 0 ? '+' : ''}${fmtPct(toChange24h)}` : '—'}
+            <Text style={styles.cardLabel}>You Pay</Text>
+            <Text style={styles.bal}>
+              Bal: {fmtNum(fromToken?.balance ?? 0, 4)} {fromToken?.symbol ?? ''}
+              {fromPrice !== null && amt > 0 ? ` · ≈ ${fmtUsd(amt * fromPrice)}` : ''}
             </Text>
           </View>
-          <PriceChart
-            candles={candles}
-            chartType="line"
-            showEma7={false}
-            showEma25={false}
-            showVolume={false}
-            showMacd={false}
-            seriesKey={`${chain.id}:${toToken.address || 'native'}:swap`}
-            height={140}
-            loading={chartLoading}
-            updating={chartUpdating}
-          />
-          {candles.length === 0 && !chartLoading ? (
-            <Text style={styles.hint}>No chart data for this pair yet — the quote above still uses live prices when available.</Text>
-          ) : null}
-        </Card>
-      ) : null}
-
-      {(estimate || liveQuote) && amt > 0 ? (
-        <Card style={styles.quote}>
-          <QuoteRow label="Route" value={route} />
-          <QuoteRow label="Rate" value={`1 ${fromToken?.symbol} = ${fmtPrice(rate)} ${toToken?.symbol}`} />
-          <QuoteRow
-            label="Price impact"
-            value={
-              impact === null
-                ? '— (liquidity data unavailable)'
-                : `${(impact.impactBps / 100).toFixed(2)}%${impact.ok ? '' : ' — too high'}`
-            }
-          />
-          <QuoteRow label="Minimum received" value={`${fmtNum(outMin, 4)} ${toToken?.symbol}`} />
-          <QuoteRow label="Slippage" value={`${slippage}%`} />
-          <QuoteRow
-            label="Network fee (est.)"
-            value={
-              fee !== null
-                ? `${fee.feeNative} ${chain.nativeSymbol}${fee.feeUsd !== null ? ` (≈ ${fmtUsd(fee.feeUsd)})` : ''}`
-                : 'Estimated at signing'
-            }
-          />
-          <QuoteRow label="Value" value={estimate ? `≈ ${fmtUsd(estimate.usd)}` : '—'} />
-          <QuoteRow
-            label="Quote"
-            value={liveQuote ? (liveQuote.source === 'pancakeswap' ? 'Live · PancakeSwap V2' : 'Live · 1inch') : 'Estimated from live prices'}
-          />
-        </Card>
-      ) : null}
-
-      {quoteStatus === 'unavailable' && amt > 0 ? (
-        <Text style={styles.quoteWarn}>Live quote unavailable — showing a price estimate instead. {quoteError}</Text>
-      ) : null}
-      {chainSwapNote ? <Text style={styles.quoteWarn}>{chainSwapNote}. You can still browse tokens, quotes and the chart — execution is not available on this chain.</Text> : null}
-      {fromToken && amt > fromToken.balance ? (
-        <Text style={styles.quoteWarn}>
-          Insufficient balance — you have {fmtNum(fromToken.balance, 4)} {fromToken.symbol}
-          {amt > 0 ? `, short ${fmtNum(amt - fromToken.balance, 4)} ${fromToken.symbol}` : ''}. Receive funds to swap.
-        </Text>
-      ) : null}
-      {formError ? <Text style={styles.formError}>{formError}</Text> : null}
-      {executed ? (
-        <Text style={styles.sentLine}>
-          Swap mined — tx {executed.hash.slice(0, 12)}…{executed.hash.slice(-6)}
-          {executed.blockNumber !== null && executed.blockNumber !== undefined ? ` · block ${executed.blockNumber}` : ''}. Recorded in History.
-        </Text>
-      ) : null}
-
-      <View style={styles.spacer} />
-      <Btn label={btn.label} variant={btn.disabled ? 'secondary' : 'primary'} onPress={() => void review()} disabled={btn.disabled} />
-      <Text style={styles.execNote}>
-        {chain.id === 'arc'
-          ? 'Arc swaps are unavailable — no DEX router has been verified on Arc testnet yet.'
-          : chain.kind !== 'evm'
-            ? 'Swap execution is wired for EVM chains only.'
-            : chain.id === 'bnb'
-              ? 'Executes on PancakeSwap V2 with the quoted minimum-receive and a 20-minute deadline.'
-              : 'Executes via 1inch when the API key is set; otherwise the swap is refused, never faked.'}
-      </Text>
-      <RiskNote />
-
-      <NetworkSheet visible={netOpen} onClose={() => setNetOpen(false)} />
-
-      <BottomSheet visible={slipOpen} onClose={() => setSlipOpen(false)} title="Slippage tolerance">
-        <View style={styles.slipRow}>
-          {['0.5', '1.5', '3.0'].map((s) => (
-            <Btn
-              key={s}
-              label={`${s}%`}
-              variant={slippage === s ? 'primary' : 'ghost'}
-              onPress={() => {
-                setSlippage(s);
-                setCustomSlip('');
-              }}
-              style={styles.slipBtn}
-            />
-          ))}
-        </View>
-        <Text style={styles.label}>Custom slippage (%)</Text>
-        <TextInput
-          style={styles.customSlipInput}
-          keyboardType="decimal-pad"
-          placeholder="e.g. 2.0"
-          placeholderTextColor={COLORS.textMuted}
-          value={customSlip}
-          onChangeText={(v) => {
-            setCustomSlip(v);
-            const n = parseFloat(v);
-            if (Number.isFinite(n) && n >= 0.1 && n <= 50) setSlippage(String(n));
-          }}
-        />
-        <Text style={styles.slipHint}>Default 1.5%. A higher tolerance helps volatile pairs fill; a lower one protects your price.</Text>
-      </BottomSheet>
-
-      <BottomSheet visible={pickSide !== null} onClose={() => setPickSide(null)} title={pickSide === 'from' ? 'You Pay' : 'You Receive'}>
-        <View style={styles.searchWrap}>
-          <Search size={16} color={COLORS.textMuted} />
-          <TextInput
-            style={styles.searchInput}
-            placeholder="Search tokens"
-            placeholderTextColor={COLORS.textMuted}
-            value={pickQuery}
-            onChangeText={setPickQuery}
-            autoCapitalize="none"
-            autoCorrect={false}
-          />
-        </View>
-        <ScrollView style={{ maxHeight: pickListMaxHeight }} showsVerticalScrollIndicator={false}>
-          {pickList.map((t) => {
-          const price = t.price ?? market[t.symbol]?.price ?? null;
-          const change = market[t.symbol]?.change24h ?? null;
-          const disabled = t.symbol === otherSideSymbol;
-          return (
-            <Pressable
-              key={t.symbol}
-              style={[styles.pickRow, disabled && styles.pickRowDisabled]}
-              onPress={() => {
-                if (!disabled) pickToken(t.symbol);
-              }}
-            >
-              <TokenLogo chainId={t.chainId} address={t.address} symbol={t.symbol} size={28} fallbackTone="light" logoUrl={t.logoUrl} />
-              <View style={styles.pickMid}>
-                <Text style={styles.pickName} numberOfLines={1}>
-                  {t.symbol}
-                  {t.balance === 0 ? ' · 0 balance' : ''}
-                </Text>
-                <Text style={styles.pickSub} numberOfLines={1}>
-                  {t.name}
-                  {price !== null ? ` · ${fmtPrice(price)}` : ''}
-                  {change !== null ? ` · ${change >= 0 ? '+' : ''}${fmtPct(change)}` : ''}
-                </Text>
-              </View>
-              <Text style={styles.pickBal} numberOfLines={1}>{fmtNum(t.balance, 4)}</Text>
+          <View style={styles.payRow}>
+            <Pressable style={styles.tokenBtn} onPress={() => setPickSide('from')}>
+              {fromToken ? (
+                <TokenLogo chainId={fromToken.chainId} address={fromToken.address} symbol={fromToken.symbol} size={28} fallbackTone="light" logoUrl={fromToken.logoUrl} />
+              ) : null}
+              <Text style={styles.tokenSymbol} numberOfLines={1}>{fromToken?.symbol ?? '—'}</Text>
+              <ChevronDown size={14} color={COLORS.textMuted} />
             </Pressable>
-          );
-        })}
-          {pickList.length === 0 ? <Text style={styles.emptyBody}>No tokens match that search.</Text> : null}
-        </ScrollView>
-      </BottomSheet>
+            <TextInput
+              style={styles.amountInput}
+              keyboardType="decimal-pad"
+              placeholder="0.00"
+              placeholderTextColor="#CBD5E1"
+              value={amount}
+              onChangeText={(v) => {
+                setAmount(v);
+                setFormError('');
+              }}
+            />
+            <Pressable style={styles.maxBtn} onPress={() => fromToken && setAmount(String(fromToken.balance))}>
+              <Text style={styles.maxText}>MAX</Text>
+            </Pressable>
+          </View>
+          <Text style={styles.tokenPrice}>
+            {fromPrice !== null ? fmtPrice(fromPrice) : 'Price unavailable'}
+            {liveChange(fromToken) !== null ? ` · ${liveChange(fromToken)! >= 0 ? '+' : ''}${fmtPct(liveChange(fromToken)!)} 24h` : ''}
+          </Text>
+        </Card>
 
-      <SignTransactionModal
-        visible={signModal !== null}
-        request={signModal?.request ?? null}
-        biometricsEnabled={settings.biometrics}
-        onClose={() => setSignModal(null)}
-        onSign={signSwap}
-        onSigned={(res) => void onSwapSigned(res)}
-      />
-    </ScrollView>
+        <View style={styles.flipWrap}>
+          <Pressable onPress={flip} style={styles.flipBtn}>
+            <ArrowDownUp size={18} color={COLORS.navy} />
+          </Pressable>
+        </View>
+
+        <Card style={styles.payCard}>
+          <View style={styles.cardHead}>
+            <Text style={styles.cardLabel}>You Receive</Text>
+            <Text style={styles.bal}>
+              {toPrice !== null && outAmount > 0 ? `≈ ${fmtUsd(outAmount * toPrice)}` : ''}
+            </Text>
+          </View>
+          <View style={styles.payRow}>
+            <Pressable style={styles.tokenBtn} onPress={() => setPickSide('to')}>
+              {toToken ? (
+                <TokenLogo chainId={toToken.chainId} address={toToken.address} symbol={toToken.symbol} size={28} fallbackTone="light" logoUrl={toToken.logoUrl} />
+              ) : null}
+              <Text style={styles.tokenSymbol} numberOfLines={1}>{toToken?.symbol ?? '—'}</Text>
+              <ChevronDown size={14} color={COLORS.textMuted} />
+            </Pressable>
+            <Text style={styles.amountText}>{amt > 0 ? fmtNum(outAmount, 4) : '0.00'}</Text>
+          </View>
+          <Text style={styles.tokenPrice}>
+            {toPrice !== null ? fmtPrice(toPrice) : 'Price unavailable'}
+            {toChange24h !== null ? ` · ${toChange24h >= 0 ? '+' : ''}${fmtPct(toChange24h)} 24h` : ''}
+            {quoteStatus === 'loading' ? ' · Updating quote…' : quoteStatus === 'live' ? ' · Live quote' : ''}
+          </Text>
+        </Card>
+
+        {toToken ? (
+          <Card style={styles.chartCard}>
+            <View style={styles.cardHead}>
+              <Text style={styles.cardLabel}>
+                {toToken.symbol} / USD · 1d
+              </Text>
+              <Text style={[styles.changeText, (toChange24h ?? 0) >= 0 ? styles.changeUp : styles.changeDown]}>
+                {toChange24h !== null ? `${toChange24h >= 0 ? '+' : ''}${fmtPct(toChange24h)}` : '—'}
+              </Text>
+            </View>
+            <PriceChart
+              candles={candles}
+              chartType="line"
+              showEma7={false}
+              showEma25={false}
+              showVolume={false}
+              showMacd={false}
+              seriesKey={`${chain.id}:${toToken.address || 'native'}:swap`}
+              height={140}
+              loading={chartLoading}
+              updating={chartUpdating}
+            />
+            {candles.length === 0 && !chartLoading ? (
+              <Text style={styles.hint}>No chart data for this pair yet — the quote above still uses live prices when available.</Text>
+            ) : null}
+          </Card>
+        ) : null}
+
+        {(estimate || liveQuote) && amt > 0 ? (
+          <Card style={styles.quote}>
+            <QuoteRow label="Route" value={route} />
+            <QuoteRow label="Rate" value={`1 ${fromToken?.symbol} = ${fmtPrice(rate)} ${toToken?.symbol}`} />
+            <QuoteRow
+              label="Price impact"
+              value={
+                impact === null
+                  ? '— (liquidity data unavailable)'
+                  : `${(impact.impactBps / 100).toFixed(2)}%${impact.ok ? '' : ' — too high'}`
+              }
+            />
+            <QuoteRow label="Minimum received" value={`${fmtNum(outMin, 4)} ${toToken?.symbol}`} />
+            <QuoteRow label="Slippage" value={`${slippage}%`} />
+            <QuoteRow
+              label="Network fee (est.)"
+              value={
+                fee !== null
+                  ? `${fee.feeNative} ${chain.nativeSymbol}${fee.feeUsd !== null ? ` (≈ ${fmtUsd(fee.feeUsd)})` : ''}`
+                  : 'Estimated at signing'
+              }
+            />
+            <QuoteRow label="Value" value={estimate ? `≈ ${fmtUsd(estimate.usd)}` : '—'} />
+            <QuoteRow
+              label="Quote"
+              value={liveQuote ? (liveQuote.source === 'pancakeswap' ? 'Live · PancakeSwap V2' : 'Live · 1inch') : 'Estimated from live prices'}
+            />
+          </Card>
+        ) : null}
+
+        {quoteStatus === 'unavailable' && amt > 0 ? (
+          <Text style={styles.quoteWarn}>Live quote unavailable — showing a price estimate instead. {quoteError}</Text>
+        ) : null}
+        {chainSwapNote ? <Text style={styles.quoteWarn}>{chainSwapNote}. You can still browse tokens, quotes and the chart — execution is not available on this chain.</Text> : null}
+        {fromToken && amt > fromToken.balance ? (
+          <Text style={styles.quoteWarn}>
+            Insufficient balance — you have {fmtNum(fromToken.balance, 4)} {fromToken.symbol}
+            {amt > 0 ? `, short ${fmtNum(amt - fromToken.balance, 4)} ${fromToken.symbol}` : ''}. Receive funds to swap.
+          </Text>
+        ) : null}
+        {formError ? <Text style={styles.formError}>{formError}</Text> : null}
+        {executed ? (
+          <Text style={styles.sentLine}>
+            Swap mined — tx {executed.hash.slice(0, 12)}…{executed.hash.slice(-6)}
+            {executed.blockNumber !== null && executed.blockNumber !== undefined ? ` · block ${executed.blockNumber}` : ''}. Recorded in History.
+          </Text>
+        ) : null}
+
+        <View style={styles.spacer} />
+        <Btn label={btn.label} variant={btn.disabled ? 'secondary' : 'primary'} onPress={() => void review()} disabled={btn.disabled} />
+        <Text style={styles.execNote}>
+          {chain.id === 'arc'
+            ? 'Arc swaps are unavailable — no DEX router has been verified on Arc testnet yet.'
+            : chain.kind !== 'evm'
+              ? 'Swap execution is wired for EVM chains only.'
+              : chain.id === 'bnb'
+                ? 'Executes on PancakeSwap V2 with the quoted minimum-receive and a 20-minute deadline.'
+                : 'Executes via 1inch when the API key is set; otherwise the swap is refused, never faked.'}
+        </Text>
+        <RiskNote />
+
+        <NetworkSheet visible={netOpen} onClose={() => setNetOpen(false)} />
+
+        <BottomSheet visible={slipOpen} onClose={() => setSlipOpen(false)} title="Slippage tolerance">
+          <View style={styles.slipRow}>
+            {['0.5', '1.5', '3.0'].map((s) => (
+              <Btn
+                key={s}
+                label={`${s}%`}
+                variant={slippage === s ? 'primary' : 'ghost'}
+                onPress={() => {
+                  setSlippage(s);
+                  setCustomSlip('');
+                }}
+                style={styles.slipBtn}
+              />
+            ))}
+          </View>
+          <Text style={styles.label}>Custom slippage (%)</Text>
+          <TextInput
+            style={styles.customSlipInput}
+            keyboardType="decimal-pad"
+            placeholder="e.g. 2.0"
+            placeholderTextColor={COLORS.textMuted}
+            value={customSlip}
+            onChangeText={(v) => {
+              setCustomSlip(v);
+              const n = parseFloat(v);
+              if (Number.isFinite(n) && n >= 0.1 && n <= 50) setSlippage(String(n));
+            }}
+          />
+          <Text style={styles.slipHint}>Default 1.5%. A higher tolerance helps volatile pairs fill; a lower one protects your price.</Text>
+        </BottomSheet>
+
+        <BottomSheet visible={pickSide !== null} onClose={() => setPickSide(null)} title={pickSide === 'from' ? 'You Pay' : 'You Receive'}>
+          <View style={styles.searchWrap}>
+            <Search size={16} color={COLORS.textMuted} />
+            <TextInput
+              style={styles.searchInput}
+              placeholder="Search tokens"
+              placeholderTextColor={COLORS.textMuted}
+              value={pickQuery}
+              onChangeText={setPickQuery}
+              autoCapitalize="none"
+              autoCorrect={false}
+            />
+          </View>
+          <ScrollView style={{ maxHeight: pickListMaxHeight }} showsVerticalScrollIndicator={false}>
+            {pickList.map((t) => {
+            const price = t.price ?? market[t.symbol]?.price ?? null;
+            const change = market[t.symbol]?.change24h ?? null;
+            const disabled = t.symbol === otherSideSymbol;
+            return (
+              <Pressable
+                key={t.symbol}
+                style={[styles.pickRow, disabled && styles.pickRowDisabled]}
+                onPress={() => {
+                  if (!disabled) pickToken(t.symbol);
+                }}
+              >
+                <TokenLogo chainId={t.chainId} address={t.address} symbol={t.symbol} size={28} fallbackTone="light" logoUrl={t.logoUrl} />
+                <View style={styles.pickMid}>
+                  <Text style={styles.pickName} numberOfLines={1}>
+                    {t.symbol}
+                    {t.balance === 0 ? ' · 0 balance' : ''}
+                  </Text>
+                  <Text style={styles.pickSub} numberOfLines={1}>
+                    {t.name}
+                    {price !== null ? ` · ${fmtPrice(price)}` : ''}
+                    {change !== null ? ` · ${change >= 0 ? '+' : ''}${fmtPct(change)}` : ''}
+                  </Text>
+                </View>
+                <Text style={styles.pickBal} numberOfLines={1}>{fmtNum(t.balance, 4)}</Text>
+              </Pressable>
+            );
+          })}
+            {pickList.length === 0 ? <Text style={styles.emptyBody}>No tokens match that search.</Text> : null}
+          </ScrollView>
+        </BottomSheet>
+
+        <SignTransactionModal
+          visible={signModal !== null}
+          request={signModal?.request ?? null}
+          biometricsEnabled={settings.biometrics}
+          onClose={() => setSignModal(null)}
+          onSign={signSwap}
+          onSigned={(res) => void onSwapSigned(res)}
+        />
+      </ScrollView>
+    </KeyboardAvoidingView>
   );
 }
 

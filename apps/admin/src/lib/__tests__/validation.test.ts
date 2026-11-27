@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { DEFAULT_FEES, validateFeePayload } from '../fees'
-import { isAddress, isTxHash, mainnetConfirmPhrase, validateDeployParams } from '../deployParams'
+import { isAddress, isTxHash, mainnetConfirmPhrase, testnetChainIdFor, validateDeployParams } from '../deployParams'
 
 describe('validateFeePayload', () => {
   it('accepts the defaults', () => {
@@ -58,6 +58,15 @@ describe('validateDeployParams', () => {
 
   it('builds the exact typed mainnet confirmation phrase', () => {
     expect(mainnetConfirmPhrase('Arc')).toBe('Deploy StelixVault to Arc mainnet')
+    expect(mainnetConfirmPhrase('BNB Smart Chain')).toBe('Deploy StelixVault to BNB Smart Chain mainnet')
+    // A chain already named "... Mainnet" must not get a doubled suffix.
+    expect(mainnetConfirmPhrase('Arc Mainnet')).toBe('Deploy StelixVault to Arc Mainnet')
+  })
+
+  it('maps a mainnet chain slug to its testnet counterpart', () => {
+    expect(testnetChainIdFor('arc-mainnet')).toBe('arc')
+    expect(testnetChainIdFor('arc')).toBe('arc')
+    expect(testnetChainIdFor('bnb')).toBe('bnb')
   })
 
   it('validates addresses and tx hashes', () => {

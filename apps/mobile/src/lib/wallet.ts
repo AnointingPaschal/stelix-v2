@@ -16,6 +16,7 @@
  *   standard path m/44'/501'/0'/0' (see lib/solana.ts) and stored as a
  *   PUBLIC address in the wallet meta. Wallets imported from a raw
  *   private key have no mnemonic, so they have no Solana address.
+ *   Restored 2026-11-27 (all chains active again).
  *
  * Storage: expo-secure-store on native (where available — it is a native
  * module, so a development build is required; it is NOT in Expo Go).
@@ -26,7 +27,7 @@
  * plaintext secret. Nothing here logs a mnemonic or private key.
  */
 import { ethers } from 'ethers';
-import { assertStrongPassword, decryptSecret, encryptSecret } from './crypto';
+import { assertStrongPassword, decryptSecret, encryptSecret, randomBytesSync } from './crypto';
 import { deriveSolanaAddress } from './solana';
 import { isNativeApp, kvDelete, kvGet, kvSet } from './storage';
 
@@ -161,33 +162,26 @@ async function storeDelete(key: string): Promise<void> {
  * `ethers.randomBytes`, which on the ESM build reads
  * `globalThis.crypto.getRandomValues` — a global Hermes does not ship.
  * On native, Create Wallet would therefore fail with the same missing-
- * crypto root cause as Import did (see lib/crypto.ts). Register a secure
- * random source backed by the expo-crypto native module (OS CSPRNG) when
- * — and only when — the platform has no `crypto.getRandomValues`. On web
- * and in Jest the default already works, so nothing is registered there
- * and `expo-crypto` is never loaded. Never Math.random.
+ * crypto root cause as Import did (see lib/crypto.ts). ALWAYS register
+ * ethers' random source to crypto.ts's `randomBytesSync`, which itself
+ * tries the platform CSPRNG first — global getRandomValues (supplied on
+ * Hermes by the `react-native-get-random-values` polyfill, first import
+ * of src/app/_layout.tsx) and the probed Expo native crypto module —
+ * so good environments are unchanged, and only a host with no native
+ * random module at all falls back to the clearly-labelled DEGRADED
+ * ChaCha20 DRBG in crypto.ts. This registration never throws, never
+ * runs at module load (only on first mnemonic generation), and never
+ * loads the Expo crypto package — the package whose JS throws at load
+ * when its native module is absent was the Expo Go crash of 2026-11-27
+ * (see lib/crypto.ts) and has been removed from the app entirely.
+ * Never Math.random.
  */
 let ethersRandomRegistered = false;
 
 function ensureEthersSecureRandom(): void {
   if (ethersRandomRegistered) return;
   ethersRandomRegistered = true;
-  if (typeof globalThis.crypto?.getRandomValues === 'function') return;
-  try {
-    // Lazy require: static import would load the native module in Jest /
-    // Node, where this branch never runs. Metro bundles expo-crypto
-    // because the require is statically analyzable.
-    // eslint-disable-next-line @typescript-eslint/no-require-imports
-    const ExpoCrypto = require('expo-crypto') as typeof import('expo-crypto');
-    if (typeof ExpoCrypto.getRandomBytes !== 'function') {
-      throw new Error('expo-crypto getRandomBytes is unavailable');
-    }
-    ethers.randomBytes.register((length: number) => ExpoCrypto.getRandomBytes(length));
-  } catch {
-    throw new Error(
-      'No secure random source is available in this environment — wallet creation cannot run.',
-    );
-  }
+  ethers.randomBytes.register((length: number) => randomBytesSync(length));
 }
 
 /** Generate a fresh random 12-word mnemonic (ethers v6). Returns the

@@ -20,7 +20,7 @@
  *  resolve market data + candles through their wrapped twin. Anything
  *  unavailable shows "—" / "No data", never an invented value. */
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { Animated, Pressable, ScrollView, StyleSheet, Switch, Text, TextInput, View, useWindowDimensions } from 'react-native';
+import { Animated, KeyboardAvoidingView, Platform, Pressable, ScrollView, StyleSheet, Switch, Text, TextInput, View, useWindowDimensions } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { router, useLocalSearchParams } from 'expo-router';
 import * as Clipboard from 'expo-clipboard';
@@ -488,338 +488,341 @@ export default function TokenDetail() {
         : 'Live data unavailable — showing last known price';
 
   return (
-    <ScrollView
-      style={styles.root}
-      contentContainerStyle={[
-        styles.inner,
-        {
-          paddingTop: 12 + insets.top,
-          paddingBottom: 24 + insets.bottom,
-          ...(isWide ? { maxWidth: 768, width: '100%', alignSelf: 'center' } : null),
-        },
-      ]}
-    >
-      <View style={styles.head}>
-        <Pressable onPress={() => router.back()} hitSlop={8}>
-          <ChevronLeft size={22} color={COLORS.text} />
-        </Pressable>
-        <View style={styles.headToken}>
-          <TokenLogo chainId={chainId} address={address} symbol={sym} size={36} logoUrl={storeToken?.logoUrl} />
-          <View style={styles.headTokenText}>
-            <Text style={styles.title} numberOfLines={1}>{sym || 'Token'}</Text>
-            <Text style={styles.sub} numberOfLines={1}>{name}</Text>
+    <KeyboardAvoidingView style={styles.root} behavior={Platform.OS === 'ios' ? 'padding' : 'height'} keyboardVerticalOffset={insets.top}>
+      <ScrollView
+        style={{ flex: 1 }}
+        keyboardShouldPersistTaps="handled"
+        contentContainerStyle={[
+          styles.inner,
+          {
+            paddingTop: 12 + insets.top,
+            paddingBottom: 32 + insets.bottom,
+            ...(isWide ? { maxWidth: 768, width: '100%', alignSelf: 'center' } : null),
+          },
+        ]}
+      >
+        <View style={styles.head}>
+          <Pressable onPress={() => router.back()} hitSlop={8}>
+            <ChevronLeft size={22} color={COLORS.text} />
+          </Pressable>
+          <View style={styles.headToken}>
+            <TokenLogo chainId={chainId} address={address} symbol={sym} size={36} logoUrl={storeToken?.logoUrl} />
+            <View style={styles.headTokenText}>
+              <Text style={styles.title} numberOfLines={1}>{sym || 'Token'}</Text>
+              <Text style={styles.sub} numberOfLines={1}>{name}</Text>
+            </View>
           </View>
-        </View>
-        <View style={styles.headRight}>
-          <View style={styles.priceRow}>
-            {liveState === 'live' ? (
-              <Animated.View style={[styles.liveDot, { backgroundColor: liveDotColor, opacity: pulse }]} />
-            ) : (
-              <View style={[styles.liveDot, { backgroundColor: liveDotColor }]} />
-            )}
-            <Text style={styles.price} numberOfLines={1} adjustsFontSizeToFit minimumFontScale={0.8}>{priceText(price)}</Text>
+          <View style={styles.headRight}>
+            <View style={styles.priceRow}>
+              {liveState === 'live' ? (
+                <Animated.View style={[styles.liveDot, { backgroundColor: liveDotColor, opacity: pulse }]} />
+              ) : (
+                <View style={[styles.liveDot, { backgroundColor: liveDotColor }]} />
+              )}
+              <Text style={styles.price} numberOfLines={1} adjustsFontSizeToFit minimumFontScale={0.8}>{priceText(price)}</Text>
+            </View>
+            <Chip label={pctText(change24h)} tone={change24h === null ? 'muted' : up ? 'mint' : 'red'} />
           </View>
-          <Chip label={pctText(change24h)} tone={change24h === null ? 'muted' : up ? 'mint' : 'red'} />
+          <Pressable
+            onPress={() => setRefreshNonce((n) => n + 1)}
+            hitSlop={8}
+            accessibilityLabel="Refresh price now"
+          >
+            <RefreshCw size={18} color={COLORS.text} />
+          </Pressable>
         </View>
-        <Pressable
-          onPress={() => setRefreshNonce((n) => n + 1)}
-          hitSlop={8}
-          accessibilityLabel="Refresh price now"
-        >
-          <RefreshCw size={18} color={COLORS.text} />
-        </Pressable>
-      </View>
 
-      <View style={styles.statCards}>
-        <View style={styles.statCard}>
-          <Text style={styles.statLabel}>Balance</Text>
-          <Text style={styles.statValue} numberOfLines={1} adjustsFontSizeToFit minimumFontScale={0.8}>{fmtNum(balance, 4)} {sym}</Text>
-          <Text style={styles.statSub} numberOfLines={1}>{fmtUsd(balance * (price ?? 0))}</Text>
-        </View>
-        <View style={styles.statCard}>
-          <Text style={styles.statLabel}>Value</Text>
-          <Text style={styles.statValue} numberOfLines={1} adjustsFontSizeToFit minimumFontScale={0.8}>{fmtUsd(balance * (price ?? 0))}</Text>
-          <Text style={styles.statSub} numberOfLines={1}>{priceText(price)} / {sym}</Text>
-        </View>
-        <View style={styles.statCard}>
-          <Text style={styles.statLabel}>Locked</Text>
-          <Text style={styles.statValue} numberOfLines={1} adjustsFontSizeToFit minimumFontScale={0.8}>{locked > 0 ? fmtNum(locked, 4) : '—'}</Text>
-          <Text style={styles.statSub} numberOfLines={1}>{locked > 0 ? 'In vault' : 'None'}</Text>
-        </View>
-      </View>
-
-      <Card style={styles.chartCard}>
-        <View style={styles.chartHead}>
-          <View style={styles.typeSeg}>
-            <Pressable onPress={() => setChartType('candles')} style={[styles.segBtn, chartType === 'candles' && styles.segBtnOn]}>
-              <Text style={[styles.segText, chartType === 'candles' && styles.segTextOn]}>Candles</Text>
-            </Pressable>
-            <Pressable onPress={() => setChartType('line')} style={[styles.segBtn, chartType === 'line' && styles.segBtnOn]}>
-              <Text style={[styles.segText, chartType === 'line' && styles.segTextOn]}>Line</Text>
-            </Pressable>
+        <View style={styles.statCards}>
+          <View style={styles.statCard}>
+            <Text style={styles.statLabel}>Balance</Text>
+            <Text style={styles.statValue} numberOfLines={1} adjustsFontSizeToFit minimumFontScale={0.8}>{fmtNum(balance, 4)} {sym}</Text>
+            <Text style={styles.statSub} numberOfLines={1}>{fmtUsd(balance * (price ?? 0))}</Text>
           </View>
-          <View style={styles.tfs}>
-            {TFS.map((t) => (
-              <Pressable key={t} onPress={() => setTf(t)} style={[styles.tf, tf === t && styles.tfOn]}>
-                <Text style={[styles.tfText, tf === t && styles.tfTextOn]}>{t}</Text>
+          <View style={styles.statCard}>
+            <Text style={styles.statLabel}>Value</Text>
+            <Text style={styles.statValue} numberOfLines={1} adjustsFontSizeToFit minimumFontScale={0.8}>{fmtUsd(balance * (price ?? 0))}</Text>
+            <Text style={styles.statSub} numberOfLines={1}>{priceText(price)} / {sym}</Text>
+          </View>
+          <View style={styles.statCard}>
+            <Text style={styles.statLabel}>Locked</Text>
+            <Text style={styles.statValue} numberOfLines={1} adjustsFontSizeToFit minimumFontScale={0.8}>{locked > 0 ? fmtNum(locked, 4) : '—'}</Text>
+            <Text style={styles.statSub} numberOfLines={1}>{locked > 0 ? 'In vault' : 'None'}</Text>
+          </View>
+        </View>
+
+        <Card style={styles.chartCard}>
+          <View style={styles.chartHead}>
+            <View style={styles.typeSeg}>
+              <Pressable onPress={() => setChartType('candles')} style={[styles.segBtn, chartType === 'candles' && styles.segBtnOn]}>
+                <Text style={[styles.segText, chartType === 'candles' && styles.segTextOn]}>Candles</Text>
+              </Pressable>
+              <Pressable onPress={() => setChartType('line')} style={[styles.segBtn, chartType === 'line' && styles.segBtnOn]}>
+                <Text style={[styles.segText, chartType === 'line' && styles.segTextOn]}>Line</Text>
+              </Pressable>
+            </View>
+            <View style={styles.tfs}>
+              {TFS.map((t) => (
+                <Pressable key={t} onPress={() => setTf(t)} style={[styles.tf, tf === t && styles.tfOn]}>
+                  <Text style={[styles.tfText, tf === t && styles.tfTextOn]}>{t}</Text>
+                </Pressable>
+              ))}
+            </View>
+          </View>
+
+          <View style={styles.pills}>
+            <TogglePill label="EMA" on={showEma} onPress={() => setShowEma((v) => !v)} color={COLORS.blue} />
+            <TogglePill label="BB" on={showBb} onPress={() => setShowBb((v) => !v)} color={COLORS.blue} />
+            <TogglePill label="MACD" on={showMacd} onPress={() => setShowMacd((v) => !v)} color={COLORS.amber} />
+            <TogglePill label="Vol" on={showVol} onPress={() => setShowVol((v) => !v)} color={COLORS.textMuted} />
+            <TogglePill label="RSI" on={showRsi} onPress={() => setShowRsi((v) => !v)} color={COLORS.mint} />
+          </View>
+          <View style={styles.indValues}>
+            <Text style={styles.indValue}>EMA7 {candlesLoading && candles.length === 0 ? 'Loading…' : indicators.ema7 === null ? '—' : fmtPrice(indicators.ema7)}</Text>
+            <Text style={styles.indValue}>EMA25 {candlesLoading && candles.length === 0 ? 'Loading…' : indicators.ema25 === null ? '—' : fmtPrice(indicators.ema25)}</Text>
+            {showMacd ? (
+              <Text style={styles.indValue}>
+                MACD {candlesLoading && candles.length === 0 ? 'Loading…' : macd.macd === null ? '—' : fmtPrice(macd.macd)} · Sig {candlesLoading && candles.length === 0 ? 'Loading…' : macd.signal === null ? '—' : fmtPrice(macd.signal)}
+              </Text>
+            ) : null}
+          </View>
+
+          {chartScaleMismatch ? (
+            <View style={styles.mismatch}>
+              <Text style={styles.mismatchTitle}>Chart price does not match the live price — showing last known</Text>
+              <Text style={styles.mismatchBody}>
+                Live price {priceText(price)} · last candle {lastCandleClose === null ? '—' : fmtPrice(lastCandleClose)}. The pair feed is
+                pricing this token on a different scale, so the chart is hidden rather than shown wrong.
+              </Text>
+            </View>
+          ) : (
+            <PriceChart
+              candles={candles}
+              chartType={chartType}
+              showEma7={showEma}
+              showEma25={showEma}
+              showBollinger={showBb}
+              showVolume={showVol}
+              showMacd={showMacd}
+              seriesKey={`${chainId}:${pairAddress ?? 'none'}:${tf}`}
+              height={showMacd ? 250 : 210}
+              loading={candlesLoading}
+              updating={candlesUpdating}
+            />
+          )}
+
+          {showRsi ? (
+            <View style={styles.rsiRow}>
+              <Text style={styles.rsiLabel}>RSI(14)</Text>
+              <Text style={styles.rsiValue}>
+                {candlesLoading && candles.length === 0
+                  ? 'Loading…'
+                  : rsi === null
+                    ? '—'
+                    : `${rsi.toFixed(0)} — ${rsi > 70 ? 'Overbought' : rsi < 30 ? 'Oversold' : 'Neutral'}`}
+              </Text>
+            </View>
+          ) : null}
+          <View style={styles.chartFoot}>
+            <Text style={styles.footPrice}>{priceText(price)}</Text>
+            <Chip label={pctText(change24h)} tone={change24h === null ? 'muted' : up ? 'mint' : 'red'} />
+          </View>
+          <Text style={[styles.liveNote, liveState !== 'live' && styles.liveNoteWarn]}>{liveLabel}</Text>
+          {candlesStale && !candlesLoading && !chartScaleMismatch ? (
+            <Text style={styles.liveNote}>No candles from the pair feed yet — the chart will appear once candles arrive.</Text>
+          ) : null}
+        </Card>
+
+        <SectionTitle title="Safety Score" />
+        <Card>
+          {!safetyReady ? (
+            <View style={styles.safetySkeleton}>
+              <View style={[styles.skelCircle]} />
+              <View style={styles.safetySkelLines}>
+                <View style={[styles.skelBar, { width: '60%' }]} />
+                <View style={[styles.skelBar, { width: '85%' }]} />
+                <Text style={styles.safetySkelText}>Loading safety score…</Text>
+              </View>
+            </View>
+          ) : (
+            <SafetyScoreCard safety={shownSafety} holderCount={security?.holderCount ?? null} />
+          )}
+        </Card>
+
+        <Card dark style={styles.disciplineCard}>
+          <View style={styles.discHead}>
+            <View style={styles.discIcon}>
+              <Lock size={18} color="#fff" />
+            </View>
+            <View>
+              <Text style={styles.discTitle}>Create Discipline</Text>
+              <Text style={styles.discSub}>Lock {sym} immutably on-chain</Text>
+            </View>
+          </View>
+
+          <Text style={styles.discLabel}>Amount to lock</Text>
+          <View style={styles.amountRow}>
+            <TextInput
+              style={styles.amountInput}
+              keyboardType="decimal-pad"
+              placeholder="0.00"
+              placeholderTextColor={COLORS.textOnNavyMuted}
+              value={amount}
+              onChangeText={setAmount}
+            />
+            <Text style={styles.amountSym}>{sym}</Text>
+          </View>
+          <Text style={styles.discHint}>Spendable: {fmtNum(balance, 4)} {sym}</Text>
+
+          <Text style={styles.discLabel}>Lock Duration</Text>
+          <View style={styles.chips}>
+            {DURATIONS.map((d) => (
+              <Pressable key={d.label} onPress={() => setDays(d.days)} style={[styles.chipBtn, days === d.days && styles.chipBtnOn]}>
+                <Text style={[styles.chipBtnText, days === d.days && styles.chipBtnTextOn]}>{d.label}</Text>
               </Pressable>
             ))}
           </View>
-        </View>
-
-        <View style={styles.pills}>
-          <TogglePill label="EMA" on={showEma} onPress={() => setShowEma((v) => !v)} color={COLORS.blue} />
-          <TogglePill label="BB" on={showBb} onPress={() => setShowBb((v) => !v)} color={COLORS.blue} />
-          <TogglePill label="MACD" on={showMacd} onPress={() => setShowMacd((v) => !v)} color={COLORS.amber} />
-          <TogglePill label="Vol" on={showVol} onPress={() => setShowVol((v) => !v)} color={COLORS.textMuted} />
-          <TogglePill label="RSI" on={showRsi} onPress={() => setShowRsi((v) => !v)} color={COLORS.mint} />
-        </View>
-        <View style={styles.indValues}>
-          <Text style={styles.indValue}>EMA7 {candlesLoading && candles.length === 0 ? 'Loading…' : indicators.ema7 === null ? '—' : fmtPrice(indicators.ema7)}</Text>
-          <Text style={styles.indValue}>EMA25 {candlesLoading && candles.length === 0 ? 'Loading…' : indicators.ema25 === null ? '—' : fmtPrice(indicators.ema25)}</Text>
-          {showMacd ? (
-            <Text style={styles.indValue}>
-              MACD {candlesLoading && candles.length === 0 ? 'Loading…' : macd.macd === null ? '—' : fmtPrice(macd.macd)} · Sig {candlesLoading && candles.length === 0 ? 'Loading…' : macd.signal === null ? '—' : fmtPrice(macd.signal)}
-            </Text>
-          ) : null}
-        </View>
-
-        {chartScaleMismatch ? (
-          <View style={styles.mismatch}>
-            <Text style={styles.mismatchTitle}>Chart price does not match the live price — showing last known</Text>
-            <Text style={styles.mismatchBody}>
-              Live price {priceText(price)} · last candle {lastCandleClose === null ? '—' : fmtPrice(lastCandleClose)}. The pair feed is
-              pricing this token on a different scale, so the chart is hidden rather than shown wrong.
-            </Text>
-          </View>
-        ) : (
-          <PriceChart
-            candles={candles}
-            chartType={chartType}
-            showEma7={showEma}
-            showEma25={showEma}
-            showBollinger={showBb}
-            showVolume={showVol}
-            showMacd={showMacd}
-            seriesKey={`${chainId}:${pairAddress ?? 'none'}:${tf}`}
-            height={showMacd ? 250 : 210}
-            loading={candlesLoading}
-            updating={candlesUpdating}
-          />
-        )}
-
-        {showRsi ? (
-          <View style={styles.rsiRow}>
-            <Text style={styles.rsiLabel}>RSI(14)</Text>
-            <Text style={styles.rsiValue}>
-              {candlesLoading && candles.length === 0
-                ? 'Loading…'
-                : rsi === null
-                  ? '—'
-                  : `${rsi.toFixed(0)} — ${rsi > 70 ? 'Overbought' : rsi < 30 ? 'Oversold' : 'Neutral'}`}
-            </Text>
-          </View>
-        ) : null}
-        <View style={styles.chartFoot}>
-          <Text style={styles.footPrice}>{priceText(price)}</Text>
-          <Chip label={pctText(change24h)} tone={change24h === null ? 'muted' : up ? 'mint' : 'red'} />
-        </View>
-        <Text style={[styles.liveNote, liveState !== 'live' && styles.liveNoteWarn]}>{liveLabel}</Text>
-        {candlesStale && !candlesLoading && !chartScaleMismatch ? (
-          <Text style={styles.liveNote}>No candles from the pair feed yet — the chart will appear once candles arrive.</Text>
-        ) : null}
-      </Card>
-
-      <SectionTitle title="Safety Score" />
-      <Card>
-        {!safetyReady ? (
-          <View style={styles.safetySkeleton}>
-            <View style={[styles.skelCircle]} />
-            <View style={styles.safetySkelLines}>
-              <View style={[styles.skelBar, { width: '60%' }]} />
-              <View style={[styles.skelBar, { width: '85%' }]} />
-              <Text style={styles.safetySkelText}>Loading safety score…</Text>
-            </View>
-          </View>
-        ) : (
-          <SafetyScoreCard safety={shownSafety} holderCount={security?.holderCount ?? null} />
-        )}
-      </Card>
-
-      <Card dark style={styles.disciplineCard}>
-        <View style={styles.discHead}>
-          <View style={styles.discIcon}>
-            <Lock size={18} color="#fff" />
-          </View>
-          <View>
-            <Text style={styles.discTitle}>Create Discipline</Text>
-            <Text style={styles.discSub}>Lock {sym} immutably on-chain</Text>
-          </View>
-        </View>
-
-        <Text style={styles.discLabel}>Amount to lock</Text>
-        <View style={styles.amountRow}>
-          <TextInput
-            style={styles.amountInput}
-            keyboardType="decimal-pad"
-            placeholder="0.00"
-            placeholderTextColor={COLORS.textOnNavyMuted}
-            value={amount}
-            onChangeText={setAmount}
-          />
-          <Text style={styles.amountSym}>{sym}</Text>
-        </View>
-        <Text style={styles.discHint}>Spendable: {fmtNum(balance, 4)} {sym}</Text>
-
-        <Text style={styles.discLabel}>Lock Duration</Text>
-        <View style={styles.chips}>
-          {DURATIONS.map((d) => (
-            <Pressable key={d.label} onPress={() => setDays(d.days)} style={[styles.chipBtn, days === d.days && styles.chipBtnOn]}>
-              <Text style={[styles.chipBtnText, days === d.days && styles.chipBtnTextOn]}>{d.label}</Text>
-            </Pressable>
-          ))}
-        </View>
-        {days === 0 && (
-          <TextInput
-            style={styles.darkInput}
-            keyboardType="number-pad"
-            placeholder="Days (e.g. 60)"
-            placeholderTextColor={COLORS.textOnNavyMuted}
-            value={customDays}
-            onChangeText={setCustomDays}
-          />
-        )}
-        <Text style={styles.unlockLine}>
-          Unlocks {lockDays > 0 ? fmtDate(unlockDate.getTime()) : '—'} ({lockDays > 0 ? `${lockDays} days` : 'pick a duration'})
-        </Text>
-
-        <Text style={styles.discLabel}>Unlock on</Text>
-        <View style={styles.chips}>
-          <Pressable onPress={() => setUnlockMode('date')} style={[styles.chipBtn, unlockMode === 'date' && styles.chipBtnOn]}>
-            <Text style={[styles.chipBtnText, unlockMode === 'date' && styles.chipBtnTextOn]}>Date</Text>
-          </Pressable>
-          <Pressable onPress={() => setUnlockMode('price')} style={[styles.chipBtn, unlockMode === 'price' && styles.chipBtnOn]}>
-            <Text style={[styles.chipBtnText, unlockMode === 'price' && styles.chipBtnTextOn]}>Price target</Text>
-          </Pressable>
-        </View>
-        {unlockMode === 'price' && (
-          <>
-            <View style={styles.chips}>
-              {TARGETS.map((m) => (
-                <Pressable key={m} onPress={() => { setTarget(m); setCustomPrice(''); }} style={[styles.chipBtn, target === m && styles.chipBtnOn]}>
-                  <Text style={[styles.chipBtnText, target === m && styles.chipBtnTextOn]}>{m}x</Text>
-                </Pressable>
-              ))}
-            </View>
+          {days === 0 && (
             <TextInput
               style={styles.darkInput}
-              keyboardType="decimal-pad"
-              placeholder={`Custom target price (default ${target && price !== null ? fmtPrice(price * target) : '—'})`}
+              keyboardType="number-pad"
+              placeholder="Days (e.g. 60)"
               placeholderTextColor={COLORS.textOnNavyMuted}
-              value={customPrice}
-              onChangeText={setCustomPrice}
+              value={customDays}
+              onChangeText={setCustomDays}
             />
-            <Text style={styles.discHint}>
-              Entry {priceText(price)} · Target {targetPrice ? fmtPrice(targetPrice) : '—'} · {exitLabel} on hit
-            </Text>
-            <View style={styles.toggleRow}>
-              <Text style={styles.toggleLabel}>Profit ladder — sell 25% at 2x, 3x, 5x, 10x</Text>
-              <Switch value={ladderOn} onValueChange={setLadderOn} trackColor={{ true: COLORS.mint }} />
-            </View>
-            <Text style={styles.discLabel}>Trailing stop (after first target hit)</Text>
-            <View style={styles.chips}>
-              {[
-                { label: 'Off', v: null },
-                { label: '10%', v: 1000 },
-                { label: '15%', v: 1500 },
-                { label: '20%', v: 2000 },
-              ].map((o) => (
-                <Pressable key={o.label} onPress={() => setTrailing(o.v)} style={[styles.chipBtn, trailing === o.v && styles.chipBtnOn]}>
-                  <Text style={[styles.chipBtnText, trailing === o.v && styles.chipBtnTextOn]}>{o.label}</Text>
+          )}
+          <Text style={styles.unlockLine}>
+            Unlocks {lockDays > 0 ? fmtDate(unlockDate.getTime()) : '—'} ({lockDays > 0 ? `${lockDays} days` : 'pick a duration'})
+          </Text>
+
+          <Text style={styles.discLabel}>Unlock on</Text>
+          <View style={styles.chips}>
+            <Pressable onPress={() => setUnlockMode('date')} style={[styles.chipBtn, unlockMode === 'date' && styles.chipBtnOn]}>
+              <Text style={[styles.chipBtnText, unlockMode === 'date' && styles.chipBtnTextOn]}>Date</Text>
+            </Pressable>
+            <Pressable onPress={() => setUnlockMode('price')} style={[styles.chipBtn, unlockMode === 'price' && styles.chipBtnOn]}>
+              <Text style={[styles.chipBtnText, unlockMode === 'price' && styles.chipBtnTextOn]}>Price target</Text>
+            </Pressable>
+          </View>
+          {unlockMode === 'price' && (
+            <>
+              <View style={styles.chips}>
+                {TARGETS.map((m) => (
+                  <Pressable key={m} onPress={() => { setTarget(m); setCustomPrice(''); }} style={[styles.chipBtn, target === m && styles.chipBtnOn]}>
+                    <Text style={[styles.chipBtnText, target === m && styles.chipBtnTextOn]}>{m}x</Text>
+                  </Pressable>
+                ))}
+              </View>
+              <TextInput
+                style={styles.darkInput}
+                keyboardType="decimal-pad"
+                placeholder={`Custom target price (default ${target && price !== null ? fmtPrice(price * target) : '—'})`}
+                placeholderTextColor={COLORS.textOnNavyMuted}
+                value={customPrice}
+                onChangeText={setCustomPrice}
+              />
+              <Text style={styles.discHint}>
+                Entry {priceText(price)} · Target {targetPrice ? fmtPrice(targetPrice) : '—'} · {exitLabel} on hit
+              </Text>
+              <View style={styles.toggleRow}>
+                <Text style={styles.toggleLabel}>Profit ladder — sell 25% at 2x, 3x, 5x, 10x</Text>
+                <Switch value={ladderOn} onValueChange={setLadderOn} trackColor={{ true: COLORS.mint }} />
+              </View>
+              <Text style={styles.discLabel}>Trailing stop (after first target hit)</Text>
+              <View style={styles.chips}>
+                {[
+                  { label: 'Off', v: null },
+                  { label: '10%', v: 1000 },
+                  { label: '15%', v: 1500 },
+                  { label: '20%', v: 2000 },
+                ].map((o) => (
+                  <Pressable key={o.label} onPress={() => setTrailing(o.v)} style={[styles.chipBtn, trailing === o.v && styles.chipBtnOn]}>
+                    <Text style={[styles.chipBtnText, trailing === o.v && styles.chipBtnTextOn]}>{o.label}</Text>
+                  </Pressable>
+                ))}
+              </View>
+            </>
+          )}
+
+          <View style={styles.toggleRow}>
+            <Text style={styles.toggleLabel}>No early break — immutable until maturity</Text>
+            <Switch value={noEarlyBreak} onValueChange={setNoEarlyBreak} trackColor={{ true: COLORS.mint }} />
+          </View>
+          <Btn label="Review & Lock" variant="secondary" onPress={reviewLock} style={styles.reviewBtn} />
+          {lockError ? <Text style={styles.lockError}>{lockError}</Text> : null}
+        </Card>
+
+        <SectionTitle title="Price Performance" />
+            <Card>
+              <DataRow label="1h" value={pctText(change1h)} tone={change1h === null ? undefined : change1h >= 0 ? 'mint' : 'red'} />
+              <DataRow label="24h" value={pctText(change24h)} tone={change24h === null ? undefined : change24h >= 0 ? 'mint' : 'red'} />
+              <DataRow label="7d" value={pctText(change7d)} tone={change7d === null ? undefined : change7d >= 0 ? 'mint' : 'red'} />
+            </Card>
+
+            <SectionTitle title="Market Data" />
+            <Card>
+              <DataRow label="Price" value={priceText(price)} />
+              <DataRow label="Market Cap" value={market?.marketCap === null || market?.marketCap === undefined ? '—' : fmtUsd(market.marketCap, 0)} />
+              <DataRow label="Total Supply" value="—" />
+              <DataRow label="Liquidity" value={market?.liquidityUsd === null || market?.liquidityUsd === undefined ? '—' : fmtUsd(market.liquidityUsd, 0)} />
+              <DataRow label="Volume 24h" value={market?.volume24h === null || market?.volume24h === undefined ? '—' : fmtUsd(market.volume24h, 0)} />
+              <DataRow label="Volume 1h" value="—" />
+              <DataRow label="RSI (14)" value={candlesLoading && candles.length === 0 ? 'Loading…' : rsi === null ? '—' : `${rsi.toFixed(0)}`} />
+            </Card>
+
+            <SectionTitle title="Trading Activity (24h)" />
+            <Card>
+              <DataRow label="Buys" value={market?.buys24h === null || market?.buys24h === undefined ? '—' : fmtNum(market.buys24h, 0)} tone="mint" />
+              <DataRow label="Sells" value={market?.sells24h === null || market?.sells24h === undefined ? '—' : fmtNum(market.sells24h, 0)} tone="red" />
+              <DataRow label="Total Txns" value={totalTxns > 0 ? fmtNum(totalTxns, 0) : '—'} />
+              <DataRow label="Buy Pressure" value={buyPressure === null ? '—' : `${Math.round(buyPressure * 100)}%`} tone={buyPressure === null ? undefined : buyPressure >= 0.5 ? 'mint' : 'red'} />
+            </Card>
+
+            <SectionTitle title="Your Holdings" />
+            <Card>
+              <DataRow label="Available" value={`${fmtNum(balance, 4)} ${sym}`} />
+              <DataRow label="Value" value={fmtUsd(balance * (price ?? 0))} />
+              <DataRow label="Vault Locked" value={locked > 0 ? fmtNum(locked, 4) : '—'} />
+              <DataRow
+                label="Maturity"
+                value={activeLock ? fmtDate(activeLock.unlockTime) : 'No Active Lock'}
+              />
+              {address ? (
+                <Pressable onPress={() => Clipboard.setStringAsync(address)}>
+                  <Text style={styles.addr}>Contract: {address.slice(0, 10)}…{address.slice(-6)} — tap to copy</Text>
                 </Pressable>
-              ))}
-            </View>
-          </>
-        )}
+              ) : (
+                <Text style={styles.addr}>Contract: — (native asset)</Text>
+              )}
+            </Card>
 
-        <View style={styles.toggleRow}>
-          <Text style={styles.toggleLabel}>No early break — immutable until maturity</Text>
-          <Switch value={noEarlyBreak} onValueChange={setNoEarlyBreak} trackColor={{ true: COLORS.mint }} />
+            <SectionTitle title="Contract" />
+            <Card>
+              <DataRow label="Address" value={address ? `${address.slice(0, 10)}…${address.slice(-6)}` : '—'} />
+              <DataRow label="Pair" value={market?.pairAddress ? `${market.pairAddress.slice(0, 10)}…${market.pairAddress.slice(-6)}` : '—'} />
+              <DataRow label="DEX" value={tokenChain.dex.split(' ')[0]} />
+              <DataRow label="Chain" value={chainId} />
+            </Card>
+
+        <View style={styles.actions}>
+          <Btn
+            label={activeLock ? 'View Lock' : 'Lock'}
+            variant="mint"
+            onPress={() => (activeLock ? router.push(`/vault/${activeLock.id}`) : router.push('/vault/create'))}
+            style={styles.actionBtn}
+          />
+          <Btn label="Send" onPress={() => router.push('/send')} style={styles.actionBtn} />
+          <Btn label="Swap" variant="ghost" onPress={() => router.push({ pathname: '/(tabs)/swap', params: { from: sym } })} style={styles.actionBtn} />
         </View>
-        <Btn label="Review & Lock" variant="secondary" onPress={reviewLock} style={styles.reviewBtn} />
-        {lockError ? <Text style={styles.lockError}>{lockError}</Text> : null}
-      </Card>
-
-      <SectionTitle title="Price Performance" />
-          <Card>
-            <DataRow label="1h" value={pctText(change1h)} tone={change1h === null ? undefined : change1h >= 0 ? 'mint' : 'red'} />
-            <DataRow label="24h" value={pctText(change24h)} tone={change24h === null ? undefined : change24h >= 0 ? 'mint' : 'red'} />
-            <DataRow label="7d" value={pctText(change7d)} tone={change7d === null ? undefined : change7d >= 0 ? 'mint' : 'red'} />
-          </Card>
-
-          <SectionTitle title="Market Data" />
-          <Card>
-            <DataRow label="Price" value={priceText(price)} />
-            <DataRow label="Market Cap" value={market?.marketCap === null || market?.marketCap === undefined ? '—' : fmtUsd(market.marketCap, 0)} />
-            <DataRow label="Total Supply" value="—" />
-            <DataRow label="Liquidity" value={market?.liquidityUsd === null || market?.liquidityUsd === undefined ? '—' : fmtUsd(market.liquidityUsd, 0)} />
-            <DataRow label="Volume 24h" value={market?.volume24h === null || market?.volume24h === undefined ? '—' : fmtUsd(market.volume24h, 0)} />
-            <DataRow label="Volume 1h" value="—" />
-            <DataRow label="RSI (14)" value={candlesLoading && candles.length === 0 ? 'Loading…' : rsi === null ? '—' : `${rsi.toFixed(0)}`} />
-          </Card>
-
-          <SectionTitle title="Trading Activity (24h)" />
-          <Card>
-            <DataRow label="Buys" value={market?.buys24h === null || market?.buys24h === undefined ? '—' : fmtNum(market.buys24h, 0)} tone="mint" />
-            <DataRow label="Sells" value={market?.sells24h === null || market?.sells24h === undefined ? '—' : fmtNum(market.sells24h, 0)} tone="red" />
-            <DataRow label="Total Txns" value={totalTxns > 0 ? fmtNum(totalTxns, 0) : '—'} />
-            <DataRow label="Buy Pressure" value={buyPressure === null ? '—' : `${Math.round(buyPressure * 100)}%`} tone={buyPressure === null ? undefined : buyPressure >= 0.5 ? 'mint' : 'red'} />
-          </Card>
-
-          <SectionTitle title="Your Holdings" />
-          <Card>
-            <DataRow label="Available" value={`${fmtNum(balance, 4)} ${sym}`} />
-            <DataRow label="Value" value={fmtUsd(balance * (price ?? 0))} />
-            <DataRow label="Vault Locked" value={locked > 0 ? fmtNum(locked, 4) : '—'} />
-            <DataRow
-              label="Maturity"
-              value={activeLock ? fmtDate(activeLock.unlockTime) : 'No Active Lock'}
-            />
-            {address ? (
-              <Pressable onPress={() => Clipboard.setStringAsync(address)}>
-                <Text style={styles.addr}>Contract: {address.slice(0, 10)}…{address.slice(-6)} — tap to copy</Text>
-              </Pressable>
-            ) : (
-              <Text style={styles.addr}>Contract: — (native asset)</Text>
-            )}
-          </Card>
-
-          <SectionTitle title="Contract" />
-          <Card>
-            <DataRow label="Address" value={address ? `${address.slice(0, 10)}…${address.slice(-6)}` : '—'} />
-            <DataRow label="Pair" value={market?.pairAddress ? `${market.pairAddress.slice(0, 10)}…${market.pairAddress.slice(-6)}` : '—'} />
-            <DataRow label="DEX" value={tokenChain.dex.split(' ')[0]} />
-            <DataRow label="Chain" value={chainId} />
-          </Card>
-
-      <View style={styles.actions}>
-        <Btn
-          label={activeLock ? 'View Lock' : 'Lock'}
-          variant="mint"
-          onPress={() => (activeLock ? router.push(`/vault/${activeLock.id}`) : router.push('/vault/create'))}
-          style={styles.actionBtn}
-        />
-        <Btn label="Send" onPress={() => router.push('/send')} style={styles.actionBtn} />
-        <Btn label="Swap" variant="ghost" onPress={() => router.push({ pathname: '/(tabs)/swap', params: { from: sym } })} style={styles.actionBtn} />
-      </View>
-      <View style={styles.iconRow}>
-        <Pressable style={styles.iconBtn} onPress={() => void toggleWatch()}>
-          <Star size={16} color={watched ? COLORS.navy : COLORS.textMuted} />
-          <Text style={styles.iconLabel}>{watched ? 'Watching' : 'Watchlist'}</Text>
-        </Pressable>
-      </View>
-      <RiskNote />
-    </ScrollView>
+        <View style={styles.iconRow}>
+          <Pressable style={styles.iconBtn} onPress={() => void toggleWatch()}>
+            <Star size={16} color={watched ? COLORS.navy : COLORS.textMuted} />
+            <Text style={styles.iconLabel}>{watched ? 'Watching' : 'Watchlist'}</Text>
+          </Pressable>
+        </View>
+        <RiskNote />
+      </ScrollView>
+    </KeyboardAvoidingView>
   );
 }
 

@@ -19,8 +19,9 @@
  *     (the API returns the unsigned tx; the user signs it).
  *   - Arc: NO router is registered. Uniswap V2/V3 router addresses are
  *     published for Arc MAINNET (5042) only; they were NOT verified on
- *     Arc testnet (5042002, testnet.arcscan.app returned rate-limited on
- *     2026-11-26) and mainnet addresses must never be used on testnet.
+ *     Arc testnet (5042002; the old testnet.arcscan.app explorer host
+ *     returned rate-limited on 2026-11-26 — explorer is now
+ *     explorer.testnet.arc.io) and mainnet addresses must never be used on testnet.
  *     Arc swaps therefore refuse with an honest "router not confirmed
  *     yet" error — never a fake swap — until a testnet router is
  *     verified and registered in ROUTER_ADDRESSES below.
@@ -254,7 +255,7 @@ export async function executeSwap(
   if (chain.id === 'arc') {
     throw new SwapExecutionUnavailableError(
       'Arc swap execution is unavailable — no DEX router address has been verified on Arc testnet yet ' +
-        '(testnet.arcscan.app). Uniswap router addresses published for Arc mainnet (5042) must not be used on testnet (5042002). ' +
+        '(explorer.testnet.arc.io). Uniswap router addresses published for Arc mainnet (5042) must not be used on testnet (5042002). ' +
         'No swap was executed. BNB swaps are live via PancakeSwap.',
     );
   }

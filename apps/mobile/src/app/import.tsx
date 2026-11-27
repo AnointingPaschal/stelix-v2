@@ -7,7 +7,7 @@
  *  on react-native-web Alert.alert is an empty no-op, so a failure used
  *  to look like a silent dead button (2026-11-26 bug). */
 import { useEffect, useState } from 'react';
-import { ScrollView, StyleSheet, Text, TextInput, View } from 'react-native';
+import { KeyboardAvoidingView, Platform, ScrollView, StyleSheet, Text, TextInput, View } from 'react-native';
 import { router } from 'expo-router';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { COLORS } from '../theme';
@@ -72,63 +72,66 @@ export default function ImportWallet() {
   }
 
   return (
-    <ScrollView style={styles.root} contentContainerStyle={[styles.inner, centeredContent, { paddingTop: 12 + insets.top, paddingBottom: 24 + insets.bottom }]}>
-      <Text style={styles.title}>Import Wallet</Text>
-      <Text style={styles.sub}>Name your wallet, select your import method, and provide the credentials.</Text>
-      <Text style={styles.warn}>
-        Only import a phrase you wrote down yourself. Never import a phrase sent to you by “support”, a website, or
-        a stranger — it is a scam and your funds will be stolen.
-      </Text>
-      {hasExistingWallet ? (
+    <KeyboardAvoidingView style={styles.root} behavior={Platform.OS === 'ios' ? 'padding' : 'height'} keyboardVerticalOffset={insets.top}>
+      <ScrollView style={{ flex: 1 }}
+        keyboardShouldPersistTaps="handled" contentContainerStyle={[styles.inner, centeredContent, { paddingTop: 12 + insets.top, paddingBottom: 32 + insets.bottom }]}>
+        <Text style={styles.title}>Import Wallet</Text>
+        <Text style={styles.sub}>Name your wallet, select your import method, and provide the credentials.</Text>
         <Text style={styles.warn}>
-          A wallet already exists on this device. Importing replaces it — make sure you have saved the current
-          wallet&apos;s seed phrase first, or you will lose access to it.
+          Only import a phrase you wrote down yourself. Never import a phrase sent to you by “support”, a website, or
+          a stranger — it is a scam and your funds will be stolen.
         </Text>
-      ) : null}
+        {hasExistingWallet ? (
+          <Text style={styles.warn}>
+            A wallet already exists on this device. Importing replaces it — make sure you have saved the current
+            wallet&apos;s seed phrase first, or you will lose access to it.
+          </Text>
+        ) : null}
 
-      <View style={styles.toggle}>
-        <Btn label="Seed Phrase" variant={method === 'seed' ? 'primary' : 'ghost'} onPress={() => setMethod('seed')} style={styles.toggleBtn} />
-        <Btn label="Private Key" variant={method === 'key' ? 'primary' : 'ghost'} onPress={() => setMethod('key')} style={styles.toggleBtn} />
-      </View>
+        <View style={styles.toggle}>
+          <Btn label="Seed Phrase" variant={method === 'seed' ? 'primary' : 'ghost'} onPress={() => setMethod('seed')} style={styles.toggleBtn} />
+          <Btn label="Private Key" variant={method === 'key' ? 'primary' : 'ghost'} onPress={() => setMethod('key')} style={styles.toggleBtn} />
+        </View>
 
-      <Text style={styles.label}>Wallet Name</Text>
-      <TextInput
-        style={styles.input}
-        placeholder="Wallet Name (e.g. Vault)"
-        value={name}
-        onChangeText={setName}
-      />
-      <Text style={styles.label}>{method === 'seed' ? 'Recovery Phrase' : 'Private Key'}</Text>
-      <TextInput
-        style={[styles.input, styles.multiline]}
-        multiline
-        autoCapitalize="none"
-        autoCorrect={false}
-        placeholder={method === 'seed' ? 'Enter your 12 or 24-word Recovery Phrase…' : 'Enter your private key (0x…)…'}
-        value={secret}
-        onChangeText={setSecret}
-      />
-      <Text style={styles.label}>Set a new session password</Text>
-      <TextInput
-        style={styles.input}
-        secureTextEntry
-        placeholder="At least 8 characters"
-        value={password}
-        onChangeText={setPassword}
-      />
-      <Text style={styles.label}>Confirm password</Text>
-      <TextInput
-        style={styles.input}
-        secureTextEntry
-        placeholder="Re-type your password"
-        value={confirm}
-        onChangeText={setConfirm}
-      />
-      <View style={styles.spacer} />
-      {error ? <Text style={styles.error}>{error}</Text> : null}
-      <Btn label="Import & Secure" onPress={handleImport} loading={busy} />
-      <RiskNote />
-    </ScrollView>
+        <Text style={styles.label}>Wallet Name</Text>
+        <TextInput
+          style={styles.input}
+          placeholder="Wallet Name (e.g. Vault)"
+          value={name}
+          onChangeText={setName}
+        />
+        <Text style={styles.label}>{method === 'seed' ? 'Recovery Phrase' : 'Private Key'}</Text>
+        <TextInput
+          style={[styles.input, styles.multiline]}
+          multiline
+          autoCapitalize="none"
+          autoCorrect={false}
+          placeholder={method === 'seed' ? 'Enter your 12 or 24-word Recovery Phrase…' : 'Enter your private key (0x…)…'}
+          value={secret}
+          onChangeText={setSecret}
+        />
+        <Text style={styles.label}>Set a new session password</Text>
+        <TextInput
+          style={styles.input}
+          secureTextEntry
+          placeholder="At least 8 characters"
+          value={password}
+          onChangeText={setPassword}
+        />
+        <Text style={styles.label}>Confirm password</Text>
+        <TextInput
+          style={styles.input}
+          secureTextEntry
+          placeholder="Re-type your password"
+          value={confirm}
+          onChangeText={setConfirm}
+        />
+        <View style={styles.spacer} />
+        {error ? <Text style={styles.error}>{error}</Text> : null}
+        <Btn label="Import & Secure" onPress={handleImport} loading={busy} />
+        <RiskNote />
+      </ScrollView>
+    </KeyboardAvoidingView>
   );
 }
 

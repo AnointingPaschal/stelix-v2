@@ -434,8 +434,21 @@ export default function Home() {
           <Text style={styles.walletName}>Switch Wallet</Text>
           <ChevronRight size={16} color={COLORS.textMuted} />
         </Pressable>
+        <Pressable
+          style={styles.walletRow}
+          onPress={() => {
+            setWalletsOpen(false);
+            router.push('/create');
+          }}
+        >
+          <View style={styles.walletAdd}>
+            <Text style={styles.walletAddText}>+</Text>
+          </View>
+          <Text style={styles.walletName}>Create New Wallet</Text>
+          <ChevronRight size={16} color={COLORS.textMuted} />
+        </Pressable>
         <Text style={styles.sheetHint}>Tap the wallet to copy its address.</Text>
-        <Text style={styles.sheetHint}>Switching wallets imports a new one and replaces the current wallet on this device — back up its seed phrase first.</Text>
+        <Text style={styles.sheetHint}>Creating a new wallet or switching wallets replaces the current wallet on this device — back up its seed phrase first or you will lose access to it.</Text>
       </BottomSheet>
 
       <BottomSheet
@@ -453,6 +466,7 @@ export default function Home() {
           autoCapitalize="none"
           autoCorrect={false}
           spellCheck={false}
+          returnKeyType="done"
           value={importAddr}
           onChangeText={onImportAddrChange}
           onBlur={() => importController.current.blur(importAddr)}
@@ -497,6 +511,10 @@ export default function Home() {
           disabled={!importPreview || importing || previewLoading}
           style={styles.importSubmit}
         />
+        {/* Bottom spacer: with the keyboard open, the sheet's ScrollView
+            can scroll the input, preview card and Import button above the
+            keyboard instead of the button sitting on the last pixel. */}
+        <View style={styles.importBottomPad} />
       </BottomSheet>
     </ScrollView>
   );
@@ -561,7 +579,8 @@ const styles = StyleSheet.create({
     marginTop: 12,
     padding: 12,
   },
-  importSubmit: { marginTop: 12 },
+  importBottomPad: { height: 48 },
+  importSubmit: { marginBottom: 16, marginTop: 12 },
   logoWarn: {
     backgroundColor: COLORS.amberSoft,
     borderRadius: 12,
