@@ -42,13 +42,23 @@ export function mainnetConfirmPhrase(chainName: string): string {
 }
 
 /**
- * The testnet counterpart of a chain slug: "arc-mainnet" -> "arc" (the
- * verified testnet deployment and the testnet flow that gate a mainnet
- * deploy live under the testnet row), anything else -> itself. Shared by
- * the Contract Studio page and the Worker mainnet gate so both agree.
+ * The testnet counterpart of a chain slug: "arc-mainnet" -> "arc", and
+ * each mainnet family slug -> its testnet row ("bnb" -> "bnb-testnet",
+ * "base" -> "base-sepolia", "ethereum" -> "ethereum-sepolia",
+ * "polygon" -> "polygon-amoy"). The verified testnet deployment and
+ * the testnet flow that gate a mainnet deploy live under the testnet
+ * row. Shared by the Contract Studio page and the Worker mainnet gate
+ * so both agree.
  */
 export function testnetChainIdFor(chainId: string): string {
-  return chainId.endsWith('-mainnet') ? chainId.slice(0, -'-mainnet'.length) : chainId
+  switch (chainId) {
+    case 'arc-mainnet': return 'arc'
+    case 'bnb': return 'bnb-testnet'
+    case 'base': return 'base-sepolia'
+    case 'ethereum': return 'ethereum-sepolia'
+    case 'polygon': return 'polygon-amoy'
+    default: return chainId
+  }
 }
 
 export function validateDeployParams(input: unknown): { params: DeployParams | null; errors: string[] } {

@@ -3,6 +3,7 @@ import { BadgeCheck, Code2, FileCode2, Hammer, Rocket, ShieldAlert } from 'lucid
 import source from '../contracts/StelixVault.sol?raw'
 import { SOLC_PINNED } from '../lib/types'
 import { ARC_TESTNET, arcNetworkFor } from '../lib/arcNetworks'
+import { evmTestnetFor, testnetIdForFamily, type DeployNetwork } from '../lib/evmNetworks'
 import { mainnetConfirmPhrase, testnetChainIdFor, validateDeployParams } from '../lib/deployParams'
 import { api, type AuditGate, type CompileResult, type DeployPresetRow, type MultisigRow } from '../lib/api'
 import DeployAdapters from '../components/DeployAdapters'
@@ -33,7 +34,9 @@ export default function ContractStudio() {
   const [compileRes, setCompileRes] = useState<CompileResult | null>(null)
   const [chains, setChains] = useState<Chain[]>([])
   const [chainFamily, setChainFamily] = useState('arc')
-  const [arcEnv, setArcEnv] = useState<'testnet' | 'mainnet'>('testnet')
+  // Testnet / mainnet for the selected family. Every EVM family now
+  // has a testnet row (migration 0013); Solana is mainnet-only here.
+  const [netEnv, setNetEnv] = useState<'testnet' | 'mainnet'>('testnet')
   const [params, setParams] = useState(EMPTY_PARAMS)
   const [address, setAddress] = useState('')
   const [txHash, setTxHash] = useState('')
@@ -54,18 +57,34 @@ export default function ContractStudio() {
 
   const isArc = chainFamily === 'arc'
   // The D1 chain slug this network deploys to: "arc" for Arc testnet,
-  // "arc-mainnet" for Arc mainnet, the family slug for every other chain.
-  const effectiveChainId = isArc ? arcNetworkFor(arcEnv).id : chainFamily
-  // Non-Arc chains are mainnet-only: the registry holds no verified
-  // testnet for them, so no testnet is invented for them.
-  const env: 'testnet' | 'mainnet' = isArc && arcEnv === 'testnet' ? 'testnet' : 'mainnet'
+  // "arc-mainnet" for Arc mainnet, "<family>-testnet" for other testnets
+  // (bnb-testnet, base-sepolia, ethereum-sepolia, polygon-amoy), the
+  // family slug for mainnets. Solana has no testnet row.
+  const testnetId = testnetIdForFamily(chainFamily)
+  const hasTestnet = testnetId !== null
+  const env: 'testnet' | 'mainnet' = chainFamily === 'solana' ? 'mainnet' : netEnv
+  const effectiveChainId = env === 'testnet' && testnetId ? testnetId : (isArc && env === 'mainnet' ? 'arc-mainnet' : chainFamily)
   const chain = chains.find((c) => c.id === effectiveChainId)
-  const arcNet = arcNetworkFor(arcEnv)
-  const networkName = isArc ? arcNet.name : (chain?.name ?? FAMILY_NAMES[chainFamily] ?? chainFamily)
+  const arcNet = arcNetworkFor(env)
+  const evmTestnet = env === 'testnet' && !isArc ? evmTestnetFor(effectiveChainId) : undefined
+  const networkName = isArc ? arcNet.name : (chain?.name ?? evmTestnet?.name ?? FAMILY_NAMES[chainFamily] ?? chainFamily)
   // Arc mainnet display falls back to the verified constants when the
   // "arc-mainnet" row is absent from D1 (fallback only; migration 0006
   // has been applied to live D1, so the row is normally present).
-  const arcMainnetRowMissing = isArc && arcEnv === 'mainnet' && !chain
+  const arcMainnetRowMissing = isArc && env === 'mainnet' && !chain
+  // The network object the browser-deploy cards need. Arc is V3 (same
+  // as before); other testnets come from the verified EVM registry;
+  // mainnet is null — the admin never deploys mainnet from a browser.
+  const deployNet: DeployNetwork | null = env !== 'testnet' ? null
+    : isArc ? {
+      id: arcNet.id, name: arcNet.name, env: 'testnet', chainId: arcNet.chainId,
+      rpcUrl: arcNet.rpcUrl, explorerUrl: arcNet.explorerUrl,
+      nativeSymbol: 'USDC', nativeDecimals: 6,
+      stablecoin: 'USDC', stablecoinAddress: arcNet.stablecoinAddress, stablecoinDecimals: 6,
+      routerKind: 'v3', dexRouter: arcNet.dexRouter, dexRouterKind: arcNet.dexRouterKind,
+      feedKind: 'v3-twap', faucetUrl: 'https://faucet.circle.com',
+    }
+    : evmTestnet ?? null
   const net = isArc
     ? {
       chainId: chain?.chainId ?? arcNet.chainId,
@@ -77,20 +96,27 @@ export default function ContractStudio() {
       vaultAddress: chain?.vaultAddress ?? null,
     }
     : {
-      chainId: chain?.chainId ?? 0,
-      rpcUrl: chain?.rpcUrls[0] ?? '',
-      explorerUrl: chain?.explorerUrl ?? '',
-      stablecoinAddress: chain?.stablecoinAddress ?? '',
-      dexRouter: chain?.dexRouter ?? '',
-      routerKind: 'DEX router',
+      chainId: chain?.chainId ?? evmTestnet?.chainId ?? 0,
+      rpcUrl: chain?.rpcUrls[0] ?? evmTestnet?.rpcUrl ?? '',
+      explorerUrl: chain?.explorerUrl ?? evmTestnet?.explorerUrl ?? '',
+      stablecoinAddress: chain?.stablecoinAddress ?? evmTestnet?.stablecoinAddress ?? '',
+      dexRouter: chain?.dexRouter ?? evmTestnet?.dexRouter ?? '',
+      routerKind: evmTestnet?.dexRouterKind ?? 'DEX router',
       vaultAddress: chain?.vaultAddress ?? null,
     }
 
   const families = useMemo(() => {
     const fromApi = new Map<string, string>()
     for (const c of chains) {
-      const fam = c.id === 'arc-mainnet' ? 'arc' : c.id
-      if (!fromApi.has(fam)) fromApi.set(fam, fam === 'arc' ? 'Arc' : c.name)
+      // Map every D1 row back to its family: arc-mainnet -> arc,
+      // bnb-testnet -> bnb, base-sepolia -> base, and so on.
+      const fam = c.id === 'arc-mainnet' ? 'arc'
+        : c.id === 'bnb-testnet' ? 'bnb'
+        : c.id === 'base-sepolia' ? 'base'
+        : c.id === 'ethereum-sepolia' ? 'ethereum'
+        : c.id === 'polygon-amoy' ? 'polygon'
+        : c.id
+      if (!fromApi.has(fam)) fromApi.set(fam, fam === 'arc' ? 'Arc' : (FAMILY_NAMES[fam] ?? c.name))
     }
     // Guarantee all six families show even if the API returns fewer rows.
     const ids = [...new Set([...FAMILY_ORDER, ...fromApi.keys()])]
@@ -144,19 +170,21 @@ export default function ContractStudio() {
   const verifiedTestnet = deploys.some((d) => d.chain_id === testnetChainIdFor(effectiveChainId) && d.env === 'testnet' && d.verification_status === 'verified')
   const mainnetReady = auditGatePass && (verifiedTestnet || testnetPassed) && smokeAttested
 
-  /** Switching chain or Arc network clears the 7 constructor fields and
+  /** Switching chain or testnet/mainnet clears the 7 constructor fields and
    *  every confirmation, then fills them from the saved preset for that
    *  network if one exists: testnet values are never silently carried to
    *  mainnet, and each network must be re-confirmed on its own. */
-  const selectNetwork = (family: string, nextArcEnv?: 'testnet' | 'mainnet') => {
-    const nextEnv = family === 'arc' ? (nextArcEnv ?? arcEnv) : 'testnet'
-    const changed = family !== chainFamily || (family === 'arc' && nextEnv !== arcEnv)
+  const selectNetwork = (family: string, nextEnv?: 'testnet' | 'mainnet') => {
+    const testnetRow = testnetIdForFamily(family)
+    const resolvedEnv: 'testnet' | 'mainnet' = family === 'solana' ? 'mainnet'
+      : (nextEnv ?? (testnetRow ? netEnv : 'mainnet'))
+    const changed = family !== chainFamily || resolvedEnv !== env
     setChainFamily(family)
-    if (family === 'arc' && nextArcEnv) setArcEnv(nextArcEnv)
+    setNetEnv(resolvedEnv)
     if (changed) {
-      const nextChainId = family === 'arc' ? arcNetworkFor(nextEnv).id : family
-      const nextEnv2: 'testnet' | 'mainnet' = family === 'arc' && nextEnv === 'testnet' ? 'testnet' : 'mainnet'
-      const p = presetFor(nextChainId, nextEnv2)
+      const nextChainId = resolvedEnv === 'testnet' && testnetRow ? testnetRow
+        : (family === 'arc' && resolvedEnv === 'mainnet' ? 'arc-mainnet' : family)
+      const p = presetFor(nextChainId, resolvedEnv)
       setParams(p ? paramsFromPreset(p) : EMPTY_PARAMS)
       setConfirmText('')
       setTestnetPassed(false)
@@ -165,9 +193,11 @@ export default function ContractStudio() {
       setAddress('')
       setTxHash('')
       setError('')
-      const label = family === 'arc' ? arcNetworkFor(nextEnv).name : (FAMILY_NAMES[family] ?? family)
+      const label = resolvedEnv === 'testnet' && testnetRow
+        ? (evmTestnetFor(nextChainId)?.name ?? (family === 'arc' ? 'Arc Testnet' : nextChainId))
+        : (family === 'arc' && resolvedEnv === 'mainnet' ? 'Arc Mainnet' : (FAMILY_NAMES[family] ?? family))
       setNotice(p
-        ? `Switched to ${label}. Constructor parameters filled from your saved preset for ${nextChainId} (${nextEnv2}).`
+        ? `Switched to ${label}. Constructor parameters filled from your saved preset for ${nextChainId} (${resolvedEnv}).`
         : `Switched to ${label}. Constructor parameters cleared — re-enter and confirm all 7 for this network; testnet values are never carried to mainnet.`)
     }
   }
@@ -328,12 +358,12 @@ export default function ContractStudio() {
             <select value={chainFamily} onChange={(e) => selectNetwork(e.target.value)}>
               {families.map((f) => <option key={f.id} value={f.id}>{f.name}</option>)}
             </select>
-            {isArc && (
+            {hasTestnet && (
               <div style={{ marginTop: 10 }}>
-                <label style={{ marginTop: 0 }}>Arc network</label>
+                <label style={{ marginTop: 0 }}>{isArc ? 'Arc network' : `${FAMILY_NAMES[chainFamily] ?? chainFamily} network`}</label>
                 <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
-                  <button className={arcEnv === 'testnet' ? 'btn mint' : 'btn ghost'} onClick={() => selectNetwork('arc', 'testnet')}>Testnet · 5042002</button>
-                  <button className={arcEnv === 'mainnet' ? 'btn mint' : 'btn ghost'} onClick={() => selectNetwork('arc', 'mainnet')}>Mainnet · 5042</button>
+                  <button className={env === 'testnet' ? 'btn mint' : 'btn ghost'} onClick={() => selectNetwork(chainFamily, 'testnet')}>Testnet · {deployNet?.chainId ?? evmTestnetFor(testnetId!)?.chainId ?? (isArc ? 5042002 : '')}</button>
+                  <button className={env === 'mainnet' ? 'btn mint' : 'btn ghost'} onClick={() => selectNetwork(chainFamily, 'mainnet')}>Mainnet</button>
                 </div>
               </div>
             )}
@@ -343,7 +373,7 @@ export default function ContractStudio() {
               <span>
                 <b>{networkName}</b> — Chain ID {net.chainId || '—'} · RPC {net.rpcUrl || '—'} · Explorer{' '}
                 {net.explorerUrl ? <a href={net.explorerUrl} target="_blank" rel="noreferrer">{net.explorerUrl}</a> : '—'}
-                <br />Stablecoin: USDC {net.stablecoinAddress || 'not confirmed yet'}
+                <br />Stablecoin: {deployNet?.stablecoin ?? chain?.stablecoin ?? 'USDC'} {net.stablecoinAddress || 'not confirmed yet'}
                 <br />{net.routerKind}: {net.dexRouter || 'not confirmed yet — never guess one'}
                 <br />Vault: {net.vaultAddress ? net.vaultAddress : 'Not deployed yet — deploy from Contract Studio'}
               </span>
@@ -354,20 +384,23 @@ export default function ContractStudio() {
                 <span><b>Arc Mainnet is not in the chain registry yet.</b> The values above are the verified Arc mainnet constants, but prepare / verify / register will fail until migration 0006_arc_mainnet.sql is applied to D1. Apply it, then reload this page.</span>
               </div>
             )}
-            {isArc && arcEnv === 'testnet' && (
+            {isArc && env === 'testnet' && (
               <p className="field-hint">Arc was testnet-first: no mainnet vault is deployed and no independent audit exists yet, so prove the full lock → target → auto-sell flow here first. On Arc, native-value swaps revert (the router&apos;s WETH9 is a stub) — swaps must use ERC-20 USDC 0x3600000000000000000000000000000000000000, never native value.</p>
             )}
-            {isArc && arcEnv === 'mainnet' && (
-              <p className="field-hint"><b>Mainnet is real money.</b> No StelixVault is deployed on Arc Mainnet yet and no independent audit exists yet — the automated audit is not a substitute. Mainnet deploy stays gated below, and switching back to testnet clears these fields again.</p>
+            {env === 'mainnet' && (
+              <p className="field-hint"><b>Mainnet is real money.</b> No StelixVault is deployed on {networkName} yet and no independent audit exists yet — the automated audit is not a substitute. Mainnet deploy stays gated below, and switching back to testnet clears these fields again.</p>
             )}
-            {!isArc && (
-              <p className="field-hint">Mainnet only — the registry holds no verified testnet for {networkName}, so no testnet is offered here. Add a testnet chain in Chain Manager to enable a testnet flow for it.</p>
+            {chainFamily === 'solana' && (
+              <p className="field-hint">Solana deploys with the Solana CLI, not from this page — the Solana program is an Anchor program, not an EVM contract. Its program ID is registered in Chain Manager the same way after deployment.</p>
             )}
-            {isArc && (
-              <DeployAdapters network={arcNet} explorerUrl={net.explorerUrl} onDeployed={onAdaptersDeployed} />
+            {env === 'testnet' && deployNet && deployNet.routerKind === 'none' && (
+              <div className="notice alert">
+                <ShieldAlert />
+                <span><b>Cannot deploy on {networkName} yet.</b> {deployNet.blocker ?? 'No verified router on this testnet yet.'}</span>
+              </div>
             )}
-            {!isArc && (
-              <p className="field-hint">No adapter deploy here for {networkName}: EVM chains with a native V2 router use it directly as the Router. Solana deploys with the Solana CLI, not from this page.</p>
+            {env === 'testnet' && deployNet && deployNet.routerKind !== 'none' && (
+              <DeployAdapters network={deployNet} explorerUrl={net.explorerUrl} onDeployed={onAdaptersDeployed} />
             )}
             <label>Constructor parameters — StelixVault(owner, keeper, router, priceFeed, penaltyRecipient, feeRecipient, autoSellFeeBps)</label>
             {presetFor(effectiveChainId, env) ? (
@@ -415,9 +448,10 @@ export default function ContractStudio() {
               <button className="btn mint" onClick={() => prepare(env)} disabled={busy}><Rocket />{env === 'mainnet' ? 'Prepare mainnet deploy' : 'Prepare testnet deploy'}</button>
             </div>
             {prepareCmd && <pre>{prepareCmd}</pre>}
-            {isArc && arcEnv === 'testnet' && (
+            {env === 'testnet' && deployNet && deployNet.routerKind !== 'none' && (
               <DeployVault
-                network={arcNet}
+                chainId={effectiveChainId}
+                network={deployNet}
                 explorerUrl={net.explorerUrl}
                 params={params as VaultParams}
                 onDeployed={onVaultDeployed}

@@ -242,7 +242,9 @@ describe('network mode (admin testnet/mainnet switch)', () => {
   });
 
   it('testnet mode shows testnet chains only; mainnet mode shows mainnet chains only (Arc once, as mainnet); null shows all with Arc testnet only', () => {
-    expect(filterChainsByMode(merged, 'testnet').map((c) => c.id)).toEqual(['arc']);
+    expect(filterChainsByMode(merged, 'testnet').map((c) => c.id)).toEqual([
+      'arc', 'bnb-testnet', 'base-sepolia', 'ethereum-sepolia', 'polygon-amoy',
+    ]);
     expect(filterChainsByMode(merged, 'mainnet').map((c) => c.id)).toEqual([
       'arc', 'bnb', 'base', 'ethereum', 'polygon', 'solana',
     ]);

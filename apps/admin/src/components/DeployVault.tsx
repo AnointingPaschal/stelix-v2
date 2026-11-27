@@ -1,8 +1,8 @@
-// Deploy StelixVault from the admin — Testnet only, Arc only for now.
+// Deploy StelixVault from the admin — Testnet only, every EVM chain.
 // Same pattern as DeployAdapters: the admin never holds a private key
 // and never broadcasts. The user connects their wallet in THIS browser,
 // signs one deployment transaction with the 7 constructor args from the
-// Deploy Preset, pays testnet USDC gas, and the admin fills the deployed
+// Deploy Preset, pays test gas, and the admin fills the deployed
 // address + tx hash into Contract Studio so it can be verified on the
 // explorer and registered in Chain Manager. Mainnet is deliberately NOT
 // offered here: it stays behind the Mainnet gate (audit, verified
@@ -16,7 +16,7 @@ import { BrowserProvider, ContractFactory, type InterfaceAbi } from 'ethers'
 import { BadgeCheck, ShieldAlert, Wallet } from 'lucide-react'
 import vaultArtifact from '../contracts/StelixVault.artifact.json'
 import { validateDeployParams } from '../lib/deployParams'
-import type { ArcNetwork } from '../lib/arcNetworks'
+import type { DeployNetwork } from '../lib/evmNetworks'
 
 declare global {
   interface Window { ethereum?: unknown }
@@ -33,13 +33,14 @@ export type VaultParams = {
 }
 
 type Props = {
-  network: ArcNetwork
+  chainId: string
+  network: DeployNetwork
   explorerUrl: string
   params: VaultParams
   onDeployed: (address: string, txHash: string) => void
 }
 
-export default function DeployVault({ network, explorerUrl, params, onDeployed }: Props) {
+export default function DeployVault({ chainId, network, explorerUrl, params, onDeployed }: Props) {
   const [wallet, setWallet] = useState('')
   const [busy, setBusy] = useState(false)
   const [log, setLog] = useState<string[]>([])
@@ -53,7 +54,7 @@ export default function DeployVault({ network, explorerUrl, params, onDeployed }
     const msg = e instanceof Error ? e.message : 'Vault deploy failed.'
     if (msg.includes('4100') || msg.includes('not been authorized')) return 'MetaMask has not authorised this site to send transactions yet (code 4100). Tap Connect wallet again, then Deploy vault — and approve the transaction when MetaMask pops it up.'
     if (msg.includes('User denied') || msg.includes('rejected')) return 'You rejected the request in MetaMask. Tap Deploy vault again and approve it in MetaMask.'
-    if (msg.includes('insufficient funds') || msg.includes('insufficient balance')) return 'Your wallet does not have enough test USDC for the gas. Top it up from https://faucet.circle.com (Arc Testnet) and try again.'
+    if (msg.includes('insufficient funds') || msg.includes('insufficient balance')) return `Your wallet does not have enough test ${network.nativeSymbol} for the gas. Top it up${network.faucetUrl ? ` from ${network.faucetUrl}` : ''} and try again.`
     return msg.length > 300 ? `${msg.slice(0, 300)}…` : msg
   }
 
@@ -69,7 +70,7 @@ export default function DeployVault({ network, explorerUrl, params, onDeployed }
       await provider.send('wallet_addEthereumChain', [{
         chainId: `0x${network.chainId.toString(16)}`,
         chainName: network.name,
-        nativeCurrency: { name: 'USDC', symbol: 'USDC', decimals: 18 },
+        nativeCurrency: { name: network.nativeSymbol, symbol: network.nativeSymbol, decimals: 18 },
         rpcUrls: [network.rpcUrl],
         blockExplorerUrls: [network.explorerUrl],
       }])
@@ -100,7 +101,7 @@ export default function DeployVault({ network, explorerUrl, params, onDeployed }
     setError(''); setLog([])
     if (!wallet) { setError('Connect your wallet first.'); return }
     const { errors } = validateDeployParams({
-      chainId: 'arc', env: 'testnet',
+      chainId, env: 'testnet',
       owner: params.owner.trim(), keeper: params.keeper.trim(), router: params.router.trim(),
       priceFeed: params.priceFeed.trim(), penaltyRecipient: params.penaltyRecipient.trim(),
       feeRecipient: params.feeRecipient.trim(), autoSellFeeBps: Number(params.autoSellFeeBps),
@@ -148,7 +149,7 @@ export default function DeployVault({ network, explorerUrl, params, onDeployed }
       <h3 style={{ marginTop: 0 }}>Deploy vault — from this admin (Testnet only)</h3>
       <p className="muted">
         Deploy StelixVault on {network.name} with your own wallet, using the 7 constructor values already filled in above.
-        The admin never sees your private key — your wallet signs the one deployment transaction and pays the test USDC gas.
+        The admin never sees your private key — your wallet signs the one deployment transaction and pays the test {network.nativeSymbol} gas.
         After it confirms, the address is filled into the "Deployed contract address" box below, so you can verify it on the explorer and register it in Chain Manager.
       </p>
       <div className="notice alert"><ShieldAlert /><span><b>Testnet only.</b> Mainnet is not deployed from here — it stays behind the Mainnet gate below (audit, verified testnet flow, smoke-test attestation, typed confirmation) and is deployed with Foundry only. Mainnet is real money.</span></div>

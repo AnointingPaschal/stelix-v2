@@ -56,7 +56,7 @@ export interface ChainConfig {
   /** Decimals of the native gas asset (Arc USDC = 6, most EVM = 18). */
   nativeDecimals: number;
   /** Stablecoin the user receives on an auto-sell on this chain. */
-  exitStablecoin: 'USDT' | 'USDC';
+  exitStablecoin: 'USDT' | 'USDC' | 'BUSD';
   exitStablecoinLabel: string; // exact in-app label, e.g. "auto-sell to USDT"
   /** Exit stablecoin contract address on this chain (null = confirm before use). */
   exitStablecoinAddress: string | null;
@@ -211,6 +211,35 @@ export const CHAINS: ChainConfig[] = [
     active: true,
   },
   {
+    id: 'bnb-testnet',
+    name: 'BNB Testnet',
+    chainId: 97,
+    kind: 'evm',
+    nativeSymbol: 'tBNB',
+    nativeName: 'BNB (testnet)',
+    nativeDecimals: 18,
+    exitStablecoin: 'BUSD',
+    exitStablecoinLabel: 'auto-sell to BUSD (testnet)',
+    // BUSD test token on BNB Testnet — verified on testnet BscScan
+    // 2026-11-27, 18 decimals. A test token, not issuer-backed BUSD.
+    exitStablecoinAddress: '0x78867BbEeF44f2326bF8DDd1941a4439382EF2A7',
+    rpcUrl: 'https://bsc-testnet-dataseed.bnbchain.org',
+    rpcUrls: ['https://bsc-testnet-dataseed.bnbchain.org', 'https://bsc-testnet.bnbchain.org'],
+    explorerUrl: 'https://testnet.bscscan.com',
+    explorerApiUrl: 'https://api-testnet.bscscan.com/api',
+    dexScreenerChainId: 'bsc',
+    geckoTerminalNetwork: 'bsc',
+    dex: 'PancakeSwap V2 (testnet)',
+    // PancakeRouter on BNB Testnet — verified on testnet BscScan
+    // 2026-11-27, 153,719 txs, swaps hours ago.
+    uniswapV2Router: '0x9Ac64Cc6e4415144C455BD8E4837Fea55603e5c3',
+    vaultContract: null,
+    status: 'testnet',
+    testnet: true,
+    active: true,
+    pairedChainId: 'bnb',
+  },
+  {
     id: 'base',
     name: 'Base',
     chainId: 8453,
@@ -231,6 +260,31 @@ export const CHAINS: ChainConfig[] = [
     vaultContract: null,
     status: 'live',
     active: true,
+  },
+  {
+    id: 'base-sepolia',
+    name: 'Base Sepolia',
+    chainId: 84532,
+    kind: 'evm',
+    nativeSymbol: 'ETH',
+    nativeName: 'Ether (testnet)',
+    nativeDecimals: 18,
+    exitStablecoin: 'USDC',
+    exitStablecoinLabel: 'auto-sell to USDC',
+    exitStablecoinAddress: '0x036CbD53842c5426634e7929541eC2318f3dCF7e',
+    rpcUrl: 'https://sepolia.base.org',
+    rpcUrls: ['https://sepolia.base.org', 'https://base-sepolia-rpc.publicnode.com'],
+    explorerUrl: 'https://sepolia.basescan.org',
+    explorerApiUrl: 'https://api-sepolia.basescan.org/api',
+    dexScreenerChainId: 'base',
+    geckoTerminalNetwork: 'base',
+    dex: 'Uniswap V3 (Sepolia)',
+    uniswapV3Router: '0x94cC0AaC535CCDB3C01d6787D6413C739ae12bc4',
+    vaultContract: null,
+    status: 'testnet',
+    testnet: true,
+    active: true,
+    pairedChainId: 'base',
   },
   {
     id: 'ethereum',
@@ -255,6 +309,34 @@ export const CHAINS: ChainConfig[] = [
     active: true,
   },
   {
+    id: 'ethereum-sepolia',
+    name: 'Ethereum Sepolia',
+    chainId: 11155111,
+    kind: 'evm',
+    nativeSymbol: 'ETH',
+    nativeName: 'Ether (testnet)',
+    nativeDecimals: 18,
+    exitStablecoin: 'USDC',
+    exitStablecoinLabel: 'auto-sell to USDC',
+    exitStablecoinAddress: '0x1c7D4B196Cb0C7B01d743Fbc6116a902379C7238',
+    rpcUrl: 'https://rpc.sepolia.org',
+    rpcUrls: ['https://rpc.sepolia.org', 'https://ethereum-sepolia-rpc.publicnode.com'],
+    explorerUrl: 'https://sepolia.etherscan.io',
+    explorerApiUrl: 'https://api-sepolia.etherscan.io/api',
+    dexScreenerChainId: 'ethereum',
+    geckoTerminalNetwork: 'eth',
+    dex: 'Uniswap V2 (Sepolia)',
+    // Corrected Sepolia V2 Router02 (Uniswap official deployments).
+    // 0x7a250d… is mainnet/Goerli only — never use it on Sepolia.
+    uniswapV2Router: '0xeE567Fe1712Faf6149d80dA1E6934E354124CfE3',
+    uniswapV3Router: '0x3bFA4769FB09eefC5a80d6E87c3B9C650f7Ae48E',
+    vaultContract: null,
+    status: 'testnet',
+    testnet: true,
+    active: true,
+    pairedChainId: 'ethereum',
+  },
+  {
     id: 'polygon',
     name: 'Polygon',
     chainId: 137,
@@ -275,6 +357,30 @@ export const CHAINS: ChainConfig[] = [
     vaultContract: null,
     status: 'live',
     active: true,
+  },
+  {
+    id: 'polygon-amoy',
+    name: 'Polygon Amoy',
+    chainId: 80002,
+    kind: 'evm',
+    nativeSymbol: 'POL',
+    nativeName: 'Polygon (testnet)',
+    nativeDecimals: 18,
+    exitStablecoin: 'USDC',
+    exitStablecoinLabel: 'auto-sell to USDC',
+    exitStablecoinAddress: '0x41E94Eb019C0762f9Bfcf9Fb1E58725BfB0e7582',
+    rpcUrl: 'https://rpc-amoy.polygon.technology',
+    rpcUrls: ['https://rpc-amoy.polygon.technology', 'https://polygon-amoy.drpc.org'],
+    explorerUrl: 'https://amoy.polygonscan.com',
+    explorerApiUrl: 'https://api-amoy.polygonscan.com/api',
+    dexScreenerChainId: 'polygon',
+    geckoTerminalNetwork: 'polygon_pos',
+    dex: 'No verified router on Amoy yet — vault deploys refused',
+    vaultContract: null,
+    status: 'testnet',
+    testnet: true,
+    active: true,
+    pairedChainId: 'polygon',
   },
   {
     id: 'solana',
@@ -347,9 +453,13 @@ export const VAULT_ADDRESSES: Record<string, string | null> = {
   arc: null,
   'arc-mainnet': null,
   bnb: null,
+  'bnb-testnet': null,
   base: null,
+  'base-sepolia': null,
   ethereum: null,
+  'ethereum-sepolia': null,
   polygon: null,
+  'polygon-amoy': null,
   solana: null, // Anchor program ID, not an EVM address
 };
 

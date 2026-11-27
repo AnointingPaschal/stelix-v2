@@ -1,10 +1,17 @@
-// Deploy Adapters from the admin — Arc only, Testnet first.
+// Deploy Adapters from the admin — every EVM testnet, not just Arc.
 // The admin itself never holds a private key and never broadcasts.
-// This component deploys UniswapV3TwapFeed + StelixV3RouterAdapter with
-// the wallet connected in THIS browser (MetaMask / any injected wallet):
-// the user signs two deployment transactions, pays testnet USDC gas,
-// and the admin then saves the two addresses into the Deploy Preset for
-// that network, so Contract Studio fills Router / Price Feed from them.
+// This component deploys the price-feed (and, for V3 chains, the router
+// adapter) with the wallet connected in THIS browser (MetaMask / any
+// injected wallet): the user signs the deployment transactions, pays
+// test gas, and the admin then saves the addresses into the Deploy
+// Preset for that network, so Contract Studio fills Router / Price Feed.
+//   V3 chains (Arc, Base Sepolia): UniswapV3TwapFeed + StelixV3RouterAdapter.
+//   V2 chains (BNB Testnet, Ethereum Sepolia): the vault speaks V2
+//     natively, so the router needs NO adapter — only PancakeV2TwapFeed
+//     (works for any V2 pair) is deployed, and the Router field is the
+//     V2 router itself.
+//   No-router chains (Polygon Amoy): this card is not rendered; the
+//     page shows the blocker instead.
 // Mainnet is deliberately NOT offered here yet: prove the adapters +
 // vault on testnet first, then deploy mainnet adapters with Foundry.
 // If no injected wallet is present, the Foundry command below is the
@@ -13,16 +20,16 @@ import { useState } from 'react'
 import { BrowserProvider, ContractFactory, type InterfaceAbi } from 'ethers'
 import { BadgeCheck, ShieldAlert, Wallet } from 'lucide-react'
 import adaptersArtifact from '../contracts/adapters.artifact.json'
-import type { ArcNetwork } from '../lib/arcNetworks'
+import type { DeployNetwork } from '../lib/evmNetworks'
 
 declare global {
   interface Window { ethereum?: unknown }
 }
 
 type Props = {
-  network: ArcNetwork
+  network: DeployNetwork
   explorerUrl: string
-  onDeployed: (feed: string, adapter: string, deployer: string) => void
+  onDeployed: (feed: string, router: string, deployer: string) => void
 }
 
 export default function DeployAdapters({ network, explorerUrl, onDeployed }: Props) {
@@ -77,7 +84,7 @@ export default function DeployAdapters({ network, explorerUrl, onDeployed }: Pro
         await provider.send('wallet_addEthereumChain', [{
           chainId: `0x${network.chainId.toString(16)}`,
           chainName: network.name,
-          nativeCurrency: { name: 'USDC', symbol: 'USDC', decimals: 18 },
+          nativeCurrency: { name: network.nativeSymbol, symbol: network.nativeSymbol, decimals: 18 },
           rpcUrls: [network.rpcUrl],
           blockExplorerUrls: [network.explorerUrl],
         }])
@@ -99,10 +106,10 @@ export default function DeployAdapters({ network, explorerUrl, onDeployed }: Pro
   // the one line that matters instead of the whole payload.
   const friendlyError = (e: unknown) => {
     const msg = e instanceof Error ? e.message : 'Could not connect wallet.'
-    if (msg.includes('Unrecognized chain ID') || msg.includes('4902')) return 'MetaMask does not know Arc Testnet yet. Tap Connect wallet again — the admin will now add Arc Testnet (chain 5042002, RPC https://rpc.testnet.arc.io) and switch to it. If MetaMask asks you to approve adding the network, approve it.'
+    if (msg.includes('Unrecognized chain ID') || msg.includes('4902')) return `MetaMask does not know ${network.name} yet. Tap Connect wallet again — the admin will now add ${network.name} (chain ${network.chainId}, RPC ${network.rpcUrl}) and switch to it. If MetaMask asks you to approve adding the network, approve it.`
     if (msg.includes('nativeCurrency.decimals')) return 'MetaMask refused the chain details. Please hard-refresh this page — the fixed version uses decimals 18 for the chain record — then tap Connect wallet again.'
     if (msg.includes('User denied') || msg.includes('rejected')) return 'You rejected the request in MetaMask. Tap Connect wallet again and approve it in MetaMask.'
-    if (msg.includes('4100') || msg.includes('not been authorized')) return 'MetaMask has not authorised this site to send transactions yet (code 4100). In MetaMask, check that stelix-admin.pages.dev is connected to this account on Arc Testnet, then tap Connect wallet again in the admin, then Deploy — and approve the transaction when MetaMask pops it up. If it still fails, disconnect the site in MetaMask (Settings → Connected sites) and reconnect it fresh.'
+    if (msg.includes('4100') || msg.includes('not been authorized')) return `MetaMask has not authorised this site to send transactions yet (code 4100). In MetaMask, check that stelix-admin.pages.dev is connected to this account on ${network.name}, then tap Connect wallet again in the admin, then Deploy — and approve the transaction when MetaMask pops it up. If it still fails, disconnect the site in MetaMask (Settings → Connected sites) and reconnect it fresh.`
     return msg.length > 300 ? `${msg.slice(0, 300)}…` : msg
   }
 
@@ -117,7 +124,7 @@ export default function DeployAdapters({ network, explorerUrl, onDeployed }: Pro
       const address = await signer.getAddress()
       await ensureNetwork(provider)
       setWallet(address)
-      setLog([`Connected ${address} on ${network.name} (chain ${network.chainId}). Fund it with test USDC from https://faucet.circle.com (Arc Testnet) before deploying.`])
+      setLog([`Connected ${address} on ${network.name} (chain ${network.chainId}). Fund it with test ${network.nativeSymbol}${network.faucetUrl ? ` from ${network.faucetUrl}` : ''} before deploying.`])
     } catch (e) { setError(friendlyError(e)) }
     setBusy(false)
   }
@@ -141,9 +148,30 @@ export default function DeployAdapters({ network, explorerUrl, onDeployed }: Pro
         setBusy(false)
         return
       }
-      const feedArt = (adaptersArtifact as { contracts: Record<string, { abi: InterfaceAbi; bytecode: string }> }).contracts.UniswapV3TwapFeed
-      const adapterArt = (adaptersArtifact as { contracts: Record<string, { abi: InterfaceAbi; bytecode: string }> }).contracts.StelixV3RouterAdapter
-      setLog((l) => [...l, `Deploying UniswapV3TwapFeed (USDC ${network.stablecoinAddress}, owner ${deployer})… — sign the transaction in your wallet.`])
+      const arts = adaptersArtifact as { contracts: Record<string, { abi: InterfaceAbi; bytecode: string }> }
+      if (network.routerKind === 'v2') {
+        // V2 chain: the vault speaks V2 natively, so only the TWAP feed
+        // is deployed. The Router field stays the V2 router itself.
+        const v2FeedArt = arts.contracts.PancakeV2TwapFeed
+        setLog((l) => [...l, `Deploying PancakeV2TwapFeed (${network.stablecoin} ${network.stablecoinAddress}, ${network.stablecoinDecimals} decimals, owner ${deployer})… — sign the transaction in your wallet.`])
+        const feedFactory = new ContractFactory(v2FeedArt.abi, v2FeedArt.bytecode, signer)
+        const feed = await feedFactory.deploy(network.stablecoinAddress, network.stablecoinDecimals, deployer)
+        const feedTxHash = feed.deploymentTransaction()?.hash ?? ''
+        setFeedTx(feedTxHash)
+        setLog((l) => [...l, `Feed transaction sent: ${feedTxHash} — waiting for confirmation…`])
+        await feed.waitForDeployment()
+        const feedAddr = await feed.getAddress()
+        setFeedAddress(feedAddr)
+        setAdapterAddress(network.dexRouter)
+        setLog((l) => [...l, `PancakeV2TwapFeed deployed at ${feedAddr}`])
+        setLog((l) => [...l, `Router needs no adapter on a V2 chain — it is the ${network.dexRouterKind} at ${network.dexRouter}. Saving the feed into your Deploy Preset — Contract Studio will fill Price Feed from it, and Router from the V2 router.`])
+        onDeployed(feedAddr, network.dexRouter, deployer)
+        setBusy(false)
+        return
+      }
+      const feedArt = arts.contracts.UniswapV3TwapFeed
+      const adapterArt = arts.contracts.StelixV3RouterAdapter
+      setLog((l) => [...l, `Deploying UniswapV3TwapFeed (${network.stablecoin} ${network.stablecoinAddress}, owner ${deployer})… — sign the transaction in your wallet.`])
       const feedFactory = new ContractFactory(feedArt.abi, feedArt.bytecode, signer)
       const feed = await feedFactory.deploy(network.stablecoinAddress, deployer)
       const feedTxHash = feed.deploymentTransaction()?.hash ?? ''
@@ -169,30 +197,39 @@ export default function DeployAdapters({ network, explorerUrl, onDeployed }: Pro
     setBusy(false)
   }
 
-  const foundryCmd = [
-    'cd contracts',
-    `RPC_URL=${network.rpcUrl} PRIVATE_KEY=$TESTNET_DEPLOYER_KEY \\`,
-    `USDC=${network.stablecoinAddress} V3_ROUTER=${network.dexRouter} \\`,
-    'forge script script/DeployAdapters.s.sol --rpc-url $RPC_URL --broadcast --verify',
-  ].join('\n')
+  const foundryCmd = network.routerKind === 'v2'
+    ? [
+      'cd contracts',
+      `RPC_URL=${network.rpcUrl} PRIVATE_KEY=$TESTNET_DEPLOYER_KEY \\`,
+      `STABLE=${network.stablecoinAddress} STABLE_DECIMALS=${network.stablecoinDecimals} \\`,
+      'forge script script/DeployV2Feed.s.sol --rpc-url $RPC_URL --broadcast --verify',
+    ].join('\n')
+    : [
+      'cd contracts',
+      `RPC_URL=${network.rpcUrl} PRIVATE_KEY=$TESTNET_DEPLOYER_KEY \\`,
+      `USDC=${network.stablecoinAddress} V3_ROUTER=${network.dexRouter} \\`,
+      'forge script script/DeployAdapters.s.sol --rpc-url $RPC_URL --broadcast --verify',
+    ].join('\n')
 
   return (
     <div className="card">
       <h3 style={{ marginTop: 0 }}>Deploy Adapters — from this admin</h3>
       <p className="muted">
-        The vault needs two adapter contracts on {network.name}: <b>UniswapV3TwapFeed</b> (price feed) and <b>StelixV3RouterAdapter</b> (router).
-        Deploy them here with your own wallet — the admin never sees your private key, your wallet signs both transactions and pays the gas.
-        After they confirm, the addresses are saved into your Deploy Preset automatically, so Contract Studio fills Router and Price Feed in.
+        {network.routerKind === 'v2' ? (
+          <>The vault needs a price feed on {network.name}: <b>PancakeV2TwapFeed</b> (V2 TWAP feed). The router needs no adapter here — the vault speaks V2 natively, so Router is the {network.dexRouterKind} itself. Deploy the feed here with your own wallet — the admin never sees your private key, your wallet signs the transaction and pays the gas. After it confirms, the address is saved into your Deploy Preset automatically, so Contract Studio fills Price Feed in.</>
+        ) : (
+          <>The vault needs two adapter contracts on {network.name}: <b>UniswapV3TwapFeed</b> (price feed) and <b>StelixV3RouterAdapter</b> (router). Deploy them here with your own wallet — the admin never sees your private key, your wallet signs both transactions and pays the gas. After they confirm, the addresses are saved into your Deploy Preset automatically, so Contract Studio fills Router and Price Feed in.</>
+        )}
       </p>
       {isMainnet && (
-        <div className="notice alert"><ShieldAlert /><span><b>Mainnet adapters are not deployed from the admin yet.</b> Prove the adapters and the vault on Arc Testnet first, then deploy mainnet adapters with the Foundry command below. Mainnet is real money.</span></div>
+        <div className="notice alert"><ShieldAlert /><span><b>Mainnet adapters are not deployed from the admin yet.</b> Prove the adapters and the vault on {network.name.replace(/ Mainnet$/, '')} Testnet first, then deploy mainnet adapters with the Foundry command below. Mainnet is real money.</span></div>
       )}
       {error && <div className="notice alert"><ShieldAlert /><span>{error}</span></div>}
       <p className="field-hint">
-        USDC: <span className="kbd">{network.stablecoinAddress}</span><br />
-        Uniswap V3 router: <span className="kbd">{network.dexRouter}</span> ({network.dexRouterKind})<br />
-        Deployer / adapter owner: {wallet || 'your connected wallet — it becomes the owner of both adapters, transfer ownership to the vault owner later if you want'}<br />
-        If MetaMask is already on Arc Testnet, just tap Connect wallet again — it will not try to add the chain a second time.
+        {network.stablecoin}: <span className="kbd">{network.stablecoinAddress}</span> ({network.stablecoinDecimals} decimals)<br />
+        {network.routerKind === 'v2' ? 'V2 router (no adapter needed)' : 'Uniswap V3 router'}: <span className="kbd">{network.dexRouter}</span> ({network.dexRouterKind})<br />
+        Deployer / adapter owner: {wallet || 'your connected wallet — it becomes the owner of the feed (and adapter, on V3 chains), transfer ownership to the vault owner later if you want'}<br />
+        If MetaMask is already on {network.name}, just tap Connect wallet again — it will not try to add the chain a second time.
       </p>
       {!hasWallet && <p className="field-hint">No injected wallet in this browser. Use MetaMask on a computer, or the Foundry command below.</p>}
       <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
@@ -203,12 +240,12 @@ export default function DeployAdapters({ network, explorerUrl, onDeployed }: Pro
       {feedAddress && (
         <p className="field-hint">
           Price feed: <a href={`${explorerUrl.replace(/\/$/, '')}/address/${feedAddress}`} target="_blank" rel="noreferrer">{feedAddress}</a>{feedTx ? ` (tx ${feedTx})` : ''}<br />
-          Router adapter: <a href={`${explorerUrl.replace(/\/$/, '')}/address/${adapterAddress}`} target="_blank" rel="noreferrer">{adapterAddress}</a>{adapterTx ? ` (tx ${adapterTx})` : ''}
+          {network.routerKind === 'v3' ? <>Router adapter: <a href={`${explorerUrl.replace(/\/$/, '')}/address/${adapterAddress}`} target="_blank" rel="noreferrer">{adapterAddress}</a>{adapterTx ? ` (tx ${adapterTx})` : ''}</> : <>Router (V2, no adapter): <span className="kbd">{network.dexRouter}</span></>}
         </p>
       )}
       <label style={{ marginTop: 12 }}>Or deploy with Foundry (same contracts, same args)</label>
       <pre>{foundryCmd}</pre>
-      <p className="field-hint">After the adapters are deployed, register a pool on the price feed for each token you want to lock (feed.setPool, owner only) — a token with no token/USDC pool has no price, and its auto-sell will revert. Then deploy the vault in Contract Studio below.</p>
+      <p className="field-hint">After the feed is deployed, register a {network.routerKind === 'v2' ? 'pair on the feed for each token you want to lock (feed.setPair, owner only), then call update(token) and wait 30 minutes before the TWAP reads work' : 'pool on the price feed for each token you want to lock (feed.setPool, owner only)'} — a token with no token/{network.stablecoin} {network.routerKind === 'v2' ? 'pair' : 'pool'} has no price, and its auto-sell will revert. Then deploy the vault in Contract Studio below.</p>
     </div>
   )
 }

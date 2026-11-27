@@ -68,7 +68,10 @@ describe('validateDeployParams', () => {
   it('maps a mainnet chain slug to its testnet counterpart', () => {
     expect(testnetChainIdFor('arc-mainnet')).toBe('arc')
     expect(testnetChainIdFor('arc')).toBe('arc')
-    expect(testnetChainIdFor('bnb')).toBe('bnb')
+    expect(testnetChainIdFor('bnb')).toBe('bnb-testnet')
+    expect(testnetChainIdFor('base')).toBe('base-sepolia')
+    expect(testnetChainIdFor('ethereum')).toBe('ethereum-sepolia')
+    expect(testnetChainIdFor('polygon')).toBe('polygon-amoy')
   })
 
   it('validates addresses and tx hashes', () => {

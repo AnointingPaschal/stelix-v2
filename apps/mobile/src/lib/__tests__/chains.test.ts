@@ -29,15 +29,33 @@ describe('chain registry', () => {
     expect(DEFAULT_CHAIN.exitStablecoin).toBe('USDC');
   });
 
-  it('the active chain list is exactly all six chains', () => {
-    expect(ACTIVE_CHAINS.map((c) => c.id)).toEqual(['arc', 'bnb', 'base', 'ethereum', 'polygon', 'solana']);
-    for (const id of ['arc', 'bnb', 'base', 'ethereum', 'polygon', 'solana']) {
+  it('the active chain list is the six mainnets plus the four EVM testnets', () => {
+    expect(ACTIVE_CHAINS.map((c) => c.id)).toEqual([
+      'arc', 'bnb', 'bnb-testnet', 'base', 'base-sepolia', 'ethereum', 'ethereum-sepolia', 'polygon', 'polygon-amoy', 'solana',
+    ]);
+    for (const id of ['arc', 'bnb', 'bnb-testnet', 'base', 'base-sepolia', 'ethereum', 'ethereum-sepolia', 'polygon', 'polygon-amoy', 'solana']) {
       expect(isChainActive(id)).toBe(true);
       expect(getChain(id).active).toBe(true);
     }
     // Arc MAINNET is a separate registry entry and stays disabled until
     // a mainnet deployment is explicitly approved.
     expect(isChainActive('arc-mainnet')).toBe(false);
+  });
+
+  it('the four EVM testnets have their verified chain ids and stablecoins', () => {
+    expect(getChain('bnb-testnet').chainId).toBe(97);
+    expect(getChain('bnb-testnet').exitStablecoin).toBe('BUSD');
+    expect(getChain('base-sepolia').chainId).toBe(84532);
+    expect(getChain('base-sepolia').exitStablecoinAddress).toBe('0x036CbD53842c5426634e7929541eC2318f3dCF7e');
+    expect(getChain('ethereum-sepolia').chainId).toBe(11155111);
+    // Corrected Sepolia V2 router — 0x7a250d… is mainnet/Goerli only.
+    expect(getChain('ethereum-sepolia').uniswapV2Router).toBe('0xeE567Fe1712Faf6149d80dA1E6934E354124CfE3');
+    expect(getChain('polygon-amoy').chainId).toBe(80002);
+    expect(getChain('polygon-amoy').nativeSymbol).toBe('POL');
+    for (const id of ['bnb-testnet', 'base-sepolia', 'ethereum-sepolia', 'polygon-amoy']) {
+      expect(getChain(id).testnet).toBe(true);
+      expect(getChain(id).vaultContract).toBeNull();
+    }
   });
 
   it('BNB / Base / Ethereum / Polygon chain ids are the well-known mainnet ids', () => {
@@ -57,9 +75,9 @@ describe('chain registry', () => {
     expect(sol.rpcUrl).toBe('https://api.mainnet-beta.solana.com');
   });
 
-  it('every chain names its exit stablecoin explicitly (USDT or USDC, never vague)', () => {
+  it('every chain names its exit stablecoin explicitly (USDT, USDC or BUSD, never vague)', () => {
     for (const c of CHAINS) {
-      expect(['USDT', 'USDC']).toContain(c.exitStablecoin);
+      expect(['USDT', 'USDC', 'BUSD']).toContain(c.exitStablecoin);
       expect(c.exitStablecoinLabel).toContain(c.exitStablecoin);
       expect(c.exitStablecoinAddress).toBeTruthy();
     }

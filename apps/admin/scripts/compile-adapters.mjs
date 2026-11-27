@@ -19,6 +19,7 @@ const SOLC_PINNED = '0.8.24'
 const files = {
   'adapters/UniswapV3TwapFeed.sol': readFileSync(join(root, 'src/contracts/adapters/UniswapV3TwapFeed.sol'), 'utf8'),
   'adapters/StelixV3RouterAdapter.sol': readFileSync(join(root, 'src/contracts/adapters/StelixV3RouterAdapter.sol'), 'utf8'),
+  'adapters/PancakeV2TwapFeed.sol': readFileSync(join(root, 'src/contracts/adapters/PancakeV2TwapFeed.sol'), 'utf8'),
   'interfaces/IERC20.sol': readFileSync(join(root, 'src/contracts/interfaces/IERC20.sol'), 'utf8'),
   'interfaces/IDexRouter.sol': readFileSync(join(root, 'src/contracts/interfaces/IDexRouter.sol'), 'utf8'),
   'interfaces/IPriceFeed.sol': readFileSync(join(root, 'src/contracts/interfaces/IPriceFeed.sol'), 'utf8'),
@@ -48,7 +49,7 @@ if (errors.length > 0) {
   process.exit(1)
 }
 const contracts = {}
-for (const [file, name] of [['adapters/UniswapV3TwapFeed.sol', 'UniswapV3TwapFeed'], ['adapters/StelixV3RouterAdapter.sol', 'StelixV3RouterAdapter']]) {
+for (const [file, name] of [['adapters/UniswapV3TwapFeed.sol', 'UniswapV3TwapFeed'], ['adapters/StelixV3RouterAdapter.sol', 'StelixV3RouterAdapter'], ['adapters/PancakeV2TwapFeed.sol', 'PancakeV2TwapFeed']]) {
   const c = output.contracts[file][name]
   const bytecode = c.evm.bytecode.object
   const deployed = c.evm.deployedBytecode.object
