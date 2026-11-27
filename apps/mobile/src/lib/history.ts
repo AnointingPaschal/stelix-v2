@@ -2,13 +2,22 @@
  * LIVE transaction history — real explorer / RPC data for the actual
  * wallet address. No placeholder transactions, no sample history.
  *
- * Source: Etherscan-family explorer APIs (BscScan / Etherscan / BaseScan /
- * PolygonScan / ArcScan). They need an API key — read ONLY from
- * EXPO_PUBLIC_EXPLORER_API_KEY (see README). Without a key the function
- * returns an empty list with status 'no-key' and a clear message, NOT
- * invented transactions. Etherscan API v2 (`api.etherscan.io/v2/api?
- * chainid=...`) is the documented multi-chain endpoint; per-chain
- * api.<chain>.com bases are kept as fallback.
+ * Two sources, in order:
+ *  1. Blockscout v2 API (keyless) — used for Arc Testnet + Arc Mainnet,
+ *     whose explorers ARE Blockscout (explorer.testnet.arc.io /
+ *     explorer.arc.io). No API key exists or is needed: token transfers
+ *     AND native transactions are read from /api/v2/addresses/{addr}/.
+ *     This is what makes History work out of the box on Arc — the
+ *     user's 30 USDC receive showed as "No explorer API key" before
+ *     this, because the old code only knew the Etherscan path.
+ *  2. Etherscan-family explorer APIs (BscScan / Etherscan / BaseScan /
+ *     PolygonScan) for the other EVM chains. They need an API key —
+ *     read ONLY from EXPO_PUBLIC_EXPLORER_API_KEY. Without a key the
+ *     function returns an empty list with status 'no-key' and a clear
+ *     message, NOT invented transactions. Etherscan API v2
+ *     (`api.etherscan.io/v2/api?chainid=...`) is the documented
+ *     multi-chain endpoint; per-chain api.<chain>.com bases are kept
+ *     as fallback.
  *
  * Restored 2026-11-27: all chains active again (Arc + BNB scope-down reversed).
  *
@@ -55,6 +64,124 @@ const EXPLORER_CHAIN_IDS: Record<string, number> = {
   polygon: 137,
   arc: 5042002,
 };
+
+/** Chains whose explorer is Blockscout — its v2 API needs no key. */
+const BLOCKSCOUT_CHAIN_IDS = new Set(['arc', 'arc-mainnet']);
+
+/** Blockscout v2 address fields are { hash } objects (or a plain string). */
+function bsAddress(v: unknown): string {
+  if (typeof v === 'string') return v;
+  if (v && typeof v === 'object' && typeof (v as { hash?: unknown }).hash === 'string') {
+    return (v as { hash: string }).hash;
+  }
+  return '';
+}
+
+interface BlockscoutTokenTransfer {
+  block_number?: number;
+  from?: unknown;
+  to?: unknown;
+  timestamp?: string;
+  token?: { symbol?: string; decimals?: string | number; name?: string };
+  total?: { value?: string };
+  transaction_hash?: string;
+}
+
+interface BlockscoutTx {
+  hash?: string;
+  block_number?: number;
+  from?: unknown;
+  to?: unknown;
+  value?: string;
+  timestamp?: string;
+  status?: string;
+}
+
+function mapBlockscoutTransfer(raw: BlockscoutTokenTransfer, chain: ChainConfig, address: string): TxRecord | null {
+  const hash = raw.transaction_hash ?? '';
+  const value = raw.total?.value ?? '0';
+  const decimals = Number(raw.token?.decimals ?? 18);
+  const amount = Number(value) / 10 ** decimals;
+  if (!hash || !Number.isFinite(amount)) return null;
+  const from = bsAddress(raw.from).toLowerCase();
+  const me = address.toLowerCase();
+  const kind: TxKind = from === me ? 'sent' : 'received';
+  const rec: TxRecord = {
+    id: `${hash}:${raw.token?.symbol ?? 'token'}`,
+    hash,
+    kind,
+    token: raw.token?.symbol ?? chain.nativeSymbol,
+    amount,
+    amountRaw: value,
+    usd: null,
+    counterparty: kind === 'sent' ? bsAddress(raw.to) : bsAddress(raw.from),
+    at: raw.timestamp ? Date.parse(raw.timestamp) : 0,
+    status: 'confirmed',
+    isSpam: false,
+    chainId: chain.id,
+    blockNumber: Number(raw.block_number) || null,
+  };
+  rec.isSpam = isDustOrSpam(rec);
+  return rec;
+}
+
+function mapBlockscoutTx(raw: BlockscoutTx, chain: ChainConfig, address: string): TxRecord | null {
+  const hash = raw.hash ?? '';
+  const value = raw.value ?? '0';
+  // Native value is always wei (18 decimals) — see EVM_NATIVE_RPC_DECIMALS.
+  const amount = Number(value) / 10 ** 18;
+  if (!hash || !Number.isFinite(amount) || amount === 0) return null;
+  const from = bsAddress(raw.from).toLowerCase();
+  const me = address.toLowerCase();
+  const kind: TxKind = from === me ? 'sent' : 'received';
+  const rec: TxRecord = {
+    id: hash,
+    hash,
+    kind,
+    token: chain.nativeSymbol,
+    amount,
+    amountRaw: value,
+    usd: null,
+    counterparty: kind === 'sent' ? bsAddress(raw.to) : bsAddress(raw.from),
+    at: raw.timestamp ? Date.parse(raw.timestamp) : 0,
+    status: raw.status === 'ok' ? 'confirmed' : 'failed',
+    isSpam: false,
+    chainId: chain.id,
+    blockNumber: Number(raw.block_number) || null,
+  };
+  rec.isSpam = isDustOrSpam(rec);
+  return rec;
+}
+
+/** Keyless Blockscout v2 history for Arc. Token transfers first, then
+ *  native transactions; a tx that appears in both (Arc's native USDC
+ *  is also its ERC-20 view) is kept once, as the token transfer. */
+async function fetchBlockscoutHistory(chain: ChainConfig, address: string): Promise<TxRecord[]> {
+  const base = chain.explorerUrl.replace(/\/$/, '');
+  const [ttRes, txRes] = await Promise.all([
+    fetchWithTimeout(`${base}/api/v2/addresses/${address}/token-transfers?type=ERC-20`),
+    fetchWithTimeout(`${base}/api/v2/addresses/${address}/transactions`),
+  ]);
+  if (!ttRes.ok) throw new Error(`Blockscout token-transfers returned HTTP ${ttRes.status}.`);
+  if (!txRes.ok) throw new Error(`Blockscout transactions returned HTTP ${txRes.status}.`);
+  const ttJson = await ttRes.json();
+  const txJson = await txRes.json();
+  const out: TxRecord[] = [];
+  const seen = new Set<string>();
+  for (const item of (ttJson?.items ?? []) as BlockscoutTokenTransfer[]) {
+    const rec = mapBlockscoutTransfer(item, chain, address);
+    if (rec) {
+      out.push(rec);
+      seen.add(rec.hash);
+    }
+  }
+  for (const item of (txJson?.items ?? []) as BlockscoutTx[]) {
+    const rec = mapBlockscoutTx(item, chain, address);
+    if (rec && !seen.has(rec.hash)) out.push(rec);
+  }
+  out.sort((a, b) => b.at - a.at);
+  return out;
+}
 
 export function getExplorerApiKey(): string | null {
   const v =
@@ -202,15 +329,28 @@ export async function fetchHistory(
       };
     }
   }
+  // Arc runs on Blockscout — keyless, so History works with no key at all.
+  let lastBlockscoutError: string | null = null;
+  if (BLOCKSCOUT_CHAIN_IDS.has(chain.id)) {
+    try {
+      const txs = await fetchBlockscoutHistory(chain, address);
+      return { chain, address, txs, status: 'ok', error: null, updatedAt: Date.now() };
+    } catch (e) {
+      lastBlockscoutError = e instanceof Error ? e.message : String(e);
+      // Fall through: if an explorer key is set, the Etherscan path
+      // below is tried next. Otherwise the Blockscout error is reported.
+    }
+  }
   const apiKey = getExplorerApiKey();
   if (!apiKey) {
     return {
       chain,
       address,
       txs: [],
-      status: 'no-key',
+      status: lastBlockscoutError ? 'error' : 'no-key',
       error:
-        'No explorer API key configured (EXPO_PUBLIC_EXPLORER_API_KEY). History is empty until a key is set — no sample transactions are shown.',
+        lastBlockscoutError ??
+        `No explorer API key configured (EXPO_PUBLIC_EXPLORER_API_KEY). History on ${chain.name} needs a free Etherscan API key — no sample transactions are shown.`,
       updatedAt: startedAt,
     };
   }
