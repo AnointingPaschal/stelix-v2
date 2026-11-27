@@ -161,7 +161,13 @@ export async function verifyPassword(password: string, stored: string): Promise<
   return timingSafeEqual(derived, expected)
 }
 
-const PBKDF2_ITERATIONS = 600_000
+// Cloudflare Workers' WebCrypto refuses PBKDF2 iteration counts above
+// 100,000 ("Pbkdf2 failed: iteration counts above 100000 are not
+// supported") — verified live 2026-11-27 with a probe Worker. 600,000
+// works in Node and in the mobile app, but hashing a new admin password
+// at 600k throws here and the change-password endpoint 500s. So new
+// hashes use the strongest count this runtime allows: 100,000.
+const PBKDF2_ITERATIONS = 100_000
 
 // Hash a new admin password in exactly the format verifyPassword reads:
 // pbkdf2-sha256$<iterations>$<b64url salt>$<b64url derived key>.

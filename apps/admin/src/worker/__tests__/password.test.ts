@@ -4,7 +4,7 @@ import { hashPassword, verifyPassword } from '../index'
 describe('admin password hashing', () => {
   it('hashes and verifies a password', async () => {
     const hash = await hashPassword('correct horse battery staple')
-    expect(hash.startsWith('pbkdf2-sha256$600000$')).toBe(true)
+    expect(hash.startsWith('pbkdf2-sha256$100000$')).toBe(true)
     expect(await verifyPassword('correct horse battery staple', hash)).toBe(true)
     expect(await verifyPassword('wrong password', hash)).toBe(false)
   })

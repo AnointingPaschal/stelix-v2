@@ -122,6 +122,17 @@ class FakeD1 {
       }
       return undefined
     }
+    if (/INTO\s+admin_auth/i.test(sql)) {
+      const rows = this.rows('admin_auth')
+      const existing = rows.find((r) => r.id === 1)
+      if (existing) {
+        existing.password_hash = params[0]
+        existing.session_version = params[1]
+      } else {
+        rows.push({ id: 1, password_hash: params[0], session_version: params[1], updated_at: new Date().toISOString() })
+      }
+      return undefined
+    }
     const insert = /INSERT INTO\s+(\w+)\s*\(([^)]+)\)/i.exec(sql)
     if (insert) {
       const table = insert[1]
@@ -165,8 +176,8 @@ function makeEnv(db: FakeD1, extra: Partial<Env> = {}): Env {
 
 function passwordHash(password: string): string {
   const salt = randomBytes(16)
-  const key = pbkdf2Sync(password, salt, 600000, 32, 'sha256')
-  return `pbkdf2-sha256$600000$${salt.toString('base64url')}$${key.toString('base64url')}`
+  const key = pbkdf2Sync(password, salt, 100000, 32, 'sha256')
+  return `pbkdf2-sha256$100000$${salt.toString('base64url')}$${key.toString('base64url')}`
 }
 
 async function login(env: Env): Promise<string> {
@@ -963,5 +974,28 @@ describe('Worker API (live endpoints, no sample data)', () => {
     expect(res.body.code).toBe(155106)
     // The Worker follows the repo's `error`-field convention for failures.
     expect(String(res.body.error)).toMatch(/User already exists/)
+  })
+
+  it('change-password: wrong current is 401, short new is 400, a good change works and kills the old session', async () => {
+    const wrong = await call(env, '/api/admin/change-password', { method: 'POST', token, body: { currentPassword: 'not-the-password', newPassword: 'a-brand-new-password-123' } })
+    expect(wrong.status).toBe(401)
+    const short = await call(env, '/api/admin/change-password', { method: 'POST', token, body: { currentPassword: 'correct-horse', newPassword: 'short' } })
+    expect(short.status).toBe(400)
+    const ok = await call(env, '/api/admin/change-password', { method: 'POST', token, body: { currentPassword: 'correct-horse', newPassword: 'a-brand-new-password-123' } })
+    expect(ok.status).toBe(200)
+    expect(ok.body.ok).toBe(true)
+    // The old session is dead: the version bump invalidated it.
+    const dead = await call(env, '/api/admin/dashboard', { token })
+    expect(dead.status).toBe(401)
+    // And the new password logs in.
+    const r = await worker.fetch(
+      new Request('https://admin.test/api/admin/login', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ email: 'ozoemenapaschal09@gmail.com', password: 'a-brand-new-password-123' }),
+      }),
+      env,
+    )
+    expect(r.status).toBe(200)
   })
 })
