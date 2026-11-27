@@ -59,6 +59,7 @@ function RootNavigator() {
       <Stack.Screen name="unlock" />
       <Stack.Screen name="(tabs)" />
       <Stack.Screen name="token/[symbol]" />
+      <Stack.Screen name="tx/[hash]" />
       <Stack.Screen name="send" />
       <Stack.Screen name="receive" />
       <Stack.Screen name="vault/create" />

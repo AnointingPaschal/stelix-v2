@@ -12,6 +12,7 @@
 import { useState } from 'react';
 import { Pressable, RefreshControl, ScrollView, StyleSheet, Text, View, useWindowDimensions } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
+import { router } from 'expo-router';
 import { ArrowDown, ArrowUp, RefreshCw } from 'lucide-react-native';
 import { COLORS } from '../../theme';
 import { useApp } from '../../store/AppContext';
@@ -93,7 +94,11 @@ export default function History() {
           const party = t.counterparty ? `${received ? 'From' : 'To'} ${shortAddress(t.counterparty, 4)}` : (t.note ?? '');
           const date = t.at > 0 ? new Date(t.at).toLocaleDateString('en-GB', { day: '2-digit', month: '2-digit', year: 'numeric' }) : '—';
           return (
-            <View key={t.id} style={styles.row}>
+            <Pressable
+              key={t.id}
+              style={styles.row}
+              onPress={() => router.push({ pathname: '/tx/[hash]', params: { hash: t.hash, chainId: t.chainId } })}
+            >
               <View style={[styles.icon, received ? styles.iconIn : styles.iconOut]}>
                 {received ? <ArrowDown size={18} color={COLORS.mintDark} /> : <ArrowUp size={18} color={COLORS.text} />}
               </View>
@@ -113,7 +118,7 @@ export default function History() {
                 </Text>
                 <Text style={styles.date}>{date}</Text>
               </View>
-            </View>
+            </Pressable>
           );
         })
       )}
