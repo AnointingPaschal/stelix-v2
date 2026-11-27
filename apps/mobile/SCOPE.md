@@ -133,3 +133,30 @@ and the `chains` / `addressBook` / `discover` / `swap` /
 - Navigation, charting (`react-native-svg`, `react-native-qrcode-svg`),
   `lucide-react-native`, Safe Area, SecureStore, biometrics — UI/platform,
   not chain-specific.
+
+## Realtime admin sync + Maintenance Mode + admin network mode (2026-11-27)
+
+- The wallet polls the admin live (GET /api/sync, every 45s while open, on
+  foreground, on network-picker open, on pull-to-refresh, on manual Refresh).
+  This is live polling, NOT true push. A monotonic `sync_state.version`
+  bumps on every admin write, so edits land within one poll interval.
+- Deleted chains are tombstoned (`deleted_chains` table); disabled chains
+  stay disabled. Both are persisted on-device, so a deleted/disabled chain
+  never resurrects from the built-in fallback even when the admin API is down.
+- Maintenance Mode (admin page /maintenance, D1 `maintenance` table):
+  scope `wallet` blocks signing with a banner; scope `all` shows a full
+  maintenance screen with the admin's message. The admin portal itself is
+  never blocked.
+- Network mode (admin Chain Manager card, D1 `network_mode` table):
+  `null` = all networks (default), `testnet` / `mainnet` filters the wallet
+  to that mode's chains. The admin is the source of truth; the wallet's
+  network picker cannot override it. A mode flip while a signing modal is
+  open is deferred until the transaction flow finishes, then a
+  "Switched to Mainnet/Testnet by admin" notice is shown.
+- Safety guard, unchanged: switching mode does NOT deploy a vault, does NOT
+  bypass the mainnet gate, and does NOT make locks/swaps live on mainnet.
+  Arc Mainnet stays `active: false` in the built-in registry; it only
+  appears in the wallet when the admin sets mode = mainnet AND the admin D1
+  row for `arc-mainnet` is active. On any mainnet chain with no vault,
+  locks/swaps still refuse honestly ("Vault not deployed on Mainnet yet").
+  No vault is deployed on any chain; no independent audit exists.

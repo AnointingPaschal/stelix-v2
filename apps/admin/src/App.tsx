@@ -4,6 +4,7 @@ import Login from './pages/Login'
 import Launchpad from './pages/Launchpad'
 import Dashboard from './pages/Dashboard'
 import ContractStudio from './pages/ContractStudio'
+import Multisig from './pages/Multisig'
 import Chains from './pages/Chains'
 import Tokens from './pages/Tokens'
 import Keeper from './pages/Keeper'
@@ -12,6 +13,7 @@ import Announcements from './pages/Announcements'
 import Config from './pages/Config'
 import Support from './pages/Support'
 import ContractAudit from './pages/ContractAudit'
+import Maintenance from './pages/Maintenance'
 import Audit from './pages/Audit'
 export default function App() {
   return <Routes>
@@ -19,6 +21,7 @@ export default function App() {
     <Route element={<Layout />}>
       <Route path="/dashboard" element={<Dashboard />} />
       <Route path="/studio" element={<ContractStudio />} />
+      <Route path="/multisig" element={<Multisig />} />
       <Route path="/launchpad" element={<Launchpad />} />
       <Route path="/chains" element={<Chains />} />
       <Route path="/tokens" element={<Tokens />} />
@@ -26,6 +29,7 @@ export default function App() {
       <Route path="/fees" element={<Fees />} />
       <Route path="/announcements" element={<Announcements />} />
       <Route path="/config" element={<Config />} />
+      <Route path="/maintenance" element={<Maintenance />} />
       <Route path="/support" element={<Support />} />
       <Route path="/contract-audit" element={<ContractAudit />} />
       <Route path="/audit" element={<Audit />} />

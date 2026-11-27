@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react'
-import { Link2, Pencil, Plus, ShieldCheck, X } from 'lucide-react'
+import { Globe, Link2, Pencil, Plus, ShieldCheck, Trash2, X } from 'lucide-react'
 import { api } from '../lib/api'
 import { validateChainInput, type ChainFieldErrors, type ChainInput, type ChainStatus } from '../lib/chainValidation'
 import type { Chain } from '../lib/types'
@@ -79,8 +79,13 @@ export default function Chains() {
   const [edit, setEdit] = useState<ChainFormState>(emptyForm)
   const [editErrors, setEditErrors] = useState<ChainFieldErrors>({})
   const [toggling, setToggling] = useState('')
+  const [networkMode, setNetworkMode] = useState<'testnet' | 'mainnet' | null>(null)
+  const [modeBusy, setModeBusy] = useState(false)
 
-  const load = () => { api.getChains().then(setChains).catch((e: Error) => setError(e.message)) }
+  const load = () => {
+    api.getChains().then(setChains).catch((e: Error) => setError(e.message))
+    api.getNetworkMode().then((d) => setNetworkMode(d.networkMode)).catch(() => undefined)
+  }
   useEffect(() => { load() }, [])
 
   const set = (patch: Partial<ChainFormState>, which: 'add' | 'edit') => {
@@ -148,6 +153,33 @@ export default function Chains() {
       load()
     } catch (e) { setError(e instanceof Error ? e.message : 'Could not change chain status.') }
     finally { setToggling('') }
+  }
+
+  const deleteChain = async (c: Chain) => {
+    if (!window.confirm(`Delete ${c.name} (${c.id}) from the registry? The wallet will remove it on its next sync and can never bring it back from its built-in list. This cannot be undone except by adding the chain again.`)) return
+    setError('')
+    try {
+      await api.deleteChain(c.id)
+      setNotice(`Chain ${c.name} deleted and tombstoned — the wallet removes it on its next sync.`)
+      load()
+    } catch (e) { setError(e instanceof Error ? e.message : 'Could not delete chain.') }
+  }
+
+  const setMode = async (mode: 'testnet' | 'mainnet' | null) => {
+    setError('')
+    setModeBusy(true)
+    try {
+      const r = await api.setNetworkMode(mode)
+      setNetworkMode(r.networkMode)
+      setNotice(
+        mode === 'mainnet'
+          ? 'Network mode is now Mainnet — the wallet switches to mainnet networks (Arc Mainnet, BNB, Base, Ethereum, Polygon, Solana) on its next sync, within ~45s. This does NOT deploy a vault or bypass the mainnet gate: mainnet chains with no vault still refuse locks and swaps.'
+          : mode === 'testnet'
+            ? 'Network mode is now Testnet — the wallet switches to testnet networks on its next sync, within ~45s.'
+            : 'Network mode cleared — the wallet shows all networks again, as before.',
+      )
+    } catch (e) { setError(e instanceof Error ? e.message : 'Could not set network mode.') }
+    setModeBusy(false)
   }
 
   const renderForm = (f: ChainFormState, errors: ChainFieldErrors, which: 'add' | 'edit') => (
@@ -240,6 +272,25 @@ export default function Chains() {
       {error && <div className="notice alert"><ShieldCheck /><span>{error}</span></div>}
       {notice && <div className="notice ok"><ShieldCheck /><span>{notice}</span></div>}
 
+      <div className="card">
+        <h2 style={{ display: 'flex', alignItems: 'center', gap: 8 }}><Globe />Network mode — Testnet / Mainnet</h2>
+        <p className="muted">
+          The wallet follows this mode in real time (within ~45s): <b>Testnet</b> shows testnet chains only,
+          <b> Mainnet</b> shows mainnet chains only (Arc Mainnet 5042, BNB, Base, Ethereum, Polygon, Solana),
+          <b> All networks</b> shows everything, as before. The wallet switches to the paired chain when one
+          exists (Arc ↔ Arc Mainnet); a switch never happens mid-transaction — it waits until the user&apos;s
+          signing flow finishes. Flipping the mode does <b>not</b> deploy a vault, does <b>not</b> bypass the
+          mainnet gate, and does <b>not</b> make locks or swaps go live on mainnet: a mainnet chain with no
+          vault still refuses honestly in the wallet.
+        </p>
+        <p className="muted">Current mode: <b>{networkMode === 'mainnet' ? 'Mainnet' : networkMode === 'testnet' ? 'Testnet' : 'All networks (not set)'}</b></p>
+        <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+          <button className="btn mint" disabled={modeBusy || networkMode === 'testnet'} onClick={() => void setMode('testnet')}>Testnet</button>
+          <button className="btn" disabled={modeBusy || networkMode === 'mainnet'} onClick={() => void setMode('mainnet')}>Mainnet</button>
+          <button className="btn ghost" disabled={modeBusy || networkMode === null} onClick={() => void setMode(null)}>All networks</button>
+        </div>
+      </div>
+
       {showAdd && (
         <div className="card">
           <h2>Add chain</h2>
@@ -300,6 +351,9 @@ export default function Chains() {
                       </button>
                       <button className="btn ghost" disabled={toggling === c.id} onClick={() => toggleActive(c)}>
                         {c.active ? 'Disable' : 'Enable'}
+                      </button>
+                      <button className="btn ghost" onClick={() => void deleteChain(c)} title="Delete chain (refused when it is the default, has a vault, has a deployment, or still has registered tokens)">
+                        <Trash2 />Delete
                       </button>
                     </span>
                   </td>

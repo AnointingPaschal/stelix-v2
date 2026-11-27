@@ -160,6 +160,46 @@ export interface AuditGate {
   note: string
 }
 
+export interface MultisigRow {
+  id: number
+  chainId: string
+  label: string | null
+  owners: string[]
+  threshold: number
+  saltNonce: string
+  status: 'prepared' | 'deployed'
+  predictedAddress: string | null
+  safeAddress: string | null
+  deployTxHash: string | null
+  factoryAddress: string
+  singletonAddress: string
+  safeVersion: string
+  createdBy: string
+  createdAt: string
+  deployedAt: string | null
+}
+
+type MultisigDbRow = {
+  id: number; chain_id: string; label: string | null; owners_json: string; threshold: number
+  salt_nonce: string; status: MultisigRow['status']; predicted_address: string | null
+  safe_address: string | null; deploy_tx_hash: string | null; factory_address: string
+  singleton_address: string; safe_version: string; created_by: string; created_at: string
+  deployed_at: string | null
+}
+
+const mapMultisig = (r: MultisigDbRow): MultisigRow => {
+  let owners: string[] = []
+  try { owners = JSON.parse(r.owners_json) as string[] } catch { owners = [] }
+  return {
+    id: r.id, chainId: r.chain_id, label: r.label, owners, threshold: r.threshold,
+    saltNonce: r.salt_nonce, status: r.status, predictedAddress: r.predicted_address,
+    safeAddress: r.safe_address, deployTxHash: r.deploy_tx_hash,
+    factoryAddress: r.factory_address, singletonAddress: r.singleton_address,
+    safeVersion: r.safe_version, createdBy: r.created_by, createdAt: r.created_at,
+    deployedAt: r.deployed_at,
+  }
+}
+
 export interface ChainCreateData {
   id: string; name: string; chainId: number; rpcUrls: string | string[]; explorerUrl: string
   nativeToken: string; nativeDecimals?: number
@@ -213,6 +253,33 @@ export const api = {
    *  picker/Discover/Swap on the next registry refresh — no app rebuild. */
   async setChainActive(id: string, active: boolean): Promise<{ ok: boolean; active: boolean }> {
     return patchJson<{ ok: boolean; active: boolean }>(`/api/admin/chains/${encodeURIComponent(id)}/active`, { active })
+  },
+  /** Delete a chain. Refused (409) when it is the default, has a vault
+   *  deployed, has a recorded deployment, or still has registered tokens.
+   *  A deleted chain is tombstoned, so the wallet removes it on its next
+   *  sync and can never resurrect it from its built-in fallback. */
+  async deleteChain(id: string): Promise<{ ok: boolean; id: string; deleted: boolean }> {
+    const r = await fetch(`/api/admin/chains/${encodeURIComponent(id)}`, { method: 'DELETE', credentials: 'same-origin' })
+    if (!r.ok) {
+      const body = (await r.json().catch(() => ({}))) as { error?: string }
+      throw new Error(body.error ?? `Delete failed: ${r.status}`)
+    }
+    return r.json() as Promise<{ ok: boolean; id: string; deleted: boolean }>
+  },
+  /** Global testnet/mainnet mode the wallet follows (null = never set,
+   *  wallet shows all networks). Flipping it never deploys a vault or
+   *  bypasses the mainnet gate. */
+  async getNetworkMode(): Promise<{ networkMode: 'testnet' | 'mainnet' | null }> {
+    return live('/api/admin/network-mode')
+  },
+  async setNetworkMode(mode: 'testnet' | 'mainnet' | null): Promise<{ ok: boolean; networkMode: 'testnet' | 'mainnet' | null }> {
+    return post('/api/admin/network-mode', { mode })
+  },
+  async getMaintenance(): Promise<{ maintenance: { enabled: boolean; message: string; scope: 'all' | 'wallet'; updatedAt: string | null } }> {
+    return live('/api/admin/maintenance')
+  },
+  async setMaintenance(data: { enabled: boolean; message: string; scope: 'all' | 'wallet' }): Promise<{ ok: boolean; maintenance: { enabled: boolean; message: string; scope: 'all' | 'wallet'; updatedAt: string | null } }> {
+    return post('/api/admin/maintenance', data)
   },
   async getTokens(): Promise<{ id: number; symbol: string; chain: string; address: string; decimals: number; verified: boolean; featured: boolean }[]> {
     const d = await live<{ tokens: TokenRow[] }>('/api/admin/tokens')
@@ -382,6 +449,27 @@ export const api = {
   },
   async getAuditGate(): Promise<AuditGate> {
     return live('/api/admin/audit/gate')
+  },
+  async getMultisigs(): Promise<MultisigRow[]> {
+    const d = await live<{ multisigs: MultisigDbRow[] }>('/api/admin/multisigs')
+    return d.multisigs.map(mapMultisig)
+  },
+  async createMultisig(data: { chainId: string; label?: string | null; owners: string[]; threshold: number; saltNonce?: string; predictedAddress?: string | null }): Promise<{ ok: boolean; id: number | null }> {
+    return post('/api/admin/multisigs', data)
+  },
+  async setMultisigPredicted(id: number, predictedAddress: string): Promise<{ ok: boolean; predictedAddress: string }> {
+    return post(`/api/admin/multisigs/${id}/predicted`, { predictedAddress })
+  },
+  async confirmMultisig(id: number, safeAddress: string, txHash?: string | null): Promise<{ ok: boolean; safeAddress: string; chain: string; threshold: number; owners: string[] }> {
+    return post(`/api/admin/multisigs/${id}/confirm`, { safeAddress, txHash: txHash ?? undefined })
+  },
+  async deleteMultisig(id: number): Promise<{ ok: boolean }> {
+    const r = await fetch(`/api/admin/multisigs/${id}`, { method: 'DELETE', credentials: 'same-origin' })
+    if (!r.ok) {
+      const body = (await r.json().catch(() => ({}))) as { error?: string }
+      throw new Error(body.error ?? `Delete failed: ${r.status}`)
+    }
+    return r.json() as Promise<{ ok: boolean }>
   },
   async getBackup(): Promise<Record<string, unknown>> {
     return live('/api/admin/backup')

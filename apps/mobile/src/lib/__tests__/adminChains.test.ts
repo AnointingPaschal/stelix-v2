@@ -88,6 +88,43 @@ describe('mergeAdminChains', () => {
     expect(enabled.find((c) => c.id === 'base')?.active).toBe(true);
   });
 
+  it('a deleted chain never comes back: tombstones drop built-ins and remote-only rows', () => {
+    const tombstoned = mergeAdminChains(CHAINS, [row()], { deletedIds: ['bnb', 'arbitrum'] });
+    expect(tombstoned.some((c) => c.id === 'bnb')).toBe(false);
+    expect(tombstoned.some((c) => c.id === 'arbitrum')).toBe(false);
+    expect(tombstoned.some((c) => c.id === 'arc')).toBe(true);
+  });
+
+  it('a deleted chain stays deleted when the API is down (persisted tombstones)', () => {
+    const merged = mergeAdminChains(CHAINS, null, { deletedIds: ['bnb'] });
+    expect(merged.some((c) => c.id === 'bnb')).toBe(false);
+    expect(merged.some((c) => c.id === 'arc')).toBe(true);
+  });
+
+  it('a disabled chain stays disabled when the API is down (persisted disabled ids)', () => {
+    const merged = mergeAdminChains(CHAINS, null, { disabledIds: ['bnb'] });
+    expect(merged.find((c) => c.id === 'bnb')?.active).toBe(false);
+    expect(merged.find((c) => c.id === 'arc')?.active).toBe(true);
+  });
+
+  it('carries the admin DEX router and paired chain when verified', () => {
+    const merged = mergeAdminChains(CHAINS, [
+      row({
+        id: 'bnb', chain_id: 56,
+        dex_router: '0x10ED43C718714eb63d5aA57B78B54704E256024E',
+        paired_chain_id: 'bnb-testnet',
+      }),
+    ]);
+    const bnb = merged.find((c) => c.id === 'bnb');
+    expect(bnb?.dexRouter).toBe('0x10ED43C718714eb63d5aA57B78B54704E256024E');
+    expect(bnb?.pairedChainId).toBe('bnb-testnet');
+  });
+
+  it('an unverified router address is never carried (blank or malformed)', () => {
+    const merged = mergeAdminChains(CHAINS, [row({ id: 'bnb', chain_id: 56, dex_router: 'guess-me' })]);
+    expect(merged.find((c) => c.id === 'bnb')?.dexRouter).toBeNull();
+  });
+
   it('skips invalid remote rows instead of breaking the merge', () => {
     const merged = mergeAdminChains(CHAINS, [
       row({ id: '', name: '' }),
@@ -126,7 +163,7 @@ describe('fetchAdminChains', () => {
     global.fetch = jest.fn(async () => new Response(JSON.stringify(body), { status }));
   }
 
-  it('returns rows on a good response and caches them', async () => {
+  it('returns rows on a good response and refetches on every call (live polling — no time cache)', async () => {
     let calledUrl = '';
     const fetchMock = jest.fn(async (url: string) => {
       calledUrl = url;
@@ -136,10 +173,12 @@ describe('fetchAdminChains', () => {
     const first = await fetchAdminChains();
     expect(first?.[0].id).toBe('arbitrum');
     expect(fetchMock).toHaveBeenCalledTimes(1);
+    // A second call hits the server again: an admin edit must never wait
+    // out a cache. Only concurrent calls share one request.
     const second = await fetchAdminChains();
     expect(second?.[0].id).toBe('arbitrum');
-    expect(fetchMock).toHaveBeenCalledTimes(1);
-    expect(calledUrl).toMatch(/\/api\/chains$/);
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(calledUrl).toMatch(/\/api\/sync$/);
   });
 
   it('returns null on a network failure, so the wallet falls back to built-ins', async () => {

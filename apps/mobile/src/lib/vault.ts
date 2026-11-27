@@ -45,8 +45,22 @@ export const ERC20_APPROVE_ABI = [
 
 export { VAULT_NOT_DEPLOYED_MESSAGE };
 
-export function getVaultContract(chainId: string, runner: ethers.ContractRunner): ethers.Contract {
-  const address = requireVaultAddress(chainId); // throws not-deployed
+/**
+ * Resolve the vault address for a chain. `override` is the vault address
+ * from the merged admin registry (chain.vaultContract, see
+ * store/AppContext.tsx) — it wins when it is a well-formed 0x address,
+ * so a vault registered in Contract Studio takes effect in the wallet on
+ * the next admin sync with no app rebuild. Otherwise the built-in
+ * registry decides (and throws the not-deployed message when nothing is
+ * registered anywhere).
+ */
+export function resolveVaultAddress(chainId: string, override?: string | null): string {
+  if (override && /^0x[0-9a-fA-F]{40}$/.test(override.trim())) return override.trim();
+  return requireVaultAddress(chainId);
+}
+
+export function getVaultContract(chainId: string, runner: ethers.ContractRunner, vaultAddressOverride?: string | null): ethers.Contract {
+  const address = resolveVaultAddress(chainId, vaultAddressOverride); // throws not-deployed
   return new ethers.Contract(address, STELIX_VAULT_ABI, runner);
 }
 
@@ -131,6 +145,7 @@ export interface OnChainLocksResult {
 export async function getUserLocksOnChain(
   chainId: string,
   userAddress: string,
+  vaultAddressOverride?: string | null,
 ): Promise<OnChainLocksResult> {
   const chain = getChain(chainId);
   if (chain.kind !== 'evm' || chain.chainId === null) {
@@ -138,7 +153,7 @@ export async function getUserLocksOnChain(
   }
   let vaultAddress: string;
   try {
-    vaultAddress = requireVaultAddress(chainId);
+    vaultAddress = resolveVaultAddress(chainId, vaultAddressOverride);
   } catch {
     return { chainId, deployed: false, note: VAULT_NOT_DEPLOYED_MESSAGE, lockIds: [], locks: [] };
   }
@@ -179,6 +194,9 @@ export async function getUserLocksOnChain(
 
 export interface CreateLockOnChainParams {
   chainId: string;
+  /** Vault address from the merged admin registry (chain.vaultContract).
+   *  Wins when well-formed; otherwise the built-in registry decides. */
+  vaultAddress?: string | null;
   tokenAddress: string;
   tokenDecimals: number;
   stablecoinAddress: string;
@@ -253,7 +271,7 @@ export async function createLockOnChain(
   signer: ethers.Signer,
   params: CreateLockOnChainParams,
 ): Promise<{ txHash: string; lockId: number | null }> {
-  const vaultAddress = requireVaultAddress(params.chainId); // throws not-deployed
+  const vaultAddress = resolveVaultAddress(params.chainId, params.vaultAddress); // throws not-deployed
   const chain = getChain(params.chainId);
   const tuple = toOnChainCreateLockParams(params);
   const token = new ethers.Contract(params.tokenAddress, ERC20_APPROVE_ABI, signer);
@@ -285,8 +303,9 @@ async function sendVaultTx(
   chainId: string,
   method: 'claimMatured' | 'claimTriggeredStage' | 'requestBreak' | 'executeBreak',
   args: unknown[],
+  vaultAddressOverride?: string | null,
 ): Promise<string> {
-  const vaultAddress = requireVaultAddress(chainId); // throws not-deployed
+  const vaultAddress = resolveVaultAddress(chainId, vaultAddressOverride); // throws not-deployed
   const vault = new ethers.Contract(vaultAddress, STELIX_VAULT_ABI, signer);
   const tx = await (vault[method] as (...a: unknown[]) => Promise<ethers.TransactionResponse>)(...args);
   const receipt = await tx.wait();
@@ -294,8 +313,8 @@ async function sendVaultTx(
 }
 
 /** Owner claims a matured lock on-chain (penalty-free by construction). */
-export async function claimMaturedOnChain(signer: ethers.Signer, chainId: string, lockId: number): Promise<string> {
-  return sendVaultTx(signer, chainId, 'claimMatured', [lockId]);
+export async function claimMaturedOnChain(signer: ethers.Signer, chainId: string, lockId: number, vaultAddressOverride?: string | null): Promise<string> {
+  return sendVaultTx(signer, chainId, 'claimMatured', [lockId], vaultAddressOverride);
 }
 
 /** Owner manually claims a triggered ladder stage (no swap, no fee). */
@@ -304,18 +323,19 @@ export async function claimTriggeredStageOnChain(
   chainId: string,
   lockId: number,
   stageIndex: number,
+  vaultAddressOverride?: string | null,
 ): Promise<string> {
-  return sendVaultTx(signer, chainId, 'claimTriggeredStage', [lockId, stageIndex]);
+  return sendVaultTx(signer, chainId, 'claimTriggeredStage', [lockId, stageIndex], vaultAddressOverride);
 }
 
 /** Owner requests an early break (starts the 24h / 48h cooling-off). */
-export async function requestBreakOnChain(signer: ethers.Signer, chainId: string, lockId: number): Promise<string> {
-  return sendVaultTx(signer, chainId, 'requestBreak', [lockId]);
+export async function requestBreakOnChain(signer: ethers.Signer, chainId: string, lockId: number, vaultAddressOverride?: string | null): Promise<string> {
+  return sendVaultTx(signer, chainId, 'requestBreak', [lockId], vaultAddressOverride);
 }
 
 /** Owner executes a break after cooling-off (penalty per the lock terms). */
-export async function executeBreakOnChain(signer: ethers.Signer, chainId: string, lockId: number): Promise<string> {
-  return sendVaultTx(signer, chainId, 'executeBreak', [lockId]);
+export async function executeBreakOnChain(signer: ethers.Signer, chainId: string, lockId: number, vaultAddressOverride?: string | null): Promise<string> {
+  return sendVaultTx(signer, chainId, 'executeBreak', [lockId], vaultAddressOverride);
 }
 
 /**
@@ -331,8 +351,9 @@ export async function executeTriggerOnChain(
   keeperSigner: ethers.Signer,
   chainId: string,
   lockId: number,
+  vaultAddressOverride?: string | null,
 ): Promise<string> {
-  const vaultAddress = requireVaultAddress(chainId); // throws not-deployed
+  const vaultAddress = resolveVaultAddress(chainId, vaultAddressOverride); // throws not-deployed
   const vault = new ethers.Contract(vaultAddress, STELIX_VAULT_ABI, keeperSigner);
   const tx = await (vault.executeTrigger as (id: number) => Promise<ethers.TransactionResponse>)(lockId);
   const receipt = await tx.wait();

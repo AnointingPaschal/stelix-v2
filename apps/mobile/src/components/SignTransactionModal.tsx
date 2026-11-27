@@ -33,6 +33,7 @@ import { COLORS } from '../theme';
 import { BottomSheet, Btn } from './ui';
 import { isWrongPasswordError, shortAddr, validateSignPassword } from '../lib/signing';
 import { readBiometricSessionPassword, saveBiometricSessionPassword } from '../lib/wallet';
+import { useAppOptional } from '../store/AppContext';
 
 export interface SignTxRow {
   label: string;
@@ -77,6 +78,10 @@ interface SignTransactionModalProps {
   /** Called after a successful send so the caller can record the tx in
    *  History / update locks / refresh balances before success is shown. */
   onSigned: (result: SignTxResult) => void | Promise<void>;
+  /** Maintenance override (tests / callers outside the provider). When
+   *  omitted, the modal reads maintenance from AppContext. */
+  signingBlocked?: boolean;
+  maintenanceMessage?: string;
 }
 
 type Phase = 'review' | 'signing' | 'success';
@@ -88,6 +93,8 @@ export function SignTransactionModal({
   onClose,
   onSign,
   onSigned,
+  signingBlocked: signingBlockedProp,
+  maintenanceMessage: maintenanceMessageProp,
 }: SignTransactionModalProps) {
   const [phase, setPhase] = useState<Phase>('review');
   const [password, setPassword] = useState('');
@@ -95,6 +102,25 @@ export function SignTransactionModal({
   const [result, setResult] = useState<SignTxResult | null>(null);
   const [biometricsAvailable, setBiometricsAvailable] = useState(false);
   const [bioBusy, setBioBusy] = useState(false);
+
+  // Maintenance Mode: the ONE signing gate in the wallet. While the admin
+  // has maintenance on, no transaction may be signed — the password form
+  // and the Sign button are replaced by the admin's message. Props win
+  // when given (tests); otherwise the live value from AppContext.
+  const appCtx = useAppOptional();
+  const signingBlocked = signingBlockedProp ?? appCtx?.signingBlocked ?? false;
+  const maintenanceMessage = maintenanceMessageProp ?? appCtx?.maintenance.message ?? '';
+
+  // Tell AppContext a transaction flow is open while this modal is
+  // visible, so an admin network-mode flip is deferred until the flow
+  // finishes or is cancelled — never mid-transaction.
+  const setTxActive = appCtx?.setTransactionActive;
+  useEffect(() => {
+    setTxActive?.(visible);
+    return () => {
+      setTxActive?.(false);
+    };
+  }, [visible, setTxActive]);
 
   // Fresh state every time the modal opens; password never lingers.
   useEffect(() => {
@@ -131,6 +157,12 @@ export function SignTransactionModal({
 
   async function signWith(passwordValue: string) {
     if (!request) return;
+    // Defence in depth: even if a caller opened the modal while
+    // maintenance was off and it switched on mid-review, signing refuses.
+    if (signingBlocked) {
+      setError('Maintenance is on — signing is paused. Nothing was sent.');
+      return;
+    }
     const validation = validateSignPassword(passwordValue);
     if (validation) {
       setError(validation);
@@ -223,6 +255,21 @@ export function SignTransactionModal({
               </View>
             ) : null}
 
+            {signingBlocked ? (
+              <>
+                <View style={styles.warnBox}>
+                  <AlertTriangle size={16} color="#B45309" />
+                  <Text style={styles.warnText}>
+                    Maintenance is on — signing is paused. Nothing can be sent right now.
+                    {maintenanceMessage !== '' ? ` ${maintenanceMessage}` : ''}
+                  </Text>
+                </View>
+                <View style={styles.actions}>
+                  <Btn label="Close" variant="ghost" onPress={close} style={styles.actionBtn} />
+                </View>
+              </>
+            ) : (
+              <>
             <Text style={styles.authLabel}>Authenticate to sign</Text>
             {/* Keyboard avoidance lives in BottomSheet (KeyboardAvoidingView
                 + sheet shrinks by keyboard height + ScrollView scrolls to
@@ -271,6 +318,8 @@ export function SignTransactionModal({
               <ShieldCheck size={14} color={COLORS.textMuted} />
               <Text style={styles.secureText}>Closing this sheet cancels — nothing is sent.</Text>
             </View>
+              </>
+            )}
           </>
         )}
       </View>

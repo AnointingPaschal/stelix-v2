@@ -58,7 +58,7 @@ type MarketMap = Record<string, { price: number | null; change24h: number | null
 
 export default function Swap() {
   const params = useLocalSearchParams<{ from?: string; to?: string }>();
-  const { tokens, chain, address, settings, addTx, refreshBalances } = useApp();
+  const { tokens, chain, address, settings, addTx, refreshBalances, adminFees } = useApp();
   const { width, height } = useWindowDimensions();
   const insets = useSafeAreaInsets();
   const isWide = width >= 768;
@@ -607,6 +607,14 @@ export default function Swap() {
             />
             <QuoteRow label="Minimum received" value={`${fmtNum(outMin, 4)} ${toToken?.symbol}`} />
             <QuoteRow label="Slippage" value={`${slippage}%`} />
+            <QuoteRow
+              label="Stelix auto-sell fee (locks only)"
+              value={
+                adminFees.source === 'admin'
+                  ? `${adminFees.fees.autoSellFeePct}% (set by admin${adminFees.version !== null ? ` v${adminFees.version}` : ''}) — not charged on swaps`
+                  : 'No admin fee published — 0% (app default, locks only)'
+              }
+            />
             <QuoteRow
               label="Network fee (est.)"
               value={

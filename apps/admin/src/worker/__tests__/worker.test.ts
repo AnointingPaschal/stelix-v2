@@ -594,4 +594,245 @@ describe('Worker API (live endpoints, no sample data)', () => {
     const missing = await call(env, '/api/admin/launches/9999/contributions', { token })
     expect(missing.body.contributions).toEqual([])
   })
+
+  it('multisigs: prepare validates owners/threshold/chain; Solana refused, Arc allowed', async () => {
+    const owners = [
+      '0x1111111111111111111111111111111111111111',
+      '0x2222222222222222222222222222222222222222',
+      '0x3333333333333333333333333333333333333333',
+    ]
+    const noAuth = await call(env, '/api/admin/multisigs', {
+      method: 'POST', body: { chainId: 'bnb', owners, threshold: 2 },
+    })
+    expect(noAuth.status).toBe(401)
+    const badOwner = await call(env, '/api/admin/multisigs', {
+      method: 'POST', token, body: { chainId: 'bnb', owners: [owners[0], 'not-an-address', owners[2]], threshold: 2 },
+    })
+    expect(badOwner.status).toBe(400)
+    const tooHigh = await call(env, '/api/admin/multisigs', {
+      method: 'POST', token, body: { chainId: 'bnb', owners, threshold: 4 },
+    })
+    expect(tooHigh.status).toBe(400)
+    const zero = await call(env, '/api/admin/multisigs', {
+      method: 'POST', token, body: { chainId: 'bnb', owners, threshold: 0 },
+    })
+    expect(zero.status).toBe(400)
+    const dup = await call(env, '/api/admin/multisigs', {
+      method: 'POST', token, body: { chainId: 'bnb', owners: [owners[0], owners[1], owners[0].toUpperCase()], threshold: 2 },
+    })
+    expect(dup.status).toBe(400)
+    const one = await call(env, '/api/admin/multisigs', {
+      method: 'POST', token, body: { chainId: 'bnb', owners: [owners[0]], threshold: 1 },
+    })
+    expect(one.status).toBe(400)
+    const solana = await call(env, '/api/admin/multisigs', {
+      method: 'POST', token, body: { chainId: 'solana', owners, threshold: 2 },
+    })
+    expect(solana.status).toBe(400)
+    expect(JSON.stringify(solana.body.details)).toMatch(/Safe is not available on Solana/)
+    const ok = await call(env, '/api/admin/multisigs', {
+      method: 'POST', token, body: { chainId: 'bnb', label: 'Treasury', owners, threshold: 2, saltNonce: '0' },
+    })
+    expect(ok.status).toBe(201)
+    expect(ok.body.id).toBeGreaterThan(0)
+    // Arc: contracts are on-chain, creation is via CLI — preparing is allowed.
+    const arc = await call(env, '/api/admin/multisigs', {
+      method: 'POST', token, body: { chainId: 'arc', owners, threshold: 2 },
+    })
+    expect(arc.status).toBe(201)
+    const list = await call(env, '/api/admin/multisigs', { token })
+    expect(list.status).toBe(200)
+    const rows = list.body.multisigs as Record<string, unknown>[]
+    expect(rows.length).toBe(2)
+    expect(rows[0].status).toBe('prepared')
+    expect(rows[0].safe_address).toBeNull()
+    expect(rows[0].factory_address).toBe('0x4e1DCf7AD4e460CfD30791CCC4F9c8a4f820ec67')
+    expect(rows[0].singleton_address).toBe('0x41675C099F32341bf84BFc5382aF534df5C7461a')
+  })
+
+  it('multisigs: predicted + confirm verifies on-chain owners/threshold before recording', async () => {
+    const owners = [
+      '0x1111111111111111111111111111111111111111',
+      '0x2222222222222222222222222222222222222222',
+      '0x3333333333333333333333333333333333333333',
+    ]
+    const SAFE = '0x9B3E9B6B8f3D2C1A4E5F60718293A4B5C6D7E8F9'
+    const created = await call(env, '/api/admin/multisigs', {
+      method: 'POST', token, body: { chainId: 'bnb', owners, threshold: 2 },
+    })
+    expect(created.status).toBe(201)
+    const id = created.body.id as number
+    // RPC stub: the Safe exists at SAFE with the prepared owners; threshold
+    // is mutable so the mismatch case can be exercised.
+    let onChainThreshold = 2
+    let codePresent = true
+    const uint256 = (n: number) => '0x' + BigInt(n).toString(16).padStart(64, '0')
+    const encodeOwners = (list: string[]) => {
+      let hex = '0x' + '20'.padStart(64, '0') + list.length.toString(16).padStart(64, '0')
+      for (const o of list) hex += '0'.repeat(24) + o.slice(2).toLowerCase()
+      return hex
+    }
+    globalThis.fetch = vi.fn(async (_input: RequestInfo | URL, init?: RequestInit) => {
+      let method = ''
+      let params: unknown[] = []
+      try {
+        const b = JSON.parse(String(init?.body ?? '{}')) as { method?: string; params?: unknown[] }
+        method = b.method ?? ''
+        params = b.params ?? []
+      } catch { method = '' }
+      if (method === 'eth_getCode') {
+        const addr = String((params as string[])[0] ?? '').toLowerCase()
+        return new Response(JSON.stringify({ jsonrpc: '2.0', id: 1, result: addr === SAFE.toLowerCase() && codePresent ? '0x608060405234801561001057600080fd5b50' : '0x' }), { status: 200 })
+      }
+      if (method === 'eth_call') {
+        const data = String(((params as { data?: string }[])[0] ?? {}).data ?? '')
+        if (data.startsWith('0x0d582f13')) return new Response(JSON.stringify({ jsonrpc: '2.0', id: 1, result: uint256(onChainThreshold) }), { status: 200 })
+        if (data.startsWith('0xa0e67e2b')) return new Response(JSON.stringify({ jsonrpc: '2.0', id: 1, result: encodeOwners(owners) }), { status: 200 })
+      }
+      return new Response(JSON.stringify({ jsonrpc: '2.0', id: 1, result: '0x' + '0'.repeat(64) }), { status: 200 })
+    }) as unknown as typeof fetch
+    // No code at a random address: cannot confirm a Safe that is not deployed.
+    const noCode = await call(env, `/api/admin/multisigs/${id}/confirm`, {
+      method: 'POST', token, body: { safeAddress: '0xAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA' },
+    })
+    expect(noCode.status).toBe(400)
+    expect(String(noCode.body.error)).toMatch(/No contract code/)
+    // Predicted address: recorded, but still not usable as Owner.
+    const predicted = await call(env, `/api/admin/multisigs/${id}/predicted`, {
+      method: 'POST', token, body: { predictedAddress: SAFE },
+    })
+    expect(predicted.status).toBe(200)
+    expect(predicted.body.predictedAddress).toBe(SAFE.toLowerCase())
+    // On-chain threshold differs from the prepared one: refuse.
+    onChainThreshold = 1
+    const mismatch = await call(env, `/api/admin/multisigs/${id}/confirm`, {
+      method: 'POST', token, body: { safeAddress: SAFE },
+    })
+    expect(mismatch.status).toBe(400)
+    expect(String(mismatch.body.error)).toMatch(/On-chain threshold is 1/)
+    // Matching owners + threshold: recorded as deployed.
+    onChainThreshold = 2
+    const confirmed = await call(env, `/api/admin/multisigs/${id}/confirm`, {
+      method: 'POST', token, body: { safeAddress: SAFE, txHash: '0x' + 'b'.repeat(64) },
+    })
+    expect(confirmed.status).toBe(201)
+    expect(confirmed.body.safeAddress).toBe(SAFE.toLowerCase())
+    expect(confirmed.body.threshold).toBe(2)
+    const list = await call(env, '/api/admin/multisigs', { token })
+    const row = (list.body.multisigs as Record<string, unknown>[])[0]
+    expect(row.status).toBe('deployed')
+    expect(row.safe_address).toBe(SAFE.toLowerCase())
+    // Confirm twice and delete-when-deployed are both refused.
+    const again = await call(env, `/api/admin/multisigs/${id}/confirm`, {
+      method: 'POST', token, body: { safeAddress: SAFE },
+    })
+    expect(again.status).toBe(409)
+    const delDeployed = await call(env, `/api/admin/multisigs/${id}`, { method: 'DELETE', token })
+    expect(delDeployed.status).toBe(409)
+    // A prepared multisig can still be discarded.
+    const second = await call(env, '/api/admin/multisigs', {
+      method: 'POST', token, body: { chainId: 'bnb', owners, threshold: 2 },
+    })
+    const delPrepared = await call(env, `/api/admin/multisigs/${second.body.id as number}`, { method: 'DELETE', token })
+    expect(delPrepared.status).toBe(200)
+    codePresent = true
+  })
+
+  // ---- Realtime sync (live polling, not push) + maintenance + network mode ----
+  it('sync: /api/sync returns every section plus a version that bumps on each admin write', async () => {
+    const first = await call(env, '/api/sync')
+    expect(first.status).toBe(200)
+    expect(first.body.version).toBe(0)
+    expect(Array.isArray(first.body.chains)).toBe(true)
+    expect(first.body.deletedIds).toEqual([])
+    expect(first.body.fees).toBeNull()
+    expect(first.body.maintenance).toEqual({ enabled: false, message: '', scope: 'wallet', updatedAt: null })
+    expect(first.body.networkMode).toBeNull()
+    const fee = await call(env, '/api/admin/fees', { method: 'POST', token, body: { autoSellFeePct: 2, minLockUsd: 25, maxLockUsd: 50000, defaultPenaltyPct: 7, twapMinutes: 30, trailingStopOptions: 'Off, 10%', defaultSlippagePct: 1, penaltyDestination: 'treasury' } })
+    expect(fee.status).toBe(201)
+    const second = await call(env, '/api/sync')
+    expect(second.body.version).toBe(1)
+    expect((second.body.fees as { autoSellFeePct: number }).autoSellFeePct).toBe(2)
+    // The public fee feed mirrors the same value.
+    const pubFees = await call(env, '/api/fees')
+    expect((pubFees.body.fees as { autoSellFeePct: number }).autoSellFeePct).toBe(2)
+  })
+
+  it('chains: DELETE refuses the default chain and a chain with a vault, and tombstones a clean chain', async () => {
+    const delDefault = await call(env, '/api/admin/chains/arc', { method: 'DELETE', token })
+    expect(delDefault.status).toBe(409)
+    expect(String(delDefault.body.error)).toMatch(/default/)
+    // Give bnb a vault: deletion must be refused.
+    const bnb = db.tables.chains.find((c) => c.id === 'bnb')
+    if (bnb) bnb.vault_address = '0x1111111111111111111111111111111111111111'
+    const delVault = await call(env, '/api/admin/chains/bnb', { method: 'DELETE', token })
+    expect(delVault.status).toBe(409)
+    expect(String(delVault.body.error)).toMatch(/vault/)
+    // A clean chain deletes, disappears from /api/chains, and is tombstoned.
+    const created = await call(env, '/api/admin/chains', { method: 'POST', token, body: { id: 'optimism', name: 'Optimism', chainId: 10, rpcUrls: 'https://mainnet.optimism.io', explorerUrl: 'https://optimistic.etherscan.io', nativeToken: 'ETH', stablecoin: 'USDC', stablecoinAddress: '', dexRouter: '', status: 'hidden' } })
+    expect(created.status).toBe(201)
+    const noAuth = await call(env, '/api/admin/chains/optimism', { method: 'DELETE' })
+    expect(noAuth.status).toBe(401)
+    const del = await call(env, '/api/admin/chains/optimism', { method: 'DELETE', token })
+    expect(del.status).toBe(200)
+    expect(del.body.deleted).toBe(true)
+    const pub = await call(env, '/api/chains')
+    expect((pub.body.chains as { id: string }[]).some((c) => c.id === 'optimism')).toBe(false)
+    expect((pub.body.deletedIds as string[])).toContain('optimism')
+    expect(pub.body.version).toBeGreaterThan(0)
+    // Re-adding the same slug clears the tombstone.
+    const readded = await call(env, '/api/admin/chains', { method: 'POST', token, body: { id: 'optimism', name: 'Optimism', chainId: 10, rpcUrls: 'https://mainnet.optimism.io', explorerUrl: 'https://optimistic.etherscan.io', nativeToken: 'ETH', stablecoin: 'USDC', stablecoinAddress: '', dexRouter: '', status: 'hidden' } })
+    expect(readded.status).toBe(201)
+    const pub2 = await call(env, '/api/chains')
+    expect((pub2.body.deletedIds as string[])).not.toContain('optimism')
+  })
+
+  it('tokens: the public registry feed lists added tokens and drops removed ones', async () => {
+    const empty = await call(env, '/api/tokens')
+    expect((empty.body.tokens as unknown[])).toEqual([])
+    const add = await call(env, '/api/admin/tokens', { method: 'POST', token, body: { symbol: 'USDC', chainId: 'arc', address: '0x3600000000000000000000000000000000000000', decimals: 6, verified: true } })
+    expect(add.status).toBe(201)
+    const listed = await call(env, '/api/tokens')
+    expect((listed.body.tokens as { symbol: string }[]).map((t) => t.symbol)).toContain('USDC')
+    const del = await call(env, `/api/admin/tokens?id=${add.body.id as number}`, { method: 'DELETE', token })
+    expect(del.status).toBe(200)
+    const gone = await call(env, '/api/tokens')
+    expect((gone.body.tokens as unknown[])).toEqual([])
+  })
+
+  it('maintenance: set on/off from admin, served publicly and in /api/sync, validated', async () => {
+    const noAuth = await call(env, '/api/admin/maintenance', { method: 'POST', body: { enabled: true, message: 'Down', scope: 'wallet' } })
+    expect(noAuth.status).toBe(401)
+    const badScope = await call(env, '/api/admin/maintenance', { method: 'POST', token, body: { enabled: true, message: 'Down', scope: 'everywhere' } })
+    expect(badScope.status).toBe(400)
+    const noMessage = await call(env, '/api/admin/maintenance', { method: 'POST', token, body: { enabled: true, message: '', scope: 'wallet' } })
+    expect(noMessage.status).toBe(400)
+    const on = await call(env, '/api/admin/maintenance', { method: 'POST', token, body: { enabled: true, message: 'Scheduled maintenance — back soon.', scope: 'all' } })
+    expect(on.status).toBe(200)
+    expect((on.body.maintenance as { enabled: boolean }).enabled).toBe(true)
+    const pub = await call(env, '/api/maintenance')
+    expect((pub.body.maintenance as { message: string }).message).toBe('Scheduled maintenance — back soon.')
+    expect((pub.body.maintenance as { scope: string }).scope).toBe('all')
+    const sync = await call(env, '/api/sync')
+    expect((sync.body.maintenance as { enabled: boolean }).enabled).toBe(true)
+    const off = await call(env, '/api/admin/maintenance', { method: 'POST', token, body: { enabled: false, message: '', scope: 'wallet' } })
+    expect(off.status).toBe(200)
+    expect((off.body.maintenance as { enabled: boolean }).enabled).toBe(false)
+  })
+
+  it('network mode: admin sets testnet/mainnet, wallet reads it from /api/sync, invalid rejected', async () => {
+    const initial = await call(env, '/api/admin/network-mode', { token })
+    expect(initial.body.networkMode).toBeNull()
+    const bad = await call(env, '/api/admin/network-mode', { method: 'POST', token, body: { mode: 'sideways' } })
+    expect(bad.status).toBe(400)
+    const set = await call(env, '/api/admin/network-mode', { method: 'POST', token, body: { mode: 'mainnet' } })
+    expect(set.status).toBe(200)
+    expect(set.body.networkMode).toBe('mainnet')
+    const sync = await call(env, '/api/sync')
+    expect(sync.body.networkMode).toBe('mainnet')
+    expect(sync.body.version).toBeGreaterThan(0)
+    const clear = await call(env, '/api/admin/network-mode', { method: 'POST', token, body: { mode: null } })
+    expect(clear.status).toBe(200)
+    expect(clear.body.networkMode).toBeNull()
+  })
 })

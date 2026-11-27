@@ -4,7 +4,7 @@ import source from '../contracts/StelixVault.sol?raw'
 import { SOLC_PINNED } from '../lib/types'
 import { ARC_TESTNET, arcNetworkFor } from '../lib/arcNetworks'
 import { mainnetConfirmPhrase, testnetChainIdFor, validateDeployParams } from '../lib/deployParams'
-import { api, type AuditGate, type CompileResult } from '../lib/api'
+import { api, type AuditGate, type CompileResult, type MultisigRow } from '../lib/api'
 import type { Chain } from '../lib/types'
 import { LiveNote, PageHeader, SectionTitle } from '../components/ui'
 
@@ -40,6 +40,7 @@ export default function ContractStudio() {
   const [smokeAttested, setSmokeAttested] = useState(false)
   const [smokeNote, setSmokeNote] = useState('')
   const [deploys, setDeploys] = useState<Deployment[]>([])
+  const [multisigs, setMultisigs] = useState<MultisigRow[]>([])
   const [gate, setGate] = useState<AuditGate | null>(null)
   const [prepareCmd, setPrepareCmd] = useState('')
   const [error, setError] = useState('')
@@ -99,9 +100,15 @@ export default function ContractStudio() {
       if (c.length > 0 && !fams.has(chainFamily)) setChainFamily('arc')
     }).catch(() => undefined)
     api.getDeployments().then((d) => setDeploys(d.deployments)).catch(() => undefined)
+    api.getMultisigs().then(setMultisigs).catch(() => undefined)
     api.getAuditGate().then(setGate).catch(() => undefined)
   }
   useEffect(load, [])
+
+  // Deployed (on-chain verified) multisigs on the selected network only:
+  // only these may be picked as Owner. A merely prepared multisig has no
+  // Safe address yet and never appears here.
+  const deployedMultisigs = multisigs.filter((m) => m.status === 'deployed' && m.chainId === effectiveChainId)
 
   const auditGatePass = gate?.gatePass ?? false
   // The verified testnet deployment that gates a mainnet deploy lives
@@ -285,6 +292,24 @@ export default function ContractStudio() {
             )}
             <label>Constructor parameters — StelixVault(owner, keeper, router, priceFeed, penaltyRecipient, feeRecipient, autoSellFeeBps)</label>
             <input placeholder="Owner (multisig recommended)" value={params.owner} onChange={(e) => setParams({ ...params, owner: e.target.value })} />
+            {deployedMultisigs.length > 0 ? (
+              <>
+                <label style={{ marginTop: 8 }}>Or use a deployed multisig as Owner (one tap — verified on-chain)</label>
+                <select
+                  value={deployedMultisigs.some((m) => m.safeAddress === params.owner) ? params.owner : ''}
+                  onChange={(e) => { if (e.target.value) setParams({ ...params, owner: e.target.value }) }}
+                >
+                  <option value="">Choose a deployed multisig…</option>
+                  {deployedMultisigs.map((m) => (
+                    <option key={m.id} value={m.safeAddress ?? ''}>
+                      {m.threshold}-of-{m.owners.length} · {m.safeAddress}{m.label ? ` — ${m.label}` : ''}
+                    </option>
+                  ))}
+                </select>
+              </>
+            ) : (
+              <p className="field-hint">No deployed multisig on {networkName} yet — <a href="/multisig">create one in the Multisig Creator</a>. Only a Safe verified on-chain can be picked here.</p>
+            )}
             <input placeholder="Keeper address" style={{ marginTop: 8 }} value={params.keeper} onChange={(e) => setParams({ ...params, keeper: e.target.value })} />
             <input placeholder="DEX router address (confirmed on explorer — never guess)" style={{ marginTop: 8 }} value={params.router} onChange={(e) => setParams({ ...params, router: e.target.value })} />
             <input placeholder="Price feed address (TWAP / Chainlink adapter)" style={{ marginTop: 8 }} value={params.priceFeed} onChange={(e) => setParams({ ...params, priceFeed: e.target.value })} />

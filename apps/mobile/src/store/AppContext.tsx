@@ -10,7 +10,27 @@
 import React, { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from 'react';
 import { AppState as RNAppState } from 'react-native';
 import { ACTIVE_CHAINS, CHAINS, DEFAULT_CHAIN, VAULT_NOT_DEPLOYED_MESSAGE, type ChainConfig } from '../lib/chains';
-import { fetchAdminChains, mergeAdminChains } from '../lib/adminChains';
+import { mergeAdminChains } from '../lib/adminChains';
+import {
+  ADMIN_POLL_INTERVAL_MS,
+  resolveModeChange,
+  fetchAdminSync,
+  filterChainsByMode,
+  loadPersistedAdminChainState,
+  loadPersistedNetworkMode,
+  maintenanceBlocksApp as maintenanceBlocksAppFn,
+  maintenanceBlocksSigning,
+  mergeWithPersistedState,
+  resolveEffectiveFees,
+  MAINTENANCE_OFF,
+  type AdminAnnouncement,
+  type AdminAppConfig,
+  type AdminSyncData,
+  type AdminTokenEntry,
+  type EffectiveFees,
+  type MaintenanceState,
+  type NetworkMode,
+} from '../lib/adminSync';
 import { fetchBalances, loadImportedTokens, type TokenBalance } from '../lib/balances';
 import { fetchHistory, filterHistory, type TxRecord } from '../lib/history';
 import { getUserLocksOnChain, lockedByToken, mapChainLockToBullLock, type BullLock } from '../lib/vault';
@@ -92,6 +112,47 @@ interface AppState {
    *  rebuild; built-ins are the fallback when the admin API is down). */
   availableChains: ChainConfig[];
   refreshChains: () => Promise<void>;
+  /** Live admin sync (live polling, not push — see refreshAdmin). */
+  refreshAdmin: () => Promise<void>;
+  /** Effective fee config: the admin's published fees when one exists,
+   *  otherwise the local defaults with source 'default' (the UI must say
+   *  so — a hardcoded fee never silently overrides an admin edit). */
+  adminFees: EffectiveFees;
+  /** Unexpired public announcements from the admin (audience 'all' or a
+   *  chain slug); the Home screen filters by chain + dismissals. */
+  announcements: AdminAnnouncement[];
+  /** Latest signed app config, or null when none is published yet. */
+  appConfig: AdminAppConfig | null;
+  /** Token/DEX registry entries (verified/allow list). */
+  adminTokens: AdminTokenEntry[];
+  /** True once at least one admin sync has succeeded; the import screen
+   *  only shows "not in the registry" once this is true. */
+  adminTokensSynced: boolean;
+  /** Maintenance mode from the admin. */
+  maintenance: MaintenanceState;
+  /** True while maintenance is on (either scope): signing is blocked. */
+  signingBlocked: boolean;
+  /** True while maintenance is on with scope 'all': the whole wallet is
+   *  behind a maintenance screen. */
+  maintenanceBlocksApp: boolean;
+  /** Wall-clock time of the last successful admin sync, or null. */
+  adminLastSyncAt: number | null;
+  /** Monotonic sync version from the server, or null before first sync. */
+  adminSyncVersion: number | null;
+  /** Admin's global network mode: 'testnet' | 'mainnet' | null (never set
+   *  = all networks). The admin is the source of truth — the wallet's
+   *  network picker cannot override it. */
+  networkMode: NetworkMode;
+  /** Notice shown after an admin mode flip ("Switched to Mainnet by
+   *  admin"), or null. Dismissible. */
+  modeNotice: string | null;
+  dismissModeNotice: () => void;
+  /** True while a signing modal is open (a transaction flow is in
+   *  progress). An admin mode flip during this time is deferred until
+   *  the flow finishes or is cancelled — never mid-transaction. */
+  transactionActive: boolean;
+  setTransactionActive: (v: boolean) => void;
+  dismissAnnouncement: (id: number) => void;
   tokens: TokenBalance[];
   locks: BullLock[];
   history: TxRecord[];
@@ -140,25 +201,200 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
   const [solanaAddress, setSolanaAddress] = useState('');
   const [chain, setChainState] = useState<ChainConfig>(DEFAULT_CHAIN);
   const [availableChains, setAvailableChains] = useState<ChainConfig[]>(ACTIVE_CHAINS);
+  const [adminFees, setAdminFees] = useState<EffectiveFees>(() => resolveEffectiveFees(null, null));
+  const [announcements, setAnnouncements] = useState<AdminAnnouncement[]>([]);
+  const [appConfig, setAppConfig] = useState<AdminAppConfig | null>(null);
+  const [adminTokens, setAdminTokens] = useState<AdminTokenEntry[]>([]);
+  const [adminTokensSynced, setAdminTokensSynced] = useState(false);
+  const [maintenance, setMaintenance] = useState<MaintenanceState>(MAINTENANCE_OFF);
+  const [adminLastSyncAt, setAdminLastSyncAt] = useState<number | null>(null);
+  const [adminSyncVersion, setAdminSyncVersion] = useState<number | null>(null);
+  const [dismissedIds, setDismissedIds] = useState<number[]>([]);
+  const [networkMode, setNetworkMode] = useState<NetworkMode>(null);
+  const [modeNotice, setModeNotice] = useState<string | null>(null);
+  const [transactionActive, setTransactionActiveState] = useState(false);
+  const chainRef = useRef(chain);
+  useEffect(() => {
+    chainRef.current = chain;
+  }, [chain]);
+  const adminSyncVersionRef = useRef<number | null>(null);
+  const networkModeRef = useRef<NetworkMode>(null);
+  const pendingModeRef = useRef<NetworkMode>(null);
+  const transactionActiveRef = useRef(false);
+  const lastMergedRef = useRef<ChainConfig[] | null>(null);
+  const setTransactionActive = useCallback((v: boolean) => {
+    transactionActiveRef.current = v;
+    setTransactionActiveState(v);
+  }, []);
 
-  /** Pull the admin chain registry once and merge it over the built-in
-   *  registry. On ANY failure fetchAdminChains returns null and the
-   *  merge returns the built-ins unchanged — the app never breaks
-   *  because the admin is down. A chain added in admin appears in the
-   *  picker after this runs; its vault/router still need verified
-   *  contract addresses before locks/swaps go live on it. */
-  const refreshChains = useCallback(async () => {
+  /**
+   * Live admin sync — LIVE POLLING, not push. One GET /api/sync carries
+   * chains (+ tombstones), fees, announcements, signed config, token
+   * registry and maintenance, plus the server's monotonic version; state
+   * is only re-applied when the version changes, so an admin edit lands
+   * within one poll interval (~45s).
+   *
+   * On ANY fetch failure the last-known state is kept — except the
+   * persisted tombstones / disabled ids, which are still applied on top
+   * of the built-ins: a chain the admin deleted or disabled stays gone
+   * while the API is down and is never resurrected from the fallback.
+   */
+  const refreshAdmin = useCallback(async () => {
+    let data: AdminSyncData | null = null;
     try {
-      const remote = await fetchAdminChains();
-      setAvailableChains(mergeAdminChains(CHAINS, remote));
+      data = await fetchAdminSync();
     } catch {
-      setAvailableChains(ACTIVE_CHAINS);
+      data = null;
+    }
+    if (data) {
+      if (data.version === adminSyncVersionRef.current) return;
+      adminSyncVersionRef.current = data.version;
+      setAdminSyncVersion(data.version);
+      setAdminLastSyncAt(Date.now());
+      const merged = mergeAdminChains(CHAINS, data.chains, { deletedIds: data.deletedIds });
+      lastMergedRef.current = merged;
+      setAdminFees(resolveEffectiveFees(data.fees, data.feeVersion));
+      setAnnouncements(data.announcements);
+      setAppConfig(data.config);
+      setAdminTokens(data.tokens);
+      setAdminTokensSynced(true);
+      setMaintenance(data.maintenance);
+      // Network mode (admin-controlled testnet/mainnet switch). A flip
+      // while a transaction is in progress is DEFERRED — the mode and
+      // the chain switch wait until the flow finishes or is cancelled
+      // (see the transactionActive effect below); the user is never
+      // switched mid-transaction.
+      const decision = resolveModeChange({
+        currentMode: networkModeRef.current,
+        nextMode: data.networkMode,
+        transactionActive: transactionActiveRef.current,
+        chains: merged,
+        currentChain: chainRef.current,
+      });
+      if (decision.deferred) {
+        pendingModeRef.current = data.networkMode;
+        setAvailableChains(filterChainsByMode(merged, networkModeRef.current));
+        return;
+      }
+      pendingModeRef.current = null;
+      const effectiveMode = data.networkMode;
+      const visible = filterChainsByMode(merged, effectiveMode);
+      setAvailableChains(visible);
+      if (effectiveMode !== networkModeRef.current) {
+        networkModeRef.current = effectiveMode;
+        setNetworkMode(effectiveMode);
+        if (decision.notice) setModeNotice(decision.notice);
+      }
+      if (decision.chain) {
+        setChainState(decision.chain);
+      } else {
+        // If the chain the user is on was deleted or disabled, move them
+        // to the default chain instead of leaving them on a dead chain.
+        const current = chainRef.current;
+        if (!visible.some((c) => c.id === current.id && c.active)) {
+          const fallback = visible.find((c) => c.isDefault && c.active) ?? visible.find((c) => c.active) ?? DEFAULT_CHAIN;
+          if (fallback.id !== current.id) setChainState(fallback);
+        }
+      }
+      return;
+    }
+    // API down: keep last-known fees/announcements/config/maintenance,
+    // but still apply the persisted tombstones / disabled ids.
+    try {
+      const persisted = await loadPersistedAdminChainState();
+      if (persisted.deletedIds.length > 0 || persisted.disabledIds.length > 0) {
+        const merged = mergeWithPersistedState(CHAINS, persisted);
+        lastMergedRef.current = merged;
+        const visible = filterChainsByMode(merged, networkModeRef.current);
+        setAvailableChains(visible);
+        const current = chainRef.current;
+        if (!visible.some((c) => c.id === current.id && c.active)) {
+          const fallback = visible.find((c) => c.isDefault && c.active) ?? visible.find((c) => c.active) ?? DEFAULT_CHAIN;
+          if (fallback.id !== current.id) setChainState(fallback);
+        }
+      }
+    } catch {
+      // Persistence read failed — keep the current chain list as-is.
     }
   }, []);
 
+  /** Manual refresh / network-picker open: same sync, now. */
+  const refreshChains = useCallback(async () => {
+    adminSyncVersionRef.current = null; // force re-apply even if the version is unchanged
+    await refreshAdmin();
+  }, [refreshAdmin]);
+
+  // Initial sync on launch.
   useEffect(() => {
-    void refreshChains();
-  }, [refreshChains]);
+    void refreshAdmin();
+  }, [refreshAdmin]);
+
+  // Restore the last-seen admin network mode (persisted across restarts)
+  // so the mode chip is correct before the first sync lands.
+  useEffect(() => {
+    void (async () => {
+      const mode = await loadPersistedNetworkMode();
+      networkModeRef.current = mode;
+      setNetworkMode(mode);
+    })();
+  }, []);
+
+  // A mode flip deferred mid-transaction applies once the transaction
+  // flow ends: force a fresh sync (version check bypassed) so the
+  // decision runs with transactionActive false.
+  useEffect(() => {
+    if (!transactionActive && pendingModeRef.current !== null && pendingModeRef.current !== networkModeRef.current) {
+      pendingModeRef.current = null;
+      adminSyncVersionRef.current = null;
+      void refreshAdmin();
+    } else if (!transactionActive) {
+      pendingModeRef.current = null;
+    }
+  }, [transactionActive, refreshAdmin]);
+
+  const dismissModeNotice = useCallback(() => setModeNotice(null), []);
+
+  // Live polling while the app is open: every ADMIN_POLL_INTERVAL_MS,
+  // skipped while backgrounded. Foregrounding triggers an immediate sync
+  // (see the AppState listener below).
+  const appActiveRef = useRef(true);
+  useEffect(() => {
+    const timer = setInterval(() => {
+      if (appActiveRef.current) void refreshAdmin();
+    }, ADMIN_POLL_INTERVAL_MS);
+    return () => clearInterval(timer);
+  }, [refreshAdmin]);
+
+  // Dismissed announcement ids, persisted so a dismissed banner stays dismissed.
+  const DISMISSED_ANNOUNCEMENTS_KEY = 'stelix.admin.dismissedAnnouncements.v1';
+  useEffect(() => {
+    void (async () => {
+      try {
+        const raw = await kvGet(DISMISSED_ANNOUNCEMENTS_KEY);
+        if (raw) {
+          const parsed: unknown = JSON.parse(raw);
+          if (Array.isArray(parsed)) setDismissedIds(parsed.filter((x): x is number => typeof x === 'number'));
+        }
+      } catch {
+        // Keep an empty dismissal list.
+      }
+    })();
+  }, []);
+  const dismissAnnouncement = useCallback(
+    (id: number) => {
+      setDismissedIds((prev) => {
+        if (prev.includes(id)) return prev;
+        const next = [...prev, id];
+        void kvSet(DISMISSED_ANNOUNCEMENTS_KEY, JSON.stringify(next));
+        return next;
+      });
+    },
+    [],
+  );
+  const visibleAnnouncements = useMemo(
+    () => announcements.filter((a) => !dismissedIds.includes(a.id)),
+    [announcements, dismissedIds],
+  );
   const [tokens, setTokens] = useState<TokenBalance[]>([]);
   const [locks, setLocks] = useState<BullLock[]>([]);
   const [allHistory, setAllHistory] = useState<TxRecord[]>([]);
@@ -222,7 +458,9 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
   const refreshLocks = useCallback(async () => {
     if (!address) return;
     try {
-      const res = await getUserLocksOnChain(chain.id, address);
+      // Pass the merged chain's vault address: a vault registered in
+      // Contract Studio takes effect here on the next admin sync.
+      const res = await getUserLocksOnChain(chain.id, address, chain.vaultContract);
       setVaultNote(res.deployed ? null : res.note);
       if (!res.deployed) {
         setLocks([]);
@@ -248,7 +486,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
       setVaultNote(e instanceof Error ? e.message : String(e));
       setLocks([]);
     }
-  }, [address, chain.id, tokens]);
+  }, [address, chain.id, chain.vaultContract, tokens]);
 
   const refreshHistory = useCallback(async () => {
     if (!chainAddress) return;
@@ -262,8 +500,10 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
   }, [chainAddress, chain.id]);
 
   const refreshAll = useCallback(async () => {
-    await Promise.all([refreshBalances(), refreshLocks(), refreshHistory()]);
-  }, [refreshBalances, refreshLocks, refreshHistory]);
+    // Pull-to-refresh refreshes balances/locks/history AND the admin
+    // sync, so an admin edit shows immediately on demand.
+    await Promise.all([refreshBalances(), refreshLocks(), refreshHistory(), refreshAdmin()]);
+  }, [refreshBalances, refreshLocks, refreshHistory, refreshAdmin]);
 
   // On launch: if a wallet is stored, surface its address (locked until
   // the user unlocks with the session password). The SecureStore read is
@@ -318,11 +558,16 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     let backgroundedAt: number | null = null;
     const sub = RNAppState.addEventListener('change', (state) => {
       if (state === 'background') {
+        appActiveRef.current = false;
         backgroundedAt = Date.now();
         if (settingsRef.current.autoLockMinutes === 0 && unlockedRef.current) {
           setUnlocked(false);
         }
       } else if (state === 'active') {
+        appActiveRef.current = true;
+        // Foreground: sync the admin state immediately (live polling) —
+        // an edit made while the app was backgrounded shows at once.
+        void refreshAdmin();
         if (backgroundedAt !== null && unlockedRef.current) {
           const mins = settingsRef.current.autoLockMinutes;
           if (mins > 0 && Date.now() - backgroundedAt >= mins * 60_000) {
@@ -333,7 +578,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
       }
     });
     return () => sub.remove();
-  }, []);
+  }, [refreshAdmin]);
 
   // Live refresh when the wallet unlocks or the chain changes.
   useEffect(() => {
@@ -382,10 +627,17 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     setHistoryError(null);
   }, []);
 
+  const signingBlocked = maintenanceBlocksSigning(maintenance);
+  const maintenanceBlocksAppValue = maintenanceBlocksAppFn(maintenance);
+
   const value = useMemo<AppState>(
     () => ({
       onboarded, unlocked, address, solanaAddress, chainAddress, chain,
-      availableChains, refreshChains,
+      availableChains, refreshChains, refreshAdmin,
+      adminFees, announcements: visibleAnnouncements, appConfig, adminTokens, adminTokensSynced,
+      maintenance, signingBlocked, maintenanceBlocksApp: maintenanceBlocksAppValue,
+      adminLastSyncAt, adminSyncVersion, dismissAnnouncement,
+      networkMode, modeNotice, dismissModeNotice, transactionActive, setTransactionActive,
       tokens, locks, history, allHistory, notifications, settings,
       discipline,
       loading, hydrated, error, balancesError, historyError, vaultNote, showDust,
@@ -393,7 +645,11 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
       addLock, updateLock, addTx, markNotificationsRead, updateSettings,
       setShowDust, refreshBalances, refreshLocks, refreshAll, resetState,
     }),
-    [onboarded, unlocked, address, solanaAddress, chainAddress, chain, availableChains, refreshChains, tokens, locks, history, allHistory, notifications, settings,
+    [onboarded, unlocked, address, solanaAddress, chainAddress, chain, availableChains, refreshChains, refreshAdmin,
+     adminFees, visibleAnnouncements, appConfig, adminTokens, adminTokensSynced,
+     maintenance, signingBlocked, maintenanceBlocksAppValue, adminLastSyncAt, adminSyncVersion, dismissAnnouncement,
+     networkMode, modeNotice, dismissModeNotice, transactionActive, setTransactionActive,
+     tokens, locks, history, allHistory, notifications, settings,
      discipline, loading, hydrated, error, balancesError, historyError, vaultNote, showDust,
      setChain, addLock, updateLock, addTx, markNotificationsRead, updateSettings,
      refreshBalances, refreshLocks, refreshAll, resetState],
@@ -406,6 +662,13 @@ export function useApp(): AppState {
   const ctx = useContext(Ctx);
   if (!ctx) throw new Error('useApp must be used inside AppProvider');
   return ctx;
+}
+
+/** Non-throwing variant for components that may render outside the
+ *  provider (e.g. SignTransactionModal in tests): returns null instead
+ *  of throwing, so the caller can fall back to its props. */
+export function useAppOptional(): AppState | null {
+  return useContext(Ctx);
 }
 
 export { ACTIVE_CHAINS };

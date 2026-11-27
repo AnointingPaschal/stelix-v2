@@ -38,6 +38,7 @@ import { createImportInputController } from '../../lib/importToken';
 import { fetchDexScreenerToken } from '../../lib/prices';
 import { resolveTokenLogo } from '../../lib/tokenLogos';
 import { tokenDetailRoute } from '../../lib/tokenResolve';
+import { findRegistryToken, visibleAnnouncements } from '../../lib/adminSync';
 import {
   BottomSheet,
   Btn,
@@ -61,7 +62,7 @@ interface ImportPreview {
 }
 
 export default function Home() {
-  const { address, chain, tokens, locks, refreshAll, refreshBalances } = useApp();
+  const { address, chain, tokens, locks, refreshAll, refreshBalances, announcements, maintenance, signingBlocked, dismissAnnouncement, adminTokens, adminTokensSynced, networkMode, modeNotice, dismissModeNotice } = useApp();
   const { width } = useWindowDimensions();
   const insets = useSafeAreaInsets();
   // 320–430px phones keep the compact v1 layout; 768px+ centres the
@@ -179,6 +180,10 @@ export default function Home() {
   }
 
   const visible = visibleTokens(tokens, showSpam);
+  // Latest admin announcement for this chain (audience 'all' or this
+  // chain's slug), unless dismissed. Maintenance scope 'wallet' shows a
+  // banner here too (scope 'all' replaces the whole screen instead).
+  const banner = visibleAnnouncements(announcements, chain.id)[0] ?? null;
   const priceOf = (t: { price: number | null }) => t.price ?? 0;
   const spendable = tokens.reduce((s, t) => s + t.balance * priceOf(t), 0);
   const locked = tokens.reduce((s, t) => s + t.locked * priceOf(t), 0);
@@ -267,6 +272,45 @@ export default function Home() {
         </Pressable>
       </View>
 
+      {modeNotice ? (
+        <View style={styles.modeBanner}>
+          <View style={styles.announceHead}>
+            <Text style={styles.modeBannerText} numberOfLines={2}>{modeNotice}</Text>
+            <Pressable onPress={dismissModeNotice} hitSlop={8}>
+              <Text style={styles.announceDismiss}>✕</Text>
+            </Pressable>
+          </View>
+          <Text style={styles.modeBannerSub}>
+            {networkMode === 'mainnet'
+              ? 'Mainnet networks only. Locks and swaps still need a deployed vault and a verified router on each mainnet chain — the mode switch does not deploy anything.'
+              : networkMode === 'testnet'
+                ? 'Testnet networks only.'
+                : 'All networks are shown.'}
+          </Text>
+        </View>
+      ) : null}
+
+      {signingBlocked && maintenance.scope === 'wallet' ? (
+        <View style={styles.maintBanner}>
+          <Text style={styles.maintBannerTitle}>Maintenance is on</Text>
+          <Text style={styles.maintBannerText}>
+            {maintenance.message !== '' ? maintenance.message : 'Sending, swapping and locking are paused while maintenance is in progress.'}
+          </Text>
+        </View>
+      ) : null}
+
+      {banner ? (
+        <View style={styles.announceBanner}>
+          <View style={styles.announceHead}>
+            <Text style={styles.announceTitle} numberOfLines={1}>{banner.title}</Text>
+            <Pressable onPress={() => dismissAnnouncement(banner.id)} hitSlop={8}>
+              <Text style={styles.announceDismiss}>✕</Text>
+            </Pressable>
+          </View>
+          <Text style={styles.announceText}>{banner.message}</Text>
+        </View>
+      ) : null}
+
       <Pressable onPress={() => router.push('/(tabs)/vault')}>
         <Card dark style={styles.portfolio}>
           <View style={styles.portHead}>
@@ -279,6 +323,7 @@ export default function Home() {
           <View style={styles.pillsRow}>
             <Chip label={chain.nativeSymbol} tone="navy" />
             {chain.testnet ? <Chip label="Testnet" tone="amber" /> : null}
+            {networkMode !== null ? <Chip label={networkMode === 'testnet' ? 'Testnet mode' : 'Mainnet mode'} tone="navy" /> : null}
           </View>
           <View style={styles.divider} />
           <View style={styles.stats}>
@@ -497,6 +542,17 @@ export default function Home() {
               <Text style={styles.previewPrice}>
                 {importPreview.priceUsd === null ? 'Price unavailable' : fmtPrice(importPreview.priceUsd)}
               </Text>
+              {/* Token registry: a verified badge when the admin registered
+                  this token, an honest warning when it is not registered.
+                  Shown only after at least one admin sync — before that,
+                  the registry state is unknown, so nothing is claimed. */}
+              {adminTokensSynced ? (
+                findRegistryToken(adminTokens, chain.id, importAddr.trim()) ? (
+                  <Text style={styles.registryOk}>Verified in the Stelix registry</Text>
+                ) : (
+                  <Text style={styles.registryWarn}>Not in the Stelix registry — check the contract before importing.</Text>
+                )
+              ) : null}
             </View>
           </View>
         ) : null}
@@ -571,6 +627,40 @@ const styles = StyleSheet.create({
   importBtn: { minHeight: 32, paddingHorizontal: 12 },
   importErr: { color: COLORS.red, fontSize: 12, marginTop: 8 },
   importOk: { color: COLORS.mintDark, fontSize: 12, fontWeight: '700', marginTop: 8 },
+  registryOk: { color: COLORS.mintDark, fontSize: 12, fontWeight: '700', marginTop: 6 },
+  registryWarn: { color: '#B45309', fontSize: 12, marginTop: 6 },
+  maintBanner: {
+    backgroundColor: '#FEF3C7',
+    borderColor: '#FDE68A',
+    borderRadius: 12,
+    borderWidth: 1,
+    marginBottom: 12,
+    padding: 12,
+  },
+  maintBannerTitle: { color: '#92400E', fontSize: 14, fontWeight: '800' },
+  maintBannerText: { color: '#92400E', fontSize: 13, lineHeight: 18, marginTop: 4 },
+  announceBanner: {
+    backgroundColor: '#EFF6FF',
+    borderColor: '#BFDBFE',
+    borderRadius: 12,
+    borderWidth: 1,
+    marginBottom: 12,
+    padding: 12,
+  },
+  modeBanner: {
+    backgroundColor: '#ECFDF5',
+    borderColor: '#A7F3D0',
+    borderRadius: 12,
+    borderWidth: 1,
+    marginBottom: 12,
+    padding: 12,
+  },
+  modeBannerText: { color: COLORS.navy, flex: 1, fontSize: 14, fontWeight: '800' },
+  modeBannerSub: { color: COLORS.text, fontSize: 13, lineHeight: 18, marginTop: 4 },
+  announceHead: { alignItems: 'center', flexDirection: 'row', justifyContent: 'space-between' },
+  announceTitle: { color: COLORS.navy, flex: 1, fontSize: 14, fontWeight: '800' },
+  announceDismiss: { color: COLORS.textMuted, fontSize: 14, fontWeight: '700', paddingHorizontal: 4 },
+  announceText: { color: COLORS.text, fontSize: 13, lineHeight: 18, marginTop: 4 },
   importInput: {
     borderColor: COLORS.border,
     borderRadius: 12,

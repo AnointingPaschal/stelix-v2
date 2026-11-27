@@ -43,7 +43,7 @@ interface PendingVaultSign {
 
 export default function LockDetail() {
   const { id } = useLocalSearchParams<{ id: string }>();
-  const { locks, tokens, address, settings, updateLock, addTx, refreshLocks } = useApp();
+  const { locks, tokens, address, settings, updateLock, addTx, refreshLocks, availableChains } = useApp();
   const insets = useSafeAreaInsets();
 
   const lock = locks.find((l) => l.id === id);
@@ -52,6 +52,10 @@ export default function LockDetail() {
   const [copiedReceipt, setCopiedReceipt] = useState(false);
   const [signModal, setSignModal] = useState<PendingVaultSign | null>(null);
   const onChain = lock ? parseOnChainLockId(lock.id) : null;
+  // Vault address from the merged admin registry for this lock's chain.
+  const lockVaultAddress = lock
+    ? availableChains.find((c) => c.id === lock.chainId)?.vaultContract ?? null
+    : null;
   const [, setTick] = useState(0);
   useEffect(() => {
     const t = setInterval(() => setTick((x) => x + 1), 1000); // live countdown
@@ -165,7 +169,7 @@ export default function LockDetail() {
         { label: 'Lock', value: lock.id },
       ],
       null,
-      (signer) => claimMaturedOnChain(signer, lock.chainId, onChain.lockId),
+      (signer) => claimMaturedOnChain(signer, lock.chainId, onChain.lockId, lockVaultAddress),
       (hash) => {
         updateLock({ ...lock, status: 'completed', amountRemaining: 0 });
         addTx({
@@ -199,7 +203,7 @@ export default function LockDetail() {
         { label: 'Lock', value: lock.id },
       ],
       null,
-      (signer) => claimTriggeredStageOnChain(signer, lock.chainId, onChain.lockId, dueStageIndex),
+      (signer) => claimTriggeredStageOnChain(signer, lock.chainId, onChain.lockId, dueStageIndex, lockVaultAddress),
       (hash) => {
         const nextLadder = lock.ladder.map((s, i) => (i === dueStageIndex ? { ...s, status: 'sold' as const } : s));
         updateLock({
@@ -233,7 +237,7 @@ export default function LockDetail() {
         { label: 'Lock', value: lock.id },
       ],
       'Completing the break returns the remaining funds (minus any penalty) to your wallet.',
-      (signer) => executeBreakOnChain(signer, lock.chainId, onChain.lockId),
+      (signer) => executeBreakOnChain(signer, lock.chainId, onChain.lockId, lockVaultAddress),
       (hash) => {
         updateLock({ ...lock, status: 'broken', amountRemaining: 0 });
         addTx({
@@ -267,7 +271,7 @@ export default function LockDetail() {
       penalty > 0
         ? `Early break costs ${fmtNum(penalty)} ${lock.tokenSymbol} (${lock.penaltyBps / 100}% penalty) after a ${lock.breakMode === 'guardian' ? '48' : '24'}-hour cooling-off period. The penalty is waived only when a target or the date triggers the exit.`
         : 'This break has no token penalty, but it still needs the cooling-off period.',
-      (signer) => requestBreakOnChain(signer, lock.chainId, onChain.lockId),
+      (signer) => requestBreakOnChain(signer, lock.chainId, onChain.lockId, lockVaultAddress),
       (hash) => {
         updateLock({ ...lock, breakRequestedAt: Date.now() });
         addTx({ id: hash, hash, kind: 'unlock', token: lock.tokenSymbol, amount: 0, amountRaw: '0', usd: 0, note: `Break requested on-chain for ${lock.id} — cooling-off started`, at: Date.now(), status: 'confirmed', isSpam: false, chainId: lock.chainId, blockNumber: null });

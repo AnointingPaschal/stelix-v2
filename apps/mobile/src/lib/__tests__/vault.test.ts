@@ -29,6 +29,7 @@ import {
   executeTriggerOnChain,
   parseOnChainLockId,
   getUserLocksOnChain,
+  resolveVaultAddress,
   toOnChainCreateLockParams,
   VAULT_NOT_DEPLOYED_MESSAGE,
 } from '../vault';
@@ -302,6 +303,44 @@ describe('on-chain vault — not deployed yet', () => {
     expect(res.locks).toEqual([]);
     expect(res.lockIds).toEqual([]);
     expect(res.note).toBe(VAULT_NOT_DEPLOYED_MESSAGE);
+  });
+
+  it('mainnet chain with no vault refuses locks honestly after a Mainnet mode flip', async () => {
+    // The admin mode switch never deploys a vault: Arc Mainnet (5042)
+    // has no vault registered, so locks still refuse with the
+    // not-deployed note — the mode flip alone makes nothing go live.
+    const res = await getUserLocksOnChain('arc-mainnet', '0x0000000000000000000000000000000000000001');
+    expect(res.deployed).toBe(false);
+    expect(res.locks).toEqual([]);
+    expect(res.note).toBe(VAULT_NOT_DEPLOYED_MESSAGE);
+    const fakeSigner = {} as never;
+    await expect(
+      createLockOnChain(fakeSigner, {
+        chainId: 'arc-mainnet',
+        tokenAddress: '0xabc',
+        tokenDecimals: 18,
+        stablecoinAddress: '0xdef',
+        amount: 100,
+        unlockTime: NOW + 30 * 86_400_000,
+        entryPriceUsd: 0.02,
+        ladder: [{ multiple: 2, percent: 100 }],
+        trailingStopBps: null,
+        breakMode: 'penalty',
+        penaltyBps: 500,
+        autoSell: true,
+        slippageBps: 150,
+        minReceiveUsd: 0,
+      }),
+    ).rejects.toThrow(/Not deployed on this chain yet/);
+  });
+
+  it('an admin-registered vault address wins over the built-in registry; a blank override does not', () => {
+    const MOCK = '0x7777777777777777777777777777777777777777';
+    expect(resolveVaultAddress('bnb', MOCK)).toBe(MOCK);
+    expect(resolveVaultAddress('bnb', '  ' + MOCK + '  ')).toBe(MOCK);
+    expect(() => resolveVaultAddress('bnb', null)).toThrow(/Not deployed on this chain yet/);
+    expect(() => resolveVaultAddress('bnb', '')).toThrow(/Not deployed on this chain yet/);
+    expect(() => resolveVaultAddress('bnb', 'not-an-address')).toThrow(/Not deployed on this chain yet/);
   });
 
   it('createLockOnChain refuses when the vault is not deployed (no tx sent)', async () => {

@@ -20,7 +20,7 @@ import {
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Check, ChevronLeft, X } from 'lucide-react-native';
 import { COLORS, FONT, RADIUS, SHADOW } from '../theme';
-import { ACTIVE_CHAINS, useApp } from '../store/AppContext';
+import { useApp } from '../store/AppContext';
 
 /** Responsive breakpoints (Group B): phones 320–430px, tablets ≥768px,
  *  web/desktop ≥1024px. Screens centre their content in a max-width
@@ -323,12 +323,14 @@ export function OptionSheet({
   title,
   options,
   onSelect,
+  footer,
 }: {
   visible: boolean;
   onClose: () => void;
   title: string;
   options: SheetOption[];
   onSelect: (key: string) => void;
+  footer?: React.ReactNode;
 }) {
   return (
     <BottomSheet visible={visible} onClose={onClose} title={title}>
@@ -352,17 +354,25 @@ export function OptionSheet({
         </Pressable>
       ))}
       {options.length === 0 ? <EmptyState title="Nothing to choose yet" /> : null}
+      {footer ?? null}
     </BottomSheet>
   );
 }
 
-/** Network picker — all ACTIVE chains from the merged registry
- *  (built-in + admin-added, see AppContext.availableChains), Arc first
- *  (default). All six built-in chains are active as restored 2026-11-27;
- *  a chain added in admin appears here after a refresh, no rebuild. */
+/** Network picker — ACTIVE chains from the merged admin registry that
+ *  match the admin's network mode (Testnet / Mainnet / all when the admin
+ *  has never set a mode), Arc first (default). The picker can never
+ *  override the admin mode: it only lists chains the mode allows, and
+ *  says so. A chain added in admin appears here after a refresh. */
 export function NetworkSheet({ visible, onClose }: { visible: boolean; onClose: () => void }) {
-  const { chain, setChain, availableChains } = useApp();
+  const { chain, setChain, availableChains, refreshChains, networkMode } = useApp();
   const chains = availableChains.filter((c) => c.active);
+  // Opening the picker re-polls the admin registry immediately, so a
+  // chain added / disabled / deleted in admin shows here at once
+  // instead of waiting for the next ~45s poll.
+  useEffect(() => {
+    if (visible) void refreshChains();
+  }, [visible, refreshChains]);
   return (
     <OptionSheet
       visible={visible}
@@ -371,13 +381,20 @@ export function NetworkSheet({ visible, onClose }: { visible: boolean; onClose: 
       options={chains.map((c) => ({
         key: c.id,
         label: c.name,
-        sub: `${c.testnet ? 'Testnet' : 'Mainnet'} · Native: ${c.nativeSymbol}${c.isDefault ? ' · Default' : ''}${c.vaultContract ? '' : ' · Vault not deployed'}`,
+        sub: `${c.testnet ? 'Testnet' : 'Mainnet'} · Native: ${c.nativeSymbol}${c.isDefault ? ' · Default' : ''}${c.vaultContract ? '' : ' · Vault not deployed'}${c.dexRouter ? ' · Router verified' : ''}`,
         selected: chain.id === c.id,
       }))}
       onSelect={(id) => {
         const c = chains.find((x) => x.id === id);
         if (c) setChain(c);
       }}
+      footer={
+        <Text style={styles.sheetHint}>
+          {networkMode === null
+            ? 'Showing all networks — the admin has not set a Testnet / Mainnet mode yet.'
+            : `Showing ${networkMode === 'testnet' ? 'Testnet' : 'Mainnet'} networks only — set by the admin. The picker cannot override the admin mode.`}
+        </Text>
+      }
     />
   );
 }
@@ -434,6 +451,7 @@ const styles = StyleSheet.create({
   optionSelected: { backgroundColor: COLORS.navy, borderColor: COLORS.navy },
   optionSub: { color: COLORS.textMuted, fontSize: FONT.small, marginTop: 2 },
   optionSubSelected: { color: COLORS.textOnNavyMuted },
+  sheetHint: { color: COLORS.textMuted, fontSize: FONT.small, lineHeight: 17, marginTop: 12 },
   progressFill: { borderRadius: 999, height: '100%' },
   progressTrack: {
     backgroundColor: COLORS.bgMuted,

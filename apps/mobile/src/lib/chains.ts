@@ -72,6 +72,16 @@ export interface ChainConfig {
   uniswapV3Router?: string | null;
   /** Uniswap V2 Router02 address on this chain (undefined = none confirmed). */
   uniswapV2Router?: string | null;
+  /** DEX router address registered in the admin Chain Manager (verified on
+   *  the explorer only, never guessed). null = not confirmed yet. Swap
+   *  execution does NOT use this yet — it uses the verified per-chain
+   *  routers in lib/swap.ts — but the merged chain carries it so the UI
+   *  can say honestly whether a router is registered for the chain. */
+  dexRouter?: string | null;
+  /** Slug of the paired chain (testnet ↔ mainnet pair, e.g. arc ↔
+   *  arc-mainnet), from the admin registry. Used when the admin flips the
+   *  global network mode: the wallet moves to the pair when it exists. */
+  pairedChainId?: string | null;
   vaultContract: string | null; // null = not deployed yet
   status: 'live' | 'testnet' | 'paused' | 'coming-soon';
   isDefault?: boolean;
@@ -131,6 +141,10 @@ export const CHAINS: ChainConfig[] = [
     isDefault: true,
     testnet: true,
     active: true,
+    // Testnet ↔ mainnet pair (Arc testnet 5042002 ↔ Arc mainnet 5042).
+    // The admin row wins when it sets paired_chain_id; this is the
+    // fallback so a mode flip works even before the admin fills it in.
+    pairedChainId: 'arc-mainnet',
   },
   {
     id: 'arc-mainnet',
@@ -166,6 +180,7 @@ export const CHAINS: ChainConfig[] = [
     // is not selectable. Re-enable by flipping active: true (see
     // apps/mobile/SCOPE.md) — only after that mainnet decision.
     active: false,
+    pairedChainId: 'arc',
   },
   {
     id: 'bnb',

@@ -1,26 +1,26 @@
 /**
  * Admin chain registry — wallet-side fetch + merge library.
  *
- * NEW FILE (2026-11-27). This is the ONLY wallet-side piece of the
- * "add chains in the future" feature. It does NOT replace the built-in
- * registry in `./chains` (CHAINS / ACTIVE_CHAINS) and it does NOT wire
- * itself into any screen: the coordinator integrates it afterwards by
- * calling `fetchAdminChains()` once at startup and passing the result
- * through `mergeAdminChains(CHAINS, remote)` before deriving the active
- * list. Until that integration lands, the app behaves exactly as before.
+ * The wallet polls the admin's GET /api/sync (see ./adminSync) for the
+ * whole admin state; `fetchAdminChains()` below reads the chains section
+ * of that same endpoint. This is LIVE POLLING, not push: the poll runs
+ * every ~45s while the app is open, on foreground, on network-picker
+ * open and on pull-to-refresh (see store/AppContext.tsx).
+ *
+ * There is deliberately NO time-based cache any more: the old 5-minute
+ * cache hid admin edits. Only concurrent duplicate calls share one
+ * in-flight request.
  *
  * Contract:
- * - `fetchAdminChains()` reads GET /api/chains on the admin
+ * - `fetchAdminChains()` reads GET /api/sync on the admin
  *   (https://stelix-admin.pages.dev by default, overridable with
  *   EXPO_PUBLIC_ADMIN_API_URL). The endpoint is public (read-only) —
  *   chain writes stay behind the admin login.
  * - On ANY failure — offline, non-200, bad JSON, wrong shape — it
  *   returns `null` and the wallet keeps working with its built-in
  *   registry. It never throws and never invents a chain.
- * - Results are cached in memory for 5 minutes; `clearAdminChainsCache()`
- *   exists for tests and for a manual refresh.
- * - `mergeAdminChains(builtIn, remote)` returns the built-in list with
- *   remote rows overlaid. Matching is by slug (`id`), falling back to
+ * - `mergeAdminChains(builtIn, remote, opts)` returns the built-in list
+ *   with remote rows overlaid. Matching is by slug (`id`), falling back to
  *   EVM chain id. For a match, a remote field wins ONLY when the remote
  *   row actually provides a usable value — an empty remote value never
  *   blanks out a verified built-in value (e.g. the D1 seed stores an
@@ -29,8 +29,20 @@
  *   win when present: that is the admin enable/disable toggle.
  * - Remote-only chains are appended as new entries marked
  *   `fromAdmin: true`, in remote order, after the built-ins.
- * - `remote === null` (fetch failed) returns a copy of `builtIn`
- *   unchanged: built-in chains never disappear because the API failed.
+ * - `opts.deletedIds` are the server tombstones: a slug in there is
+ *   dropped even if it is a built-in chain. A deleted admin chain must
+ *   NEVER be resurrected from the built-in fallback. Pass the persisted
+ *   tombstones (see ./adminSync loadPersistedAdminChainState) when the
+ *   fetch failed (`remote === null`), so a deleted chain stays deleted
+ *   while the API is down.
+ * - `opts.disabledIds` are the last-seen admin-disabled chain ids. They
+ *   apply only when `remote === null` (when the fetch succeeds the remote
+ *   rows are authoritative); a built-in chain the admin disabled stays
+ *   disabled while the API is down.
+ * - `remote === null` (fetch failed) with no opts returns a copy of
+ *   `builtIn` unchanged: built-in chains never disappear because the
+ *   API failed — except the ones the admin deleted or disabled, which
+ *   the persisted opts above keep gone.
  *
  * Honest-limits note — read this before wiring the merged list into a
  * screen: a chain listed this way appears in the picker / Discover /
@@ -39,9 +51,8 @@
  * addresses ONLY when pasted from the explorer (never guessed), and the
  * wallet must show "vault not deployed / router not verified" for such a
  * chain instead of letting the user start a lock or a swap on it. The
- * merged entry carries `vaultContract` (null until registered); the DEX
- * router address is NOT part of `ChainConfig`, so swap code must read it
- * from the admin row directly if it ever needs it — do not guess one.
+ * merged entry carries `vaultContract` (null until registered) and
+ * `dexRouter` (null until registered) from the admin row.
  */
 
 import type { ChainConfig } from './chains';
@@ -74,7 +85,6 @@ export interface AdminChainRow {
 export type AdminMergedChain = ChainConfig & { fromAdmin?: boolean };
 
 export const DEFAULT_ADMIN_API_URL = 'https://stelix-admin.pages.dev';
-export const ADMIN_CHAINS_CACHE_TTL_MS = 5 * 60 * 1000;
 const FETCH_TIMEOUT_MS = 8000;
 
 /** Base URL of the admin API. Override with EXPO_PUBLIC_ADMIN_API_URL. */
@@ -122,46 +132,49 @@ function isValidRow(row: unknown): row is AdminChainRow {
   );
 }
 
-let cachedRows: AdminChainRow[] | null = null;
-let cachedAt = 0;
+let inflight: Promise<AdminChainRow[] | null> | null = null;
 
-/** Test / manual-refresh escape hatch for the in-memory cache. */
+/** Test / manual-refresh escape hatch for the in-flight dedup. */
 export function clearAdminChainsCache(): void {
-  cachedRows = null;
-  cachedAt = 0;
+  inflight = null;
 }
 
 /**
- * Fetch the admin chain registry. Returns the rows on success, or `null`
- * on ANY failure (offline, HTTP error, bad JSON, unexpected shape).
- * Never throws — the wallet must keep working with its built-in registry.
+ * Fetch the admin chain registry (the chains section of GET /api/sync).
+ * Returns the rows on success, or `null` on ANY failure (offline, HTTP
+ * error, bad JSON, unexpected shape). Never throws — the wallet must keep
+ * working with its built-in registry. No time-based cache: every call
+ * hits the server (only concurrent calls share one request).
  */
-export async function fetchAdminChains(opts?: { forceRefresh?: boolean }): Promise<AdminChainRow[] | null> {
-  if (!opts?.forceRefresh && cachedRows !== null && Date.now() - cachedAt < ADMIN_CHAINS_CACHE_TTL_MS) {
-    return cachedRows;
-  }
-  const url = `${getAdminApiBase()}/api/chains`;
-  try {
-    const ctrl = new AbortController();
-    const timer = setTimeout(() => ctrl.abort(), FETCH_TIMEOUT_MS);
-    let res: Response;
+export async function fetchAdminChains(): Promise<AdminChainRow[] | null> {
+  if (inflight) return inflight;
+  const run = (async (): Promise<AdminChainRow[] | null> => {
+    const url = `${getAdminApiBase()}/api/sync`;
     try {
-      res = await fetch(url, { signal: ctrl.signal });
-    } finally {
-      clearTimeout(timer);
-    }
-    if (!res.ok) return null;
-    const body: unknown = await res.json();
-    if (typeof body !== 'object' || body === null || !Array.isArray((body as { chains?: unknown }).chains)) {
+      const ctrl = new AbortController();
+      const timer = setTimeout(() => ctrl.abort(), FETCH_TIMEOUT_MS);
+      let res: Response;
+      try {
+        res = await fetch(url, { signal: ctrl.signal });
+      } finally {
+        clearTimeout(timer);
+      }
+      if (!res.ok) return null;
+      const body: unknown = await res.json();
+      if (typeof body !== 'object' || body === null || !Array.isArray((body as { chains?: unknown }).chains)) {
+        return null;
+      }
+      return ((body as { chains: unknown[] }).chains).filter(isValidRow);
+    } catch {
+      // Offline, timeout, bad JSON, no fetch — fall back silently.
       return null;
     }
-    const rows = ((body as { chains: unknown[] }).chains).filter(isValidRow);
-    cachedRows = rows;
-    cachedAt = Date.now();
-    return rows;
-  } catch {
-    // Offline, timeout, bad JSON, no fetch — fall back silently.
-    return null;
+  })();
+  inflight = run;
+  try {
+    return await run;
+  } finally {
+    inflight = null;
   }
 }
 
@@ -196,6 +209,14 @@ function overlayBuiltIn(builtIn: ChainConfig, remote: AdminChainRow, remoteIsDef
     explorerUrl: remote.explorer_url && remote.explorer_url.trim() !== '' ? remote.explorer_url.trim() : builtIn.explorerUrl,
     vaultContract:
       remote.vault_address && remote.vault_address.trim() !== '' ? remote.vault_address.trim() : builtIn.vaultContract,
+    // Admin-registered DEX router (null = not confirmed yet). Only a
+    // verified 0x address is carried — blank never blanks a verified
+    // built-in router, and never invents one.
+    dexRouter:
+      remote.dex_router && /^0x[0-9a-fA-F]{40}$/.test(remote.dex_router.trim())
+        ? remote.dex_router.trim()
+        : builtIn.dexRouter ?? null,
+    pairedChainId: remote.paired_chain_id ?? builtIn.pairedChainId ?? null,
     status: mapRemoteStatus(remote.status, builtIn.status),
     testnet: remoteTestnet !== undefined ? remoteTestnet : remote.status === 'testnet' ? true : remote.status === 'live' ? false : builtIn.testnet,
     active: remoteActive !== undefined ? remoteActive : builtIn.active,
@@ -242,6 +263,9 @@ function remoteOnlyChain(remote: AdminChainRow, remoteIsDefault: string | null):
     geckoTerminalNetwork: remote.id,
     dex: 'Admin registry',
     vaultContract: remote.vault_address && remote.vault_address.trim() !== '' ? remote.vault_address.trim() : null,
+    dexRouter:
+      remote.dex_router && /^0x[0-9a-fA-F]{40}$/.test(remote.dex_router.trim()) ? remote.dex_router.trim() : null,
+    pairedChainId: remote.paired_chain_id ?? null,
     status: mapRemoteStatus(remote.status, 'coming-soon'),
     isDefault: remoteIsDefault !== null ? remote.id === remoteIsDefault : false,
     testnet: asBool(remote.is_testnet) ?? remote.status === 'testnet',
@@ -254,15 +278,30 @@ function remoteOnlyChain(remote: AdminChainRow, remoteIsDefault: string | null):
  * Merge the admin registry over the built-in registry.
  *
  * - `remote === null` (fetch failed): returns a copy of `builtIn`
- *   unchanged — built-in chains never disappear because the API failed.
+ *   unchanged — built-in chains never disappear because the API failed —
+ *   EXCEPT the ids in `opts.deletedIds` (tombstones) which are dropped,
+ *   and the ids in `opts.disabledIds` which are forced `active: false`.
+ *   Pass the persisted tombstones/disabled ids (see ./adminSync) so a
+ *   deleted or disabled chain stays gone while the API is down.
  * - Matching remote rows overlay display fields on the built-in entry
  *   (remote wins where it provides a value; see `overlayBuiltIn`).
- * - Remote-only rows are appended as new entries with `fromAdmin: true`.
+ * - Remote-only rows are appended as new entries with `fromAdmin: true`,
+ *   unless their slug is tombstoned.
  * - Invalid remote rows (no slug/name, no usable https RPC, EVM chain
  *   without a numeric chain id) are skipped, never fatal.
  */
-export function mergeAdminChains(builtIn: ChainConfig[], remote: AdminChainRow[] | null): AdminMergedChain[] {
-  if (!remote || !Array.isArray(remote)) return builtIn.map((c) => ({ ...c }));
+export function mergeAdminChains(
+  builtIn: ChainConfig[],
+  remote: AdminChainRow[] | null,
+  opts?: { deletedIds?: string[]; disabledIds?: string[] },
+): AdminMergedChain[] {
+  const deleted = new Set(opts?.deletedIds ?? []);
+  const disabled = new Set(opts?.disabledIds ?? []);
+  if (!remote || !Array.isArray(remote)) {
+    return builtIn
+      .filter((c) => !deleted.has(c.id))
+      .map((c) => ({ ...c, active: disabled.has(c.id) ? false : c.active }));
+  }
   const valid = remote.filter(isValidRow);
   const remoteIsDefault = valid.find((r) => asBool(r.is_default) === true)?.id ?? null;
   const bySlug = new Map(valid.map((r) => [r.id, r]));
@@ -270,13 +309,15 @@ export function mergeAdminChains(builtIn: ChainConfig[], remote: AdminChainRow[]
   for (const r of valid) {
     if (typeof r.chain_id === 'number' && r.chain_id > 0 && !byChainId.has(r.chain_id)) byChainId.set(r.chain_id, r);
   }
-  const merged: AdminMergedChain[] = builtIn.map((c) => {
-    const match = bySlug.get(c.id) ?? (typeof c.chainId === 'number' ? byChainId.get(c.chainId) : undefined);
-    return match ? overlayBuiltIn(c, match, remoteIsDefault) : { ...c, isDefault: remoteIsDefault !== null ? false : c.isDefault };
-  });
+  const merged: AdminMergedChain[] = builtIn
+    .filter((c) => !deleted.has(c.id))
+    .map((c) => {
+      const match = bySlug.get(c.id) ?? (typeof c.chainId === 'number' ? byChainId.get(c.chainId) : undefined);
+      return match ? overlayBuiltIn(c, match, remoteIsDefault) : { ...c, isDefault: remoteIsDefault !== null ? false : c.isDefault };
+    });
   const seen = new Set(builtIn.map((c) => c.id));
   for (const r of valid) {
-    if (seen.has(r.id)) continue;
+    if (seen.has(r.id) || deleted.has(r.id)) continue;
     if (typeof r.chain_id === 'number' && r.chain_id > 0 && builtIn.some((c) => c.chainId === r.chain_id)) continue;
     const extra = remoteOnlyChain(r, remoteIsDefault);
     if (extra) {

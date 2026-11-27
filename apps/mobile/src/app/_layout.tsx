@@ -12,6 +12,7 @@ import { Stack } from 'expo-router';
 import { StatusBar } from 'expo-status-bar';
 import { SafeAreaProvider, useSafeAreaInsets } from 'react-native-safe-area-context';
 import { AppProvider, useApp } from '../store/AppContext';
+import MaintenanceScreen from '../components/MaintenanceScreen';
 import { COLORS } from '../theme';
 
 /** Shown while the stored-wallet check is still running, so a first
@@ -34,8 +35,12 @@ function BootSplash() {
 }
 
 function RootNavigator() {
-  const { hydrated } = useApp();
+  const { hydrated, maintenanceBlocksApp } = useApp();
   if (!hydrated) return <BootSplash />;
+  // Maintenance scope 'all': the whole wallet is behind the maintenance
+  // screen until the admin switches it off (the admin portal itself is
+  // never blocked, so this can always be turned off).
+  if (maintenanceBlocksApp) return <MaintenanceScreen />;
   return (
     <Stack
       screenOptions={{

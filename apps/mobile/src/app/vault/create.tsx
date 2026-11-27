@@ -2,7 +2,10 @@
  *  review+confirm. Compact v1 sizes. Accepts prefill params from the token
  *  detail's Create Discipline card (symbol, amount, days, target,
  *  customPrice, ladder, trailing, breakMode). No invented fees — the Stelix
- *  fee comes from VAULT_DEFAULTS and the network fee is shown by the wallet
+ *  fee, slippage, min/max lock and penalty defaults come from the admin's
+ *  published fee config via the live admin sync (store/AppContext.tsx);
+ *  when the admin has never published fees the wallet uses its local
+ *  defaults and SAYS so. The network fee is shown by the wallet
  *  before signing. Signing happens ONLY in the shared
  *  SignTransactionModal — there is no session-password field on this page,
  *  and no "Discipline PIN" either: the old 6-digit PIN accepted ANY six
@@ -15,7 +18,7 @@ import { router, useLocalSearchParams } from 'expo-router';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { COLORS } from '../../theme';
 import { useApp } from '../../store/AppContext';
-import { getChain, getVaultDeploymentStatus, VAULT_DEFAULTS } from '../../lib/chains';
+import { getChain, VAULT_NOT_DEPLOYED_MESSAGE } from '../../lib/chains';
 import { fmtNum, fmtPrice, fmtUsd } from '../../lib/format';
 import { getSignerForChain } from '../../lib/signer';
 import {
@@ -60,8 +63,36 @@ export default function CreateLock() {
     trailing?: string;
     breakMode?: string;
   }>();
-  const { tokens, chain, address, settings, addLock, addTx, refreshLocks } = useApp();
+  const { tokens, chain, address, settings, addLock, addTx, refreshLocks, adminFees, appConfig } = useApp();
   const insets = useSafeAreaInsets();
+  // Live admin fees (source 'admin' when the admin has published fees,
+  // 'default' with an honest label when not) and feature flags.
+  const fees = adminFees.fees;
+  const slippageBps = Math.round(fees.defaultSlippagePct * 100);
+  const feeLabel =
+    adminFees.source === 'admin'
+      ? `${fees.autoSellFeePct}% (set by admin${adminFees.version !== null ? ` v${adminFees.version}` : ''})`
+      : `${fees.autoSellFeePct}% — no admin fee published yet (app default)`;
+  const autoSellAllowed = appConfig?.flags.bullLockAutoSell !== false;
+  const trailingAllowed = appConfig?.flags.trailingStop !== false;
+  // Trailing-stop options offered by the admin, e.g. 'Off, 10%, 15%, 20%'.
+  const trailingOptions = useMemo(() => {
+    const parsed = fees.trailingStopOptions
+      .split(',')
+      .map((s) => s.trim())
+      .map((s) => {
+        if (/^off$/i.test(s)) return { label: 'Off', v: null as number | null };
+        const m = /^(\d+(?:\.\d+)?)%$/.exec(s);
+        return m ? { label: s, v: Math.round(parseFloat(m[1]) * 100) } : null;
+      })
+      .filter((o): o is { label: string; v: number | null } => o !== null);
+    return parsed.length > 0 ? parsed : [
+      { label: 'Off', v: null as number | null },
+      { label: '10%', v: 1000 },
+      { label: '15%', v: 1500 },
+      { label: '20%', v: 2000 },
+    ];
+  }, [fees.trailingStopOptions]);
 
   const [step, setStep] = useState(1);
   const [symbol, setSymbol] = useState(params.symbol ?? tokens[0]?.symbol ?? '');
@@ -91,7 +122,12 @@ export default function CreateLock() {
   const [created, setCreated] = useState<BullLock | null>(null);
   const [formError, setFormError] = useState('');
   const [signModal, setSignModal] = useState<SignTxRequest | null>(null);
-  const vaultStatus = getVaultDeploymentStatus(chain.id);
+  // Vault deployment comes from the MERGED admin registry (chain.vaultContract),
+  // not the built-in registry: a vault registered in Contract Studio shows
+  // as deployed here on the next admin sync, with no app rebuild.
+  const vaultStatus = chain.vaultContract
+    ? { deployed: true as const, address: chain.vaultContract, message: '' }
+    : { deployed: false as const, address: null as string | null, message: VAULT_NOT_DEPLOYED_MESSAGE };
 
   const token = tokens.find((t) => t.symbol === symbol) ?? tokens[0];
   const amt = parseFloat(amount) || 0;
@@ -116,7 +152,7 @@ export default function CreateLock() {
     targetPrice,
     ladder,
     ladderOn,
-    slippageBps: VAULT_DEFAULTS.slippageBps,
+    slippageBps,
   });
 
   const preview: BullLock = useMemo(
@@ -132,17 +168,17 @@ export default function CreateLock() {
       targetPrice,
       targetMultiple: target,
       ladder: ladderOn ? ladder : [],
-      trailingStopBps: trailing,
+      trailingStopBps: trailingAllowed ? trailing : null,
       peakPrice: entryPrice,
       breakMode,
-      penaltyBps: breakMode === 'penalty' ? 500 : 0,
-      autoSell: targetPrice !== null ? autoSell : false,
-      slippageBps: VAULT_DEFAULTS.slippageBps,
+      penaltyBps: breakMode === 'penalty' ? Math.round(fees.defaultPenaltyPct * 100) : 0,
+      autoSell: targetPrice !== null ? autoSellAllowed && autoSell : false,
+      slippageBps,
       minReceiveUsd,
       status: 'active',
       createdAt: Date.now(),
     }),
-    [amt, chain.id, token, symbol, entryPrice, unlockTime, targetPrice, target, ladderOn, ladder, trailing, breakMode, autoSell, minReceiveUsd],
+    [amt, chain.id, token, symbol, entryPrice, unlockTime, targetPrice, target, ladderOn, ladder, trailing, trailingAllowed, breakMode, autoSell, autoSellAllowed, fees.defaultPenaltyPct, slippageBps, minReceiveUsd],
   );
 
   function next() {
@@ -150,6 +186,18 @@ export default function CreateLock() {
     if (step === 1) {
       if (!token || amt <= 0 || amt > spendable) {
         setFormError(`Check the amount — enter an amount up to your spendable ${fmtNum(spendable)} ${token?.symbol ?? ''}. Locked funds cannot be locked twice.`);
+        return;
+      }
+      // Admin lock limits (live fee config): the USD value of the lock
+      // must sit inside the admin's min / max. The source is named so a
+      // limit change in admin is explainable here.
+      const usdValue = amt * entryPrice;
+      if (entryPrice > 0 && usdValue < fees.minLockUsd) {
+        setFormError(`This lock would be ${fmtUsd(usdValue)} — below the minimum lock of ${fmtUsd(fees.minLockUsd)}${adminFees.source === 'admin' ? ' set by the admin' : ' (no admin fee published yet — app default)'}.`);
+        return;
+      }
+      if (entryPrice > 0 && usdValue > fees.maxLockUsd) {
+        setFormError(`This lock would be ${fmtUsd(usdValue)} — above the maximum lock of ${fmtUsd(fees.maxLockUsd)}${adminFees.source === 'admin' ? ' set by the admin' : ' (no admin fee published yet — app default)'}.`);
         return;
       }
     }
@@ -212,9 +260,9 @@ export default function CreateLock() {
         { label: 'Exit', value: targetPrice ? (autoSell ? exitLabel : 'Unlock to wallet') : 'Unlock to wallet' },
         { label: 'Ladder', value: ladderOn ? ladder.map((s) => `${s.percent}% @ ${s.multiple}x`).join(' · ') : 'Off' },
         { label: 'Trailing stop', value: trailing ? `${trailing / 100}%` : 'Off' },
-        { label: 'Break mode', value: breakMode === 'immutable' ? 'Immutable — no early break' : breakMode === 'penalty' ? 'Penalty break — 5% after 24h cooling-off' : 'Guardian break — approval + 48h delay' },
-        { label: 'Slippage', value: '1.5% (default)' },
-        { label: 'Stelix fee', value: `${VAULT_DEFAULTS.autoSellFeeBps / 100}% (set in admin before mainnet)` },
+        { label: 'Break mode', value: breakMode === 'immutable' ? 'Immutable — no early break' : breakMode === 'penalty' ? `Penalty break — ${fees.defaultPenaltyPct}% after 24h cooling-off` : 'Guardian break — approval + 48h delay' },
+        { label: 'Slippage', value: `${fees.defaultSlippagePct}%${adminFees.source === 'admin' ? ' (set by admin)' : ' (app default — no admin fee published yet)'}` },
+        { label: 'Stelix fee', value: feeLabel },
         { label: 'Network fee', value: 'Estimated at signing' },
       ],
       warning: 'You approve the token spend, then the lock is created on-chain. The vault must be deployed on this chain — otherwise no lock is created.',
@@ -229,6 +277,9 @@ export default function CreateLock() {
     const signer = await getSignerForChain(password, chain.id);
     const { txHash, lockId } = await createLockOnChain(signer, {
       chainId: chain.id,
+      // Vault address from the merged admin registry: a vault registered
+      // in Contract Studio is used here on the next admin sync.
+      vaultAddress: chain.vaultContract,
       tokenAddress: token.address,
       tokenDecimals: token.decimals,
       stablecoinAddress: stablecoin,
@@ -236,11 +287,11 @@ export default function CreateLock() {
       unlockTime,
       entryPriceUsd: entryPrice,
       ladder: ladderOn ? ladder : target !== null ? [{ multiple: target, percent: 100 }] : [],
-      trailingStopBps: trailing,
+      trailingStopBps: trailingAllowed ? trailing : null,
       breakMode,
-      penaltyBps: breakMode === 'penalty' ? 500 : 0,
+      penaltyBps: breakMode === 'penalty' ? Math.round(fees.defaultPenaltyPct * 100) : 0,
       autoSell: preview.autoSell,
-      slippageBps: VAULT_DEFAULTS.slippageBps,
+      slippageBps,
       minReceiveUsd: preview.minReceiveUsd,
     });
     return { hash: txHash, blockNumber: null, lockId };
@@ -368,9 +419,12 @@ export default function CreateLock() {
           <>
             <SectionTitle title="On target hit" />
             <View style={styles.pills}>
-              <Btn label={`${exitLabel} (auto-sell)`} variant={autoSell ? 'mint' : 'ghost'} onPress={() => setAutoSell(true)} style={styles.wideBtn} />
+              <Btn label={`${exitLabel} (auto-sell)`} variant={autoSell && autoSellAllowed ? 'mint' : 'ghost'} onPress={() => setAutoSell(true)} disabled={!autoSellAllowed} style={styles.wideBtn} />
               <Btn label="Unlock to wallet (manual)" variant={!autoSell ? 'primary' : 'ghost'} onPress={() => setAutoSell(false)} style={styles.wideBtn} />
             </View>
+            {!autoSellAllowed ? (
+              <Text style={styles.hint}>Auto-sell is switched off by the admin — target hits unlock to your wallet instead.</Text>
+            ) : null}
             <SectionTitle title="Profit ladder" />
             <View style={styles.pills}>
               <Btn label="Ladder on" variant={ladderOn ? 'mint' : 'ghost'} onPress={() => setLadderOn(true)} style={styles.pill} />
@@ -399,26 +453,22 @@ export default function CreateLock() {
             )}
             <SectionTitle title="Trailing stop" />
             <View style={styles.pills}>
-              {[
-                { label: 'Off', v: null },
-                { label: '10%', v: 1000 },
-                { label: '15%', v: 1500 },
-                { label: '20%', v: 2000 },
-              ].map((o) => (
-                <Btn key={o.label} label={o.label} variant={trailing === o.v ? 'primary' : 'ghost'} onPress={() => setTrailing(o.v)} style={styles.pill} />
+              {trailingOptions.map((o) => (
+                <Btn key={o.label} label={o.label} variant={trailing === o.v ? 'primary' : 'ghost'} onPress={() => setTrailing(o.v)} disabled={!trailingAllowed} style={styles.pill} />
               ))}
             </View>
             <Text style={styles.hint}>
               After any target is hit, a fall of the chosen % from the peak auto-sells the remainder {exitLabel}. Slippage
-              default 1.5% · minimum receive shown at review.
+              default {fees.defaultSlippagePct}% · minimum receive shown at review.
+              {!trailingAllowed ? ' Trailing stop is switched off by the admin.' : ''}
             </Text>
             <SectionTitle title="Break mode" />
             <View style={styles.pills}>
               <Btn label="Immutable (strongest)" variant={breakMode === 'immutable' ? 'primary' : 'ghost'} onPress={() => setBreakMode('immutable')} style={styles.wideBtn} />
-              <Btn label="Penalty break (5%, 24h cooling-off)" variant={breakMode === 'penalty' ? 'primary' : 'ghost'} onPress={() => setBreakMode('penalty')} style={styles.wideBtn} />
+              <Btn label={`Penalty break (${fees.defaultPenaltyPct}%, 24h cooling-off)`} variant={breakMode === 'penalty' ? 'primary' : 'ghost'} onPress={() => setBreakMode('penalty')} style={styles.wideBtn} />
               <Btn label="Guardian break (Phase 2)" variant={breakMode === 'guardian' ? 'primary' : 'ghost'} onPress={() => setBreakMode('guardian')} style={styles.wideBtn} />
             </View>
-            <Text style={styles.hint}>No penalty is ever charged when a price target or the maturity date triggers the exit.</Text>
+            <Text style={styles.hint}>No penalty is ever charged when a price target or the maturity date triggers the exit. Penalty default is {fees.defaultPenaltyPct}%{adminFees.source === 'admin' ? ' (set by admin)' : ' (app default — no admin fee published yet)'}.</Text>
           </>
         )}
 
@@ -434,10 +484,10 @@ export default function CreateLock() {
               <ReviewRow label="Exit" value={targetPrice ? (autoSell ? exitLabel : 'Unlock to wallet') : 'Unlock to wallet'} />
               <ReviewRow label="Ladder" value={ladderOn ? ladder.map((s) => `${s.percent}% @ ${s.multiple}x`).join(' · ') : 'Off'} />
               <ReviewRow label="Trailing stop" value={trailing ? `${trailing / 100}%` : 'Off'} />
-              <ReviewRow label="Break mode" value={breakMode === 'immutable' ? 'Immutable — no early break' : breakMode === 'penalty' ? 'Penalty break — 5% after 24h cooling-off' : 'Guardian break — approval + 48h delay'} />
-              <ReviewRow label="Slippage" value="1.5% (default)" />
+              <ReviewRow label="Break mode" value={breakMode === 'immutable' ? 'Immutable — no early break' : breakMode === 'penalty' ? `Penalty break — ${fees.defaultPenaltyPct}% after 24h cooling-off` : 'Guardian break — approval + 48h delay'} />
+              <ReviewRow label="Slippage" value={`${fees.defaultSlippagePct}%${adminFees.source === 'admin' ? ' (set by admin)' : ' (app default — no admin fee published yet)'}`} />
               <ReviewRow label="Minimum receive" value={targetPrice ? fmtUsd(minReceiveUsd) : '—'} />
-              <ReviewRow label="Stelix fee" value={`${VAULT_DEFAULTS.autoSellFeeBps / 100}% (set in admin before mainnet)`} />
+              <ReviewRow label="Stelix fee" value={feeLabel} />
               <ReviewRow label="Network fee" value="Shown by the wallet before signing" />
             </Card>
             <Text style={styles.sentence}>{lockSummarySentence(preview, exitLabel)}</Text>

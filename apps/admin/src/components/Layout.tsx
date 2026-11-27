@@ -2,7 +2,7 @@ import { useEffect, useState } from 'react'
 import { NavLink, Outlet, useLocation, useNavigate } from 'react-router-dom'
 import {
   Activity, ChevronsLeft, ChevronsRight, Coins, LayoutDashboard, Link2, LogOut,
-  Megaphone, Menu, Percent, Code2, Rocket, ScrollText, Search, Settings, ShieldCheck, X,
+  Megaphone, Menu, Percent, Code2, Rocket, ScrollText, Search, Settings, ShieldCheck, Users, Wrench, X,
 } from 'lucide-react'
 import type { LucideIcon } from 'lucide-react'
 import { api } from '../lib/api'
@@ -10,6 +10,7 @@ import { api } from '../lib/api'
 const links: { to: string; label: string; icon: LucideIcon }[] = [
   { to: '/dashboard', label: 'Dashboard', icon: LayoutDashboard },
   { to: '/studio', label: 'Contract Studio', icon: Code2 },
+  { to: '/multisig', label: 'Multisig Creator', icon: Users },
   { to: '/launchpad', label: 'Launchpad Manager', icon: Rocket },
   { to: '/chains', label: 'Chain Manager', icon: Link2 },
   { to: '/tokens', label: 'Token / DEX Registry', icon: Coins },
@@ -17,6 +18,7 @@ const links: { to: string; label: string; icon: LucideIcon }[] = [
   { to: '/fees', label: 'Fees and Limits', icon: Percent },
   { to: '/announcements', label: 'Announcements', icon: Megaphone },
   { to: '/config', label: 'App Config and Releases', icon: Settings },
+  { to: '/maintenance', label: 'Maintenance Mode', icon: Wrench },
   { to: '/support', label: 'Support Lookup', icon: Search },
   { to: '/contract-audit', label: 'Contract Audit', icon: ShieldCheck },
   { to: '/audit', label: 'Audit Log and Settings', icon: ScrollText },

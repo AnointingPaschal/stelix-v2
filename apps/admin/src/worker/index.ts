@@ -11,13 +11,26 @@
 // On success it sets an HttpOnly signed session cookie (HMAC-SHA256 with
 // ADMIN_SESSION_SECRET, 8h). All /api/admin/*, /api/keeper/runs
 // and /api/support require it. /api/health, /api/config, /api/announcements,
-// /api/launches and /api/chains stay public: config is signed and served to
+// /api/launches, /api/chains, /api/fees, /api/tokens, /api/maintenance and
+// /api/sync stay public: config is signed and served to
 // the app; announcements are the public in-app banner feed; launches is the
 // public approved-launch feed for the mobile Launchpad tab; chains is the
 // public chain registry the wallet reads (GET only — every chain write
-// stays behind the admin session).
+// stays behind the admin session); fees/tokens/maintenance are the public
+// read feeds the wallet polls; /api/sync is the single polling endpoint
+// that returns all of them plus a monotonic sync version (see bumpSync).
 // No secrets in code: password hash, session secret, config signing secret,
 // keeper run key and explorer key are Pages/Worker secrets (see wrangler.toml).
+//
+// REALTIME (live polling, NOT push): there is no websocket/push channel.
+// The wallet polls GET /api/sync every ~45s, on foreground, on network-
+// picker open and on pull-to-refresh, and re-applies state only when the
+// `version` changes. Every admin write below calls bumpSync() so an edit
+// is visible within one poll interval. Deleted chains are tombstoned in
+// `deleted_chains` and returned as `deletedIds`, so the wallet never
+// resurrects a deleted chain from its built-in fallback — even when the
+// API is down, the wallet keeps the tombstones it last saw in local
+// storage (see apps/mobile/src/lib/adminSync.ts).
 //
 // CONTRACT STUDIO: the Worker never holds a deployer key and never broadcasts
 // a deploy. POST /api/admin/deploy/prepare validates constructor args and
@@ -31,7 +44,8 @@
 // small-value smoke-test attestation, and the typed confirmation phrase.
 import { runStaticAudit, sha256Hex, type AuditFinding } from '../lib/auditCheck'
 import { validateFeePayload, type FeeConfig } from '../lib/fees'
-import { isAddress, mainnetConfirmPhrase, testnetChainIdFor, validateDeployParams } from '../lib/deployParams'
+import { isAddress, isTxHash, mainnetConfirmPhrase, testnetChainIdFor, validateDeployParams } from '../lib/deployParams'
+import { safeChainFor, validateMultisigInput } from '../lib/multisig'
 import { validateChainInput, type ChainInput } from '../lib/chainValidation'
 import artifact from '../contracts/StelixVault.artifact.json'
 
@@ -126,6 +140,128 @@ async function audit(env: Env, actor: string | null, action: string, detail: str
   }
 }
 
+// ---- Realtime sync version (migration 0007) ----
+// Monotonic counter the wallet polls via GET /api/sync. Bumped on every
+// admin write so an edit is visible within one poll interval. Best-effort:
+// if the sync_state table does not exist yet (migration not applied), the
+// write still succeeds and the version simply reads as 0.
+async function getSyncVersion(env: Env): Promise<number> {
+  try {
+    const row = await env.DB.prepare('SELECT version FROM sync_state WHERE id = 1').first<{ version: number }>()
+    return row?.version ?? 0
+  } catch {
+    return 0
+  }
+}
+
+async function bumpSync(env: Env): Promise<number> {
+  try {
+    const row = await env.DB.prepare('SELECT version FROM sync_state WHERE id = 1').first<{ version: number }>()
+    const next = (row?.version ?? 0) + 1
+    if (row) {
+      await env.DB.prepare('UPDATE sync_state SET version = ? WHERE id = ?').bind(next, 1).run()
+    } else {
+      await env.DB.prepare('INSERT INTO sync_state (id, version) VALUES (?, ?)').bind(1, next).run()
+    }
+    return next
+  } catch {
+    return 0
+  }
+}
+
+async function getDeletedChainIds(env: Env): Promise<string[]> {
+  try {
+    const { results } = await env.DB.prepare('SELECT id FROM deleted_chains').all<{ id: string }>()
+    return (results ?? []).map((r) => r.id)
+  } catch {
+    return []
+  }
+}
+
+export interface MaintenanceState {
+  enabled: boolean
+  message: string
+  scope: 'all' | 'wallet'
+  updatedAt: string | null
+}
+
+/** Global testnet/mainnet mode (migration 0008). null = the admin has
+ *  never chosen: the wallet shows all networks, exactly as before. */
+export type NetworkMode = 'testnet' | 'mainnet' | null
+
+async function getNetworkMode(env: Env): Promise<NetworkMode> {
+  try {
+    const row = await env.DB.prepare('SELECT mode FROM network_mode WHERE id = 1').first<{ mode: string | null }>()
+    return row?.mode === 'mainnet' ? 'mainnet' : row?.mode === 'testnet' ? 'testnet' : null
+  } catch {
+    return null
+  }
+}
+
+async function getMaintenanceState(env: Env): Promise<MaintenanceState> {
+  try {
+    const row = await env.DB.prepare('SELECT * FROM maintenance WHERE id = 1').first<{
+      enabled: number
+      message: string
+      scope: string
+      updated_at: string | null
+    }>()
+    if (!row) return { enabled: false, message: '', scope: 'wallet', updatedAt: null }
+    return {
+      enabled: row.enabled === 1,
+      message: row.message ?? '',
+      scope: row.scope === 'all' ? 'all' : 'wallet',
+      updatedAt: row.updated_at ?? null,
+    }
+  } catch {
+    return { enabled: false, message: '', scope: 'wallet', updatedAt: null }
+  }
+}
+
+async function getLatestFees(env: Env): Promise<{ fees: FeeConfig | null; version: number | null; publishedBy: string | null; publishedAt: string | null }> {
+  const row = await env.DB.prepare('SELECT * FROM fee_versions ORDER BY version DESC LIMIT 1').first<{
+    version: number
+    payload_json: string
+    published_by: string
+    created_at: string
+  }>()
+  if (!row) return { fees: null, version: null, publishedBy: null, publishedAt: null }
+  let payload: FeeConfig | null = null
+  try { payload = JSON.parse(row.payload_json) as FeeConfig } catch { payload = null }
+  return { fees: payload, version: row.version, publishedBy: row.published_by, publishedAt: row.created_at }
+}
+
+async function getPublicAnnouncements(env: Env): Promise<unknown[]> {
+  const { results } = await env.DB.prepare(
+    "SELECT * FROM announcements WHERE expires_at IS NULL OR expires_at = '' OR datetime(expires_at) > datetime('now') ORDER BY created_at DESC, id DESC LIMIT 20",
+  ).all()
+  return results ?? []
+}
+
+async function getSignedConfig(env: Env): Promise<{
+  version: string
+  payload: unknown
+  signature: string | null
+  signatureValid: boolean
+  publishedAt: string
+} | null> {
+  const row = await env.DB.prepare('SELECT * FROM config_versions ORDER BY id DESC LIMIT 1').first<{
+    version: string
+    payload_json: string
+    signature: string | null
+    created_at: string
+  }>()
+  if (!row) return null
+  let signatureValid = false
+  if (row.signature && env.CONFIG_SIGNING_SECRET) {
+    const expected = b64url(await hmac(env.CONFIG_SIGNING_SECRET, row.payload_json))
+    signatureValid = timingSafeEqual(new TextEncoder().encode(row.signature), new TextEncoder().encode(expected))
+  }
+  let payload: unknown = null
+  try { payload = JSON.parse(row.payload_json) } catch { payload = null }
+  return { version: row.version, payload, signature: row.signature, signatureValid, publishedAt: row.created_at }
+}
+
 async function readJson(req: Request): Promise<Record<string, unknown>> {
   try {
     const body = (await req.json()) as unknown
@@ -181,6 +317,19 @@ function decodeUintArray(hex: string): bigint[] {
   const len = Number(slot(hex, 1))
   const out: bigint[] = []
   for (let i = 0; i < len; i++) out.push(slot(hex, 2 + i))
+  return out
+}
+
+function decodeAddressArray(hex: string): string[] {
+  // ABI-encoded address[]: [offset=0x20][length][addr word ...], each
+  // address in the low 20 bytes of its 32-byte word. Used to read a
+  // Safe's getOwners() result.
+  if (!hex || hex.length < 2 + 128) return []
+  const len = Number(slot(hex, 1))
+  const out: string[] = []
+  for (let i = 0; i < len; i++) {
+    out.push('0x' + hex.slice(2 + (2 + i) * 64 + 24, 2 + (3 + i) * 64))
+  }
   return out
 }
 
@@ -365,27 +514,69 @@ export default {
 
     // Public feeds for the mobile app (no admin session).
     if (path === '/api/config' && req.method === 'GET') {
-      const row = await env.DB.prepare('SELECT * FROM config_versions ORDER BY id DESC LIMIT 1').first<{
-        version: string
-        payload_json: string
-        signature: string | null
-        created_at: string
-      }>()
-      if (!row) return json({ config: null, note: 'No signed config published yet.' })
-      let signatureValid = false
-      if (row.signature && env.CONFIG_SIGNING_SECRET) {
-        const expected = b64url(await hmac(env.CONFIG_SIGNING_SECRET, row.payload_json))
-        signatureValid = timingSafeEqual(new TextEncoder().encode(row.signature), new TextEncoder().encode(expected))
-      }
-      let payload: unknown = null
-      try { payload = JSON.parse(row.payload_json) } catch { payload = null }
-      return json({ config: { version: row.version, payload, signature: row.signature, signatureValid, publishedAt: row.created_at } })
+      const config = await getSignedConfig(env)
+      if (!config) return json({ config: null, note: 'No signed config published yet.' })
+      return json({ config })
     }
     if (path === '/api/announcements' && req.method === 'GET') {
-      const { results } = await env.DB.prepare(
-        "SELECT * FROM announcements WHERE expires_at IS NULL OR expires_at = '' OR datetime(expires_at) > datetime('now') ORDER BY created_at DESC, id DESC LIMIT 20",
-      ).all()
-      return json({ announcements: results ?? [] })
+      return json({ announcements: await getPublicAnnouncements(env) })
+    }
+
+    // Public fee feed for the mobile app (no admin session). The wallet
+    // shows the admin's fee when one is published and an honest "no admin
+    // fee published yet" state otherwise — never a hardcoded fee that
+    // silently overrides an admin edit.
+    if (path === '/api/fees' && req.method === 'GET') {
+      const latest = await getLatestFees(env)
+      if (!latest.fees) return json({ fees: null, note: 'No fee config published yet. Defaults apply in the app until you save one.' })
+      return json({ fees: latest.fees, version: latest.version, publishedBy: latest.publishedBy, publishedAt: latest.publishedAt })
+    }
+
+    // Public token registry for the mobile app (no admin session). The
+    // wallet uses it to badge imported tokens as "verified in the Stelix
+    // registry"; a token removed here loses the badge on the next sync.
+    // Importing an unregistered token by address is still allowed — the
+    // wallet says so instead of blocking it.
+    if (path === '/api/tokens' && req.method === 'GET') {
+      const { results } = await env.DB.prepare('SELECT * FROM tokens ORDER BY chain_id, symbol').all()
+      return json({ tokens: results ?? [] })
+    }
+
+    // Public maintenance state for the mobile app (no admin session).
+    if (path === '/api/maintenance' && req.method === 'GET') {
+      return json({ maintenance: await getMaintenanceState(env) })
+    }
+
+    // Single polling endpoint for the mobile app (no admin session):
+    // chains + tombstones + fees + announcements + signed config +
+    // token registry + maintenance, plus the monotonic sync version.
+    // The wallet polls this every ~45s and re-applies state only when
+    // `version` changes. This is live polling, not push.
+    // `networkMode` is the admin's global testnet/mainnet switch (null =
+    // never set: the wallet shows all networks, as before).
+    if (path === '/api/sync' && req.method === 'GET') {
+      const version = await getSyncVersion(env)
+      const chains = await getChains(env)
+      const deletedIds = await getDeletedChainIds(env)
+      const latestFees = await getLatestFees(env)
+      const announcements = await getPublicAnnouncements(env)
+      const config = await getSignedConfig(env)
+      const { results: tokens } = await env.DB.prepare('SELECT * FROM tokens ORDER BY chain_id, symbol').all()
+      const maintenance = await getMaintenanceState(env)
+      const networkMode = await getNetworkMode(env)
+      return json({
+        version,
+        chains,
+        deletedIds,
+        fees: latestFees.fees,
+        feeVersion: latestFees.version,
+        feePublishedAt: latestFees.publishedAt,
+        announcements,
+        config,
+        tokens: tokens ?? [],
+        maintenance,
+        networkMode,
+      })
     }
 
     // Public launchpad feed for the mobile app (no admin session).
@@ -420,7 +611,9 @@ export default {
     // must say that honestly.
     if (path === '/api/chains' && req.method === 'GET') {
       const chains = await getChains(env)
-      return json({ chains })
+      // deletedIds are the tombstones: a slug here must never reappear in
+      // the wallet, even from its built-in fallback registry.
+      return json({ chains, deletedIds: await getDeletedChainIds(env), version: await getSyncVersion(env) })
     }
 
     // Everything below requires a valid admin session.
@@ -537,6 +730,9 @@ export default {
         chain.stablecoinDecimals, chain.gasToken, chain.dexRouter, chain.vaultAddress,
         chain.status, chain.isTestnet ? 1 : 0, chain.active ? 1 : 0, chain.pairedChainId, isDefault,
       ).run()
+      // Re-adding a slug that was previously deleted clears its tombstone.
+      await env.DB.prepare('DELETE FROM deleted_chains WHERE id = ?').bind(chain.id).run()
+      await bumpSync(env)
       await audit(env, authed, 'chain.create', `chain ${chain.id} (${chain.name}, chainId ${chain.chainId}) created`)
       return json({ ok: true, id: chain.id }, 201)
     }
@@ -548,6 +744,7 @@ export default {
       const chain = await env.DB.prepare('SELECT * FROM chains WHERE id = ?').bind(id).first<ChainRow>()
       if (!chain) return json({ error: 'chain not found' }, 404)
       await env.DB.prepare("UPDATE chains SET active = ?, updated_at = datetime('now') WHERE id = ?").bind(body.active ? 1 : 0, id).run()
+      await bumpSync(env)
       await audit(env, authed, body.active ? 'chain.enable' : 'chain.disable', `chain ${id} ${body.active ? 'enabled' : 'disabled'} (active=${body.active})`)
       return json({ ok: true, id, active: body.active })
     }
@@ -599,8 +796,43 @@ export default {
       if (updates.length === 0) return json({ error: 'nothing to update' }, 400)
       set('updated_at', new Date().toISOString())
       await env.DB.prepare(`UPDATE chains SET ${updates.join(', ')} WHERE id = ?`).bind(...values, id).run()
+      await bumpSync(env)
       await audit(env, authed, 'chain.update', `chain ${id} updated: ${updates.join(', ')}`)
       return json({ ok: true })
+    }
+
+    // ---- Delete a chain ----
+    // Refuses (409) when the chain is the wallet default, has a vault
+    // deployed, has a recorded deployment, or still has registered
+    // tokens — deleting any of those would orphan live state. A clean
+    // chain is deleted and tombstoned in `deleted_chains`, so the wallet
+    // removes it on its next sync and can never resurrect it from its
+    // built-in fallback. Re-adding the same slug later clears the
+    // tombstone (see the create handler above).
+    const chainDelete = /^\/api\/admin\/chains\/([a-z0-9-]+)$/.exec(path)
+    if (chainDelete && req.method === 'DELETE') {
+      const id = chainDelete[1]
+      const chain = await env.DB.prepare('SELECT * FROM chains WHERE id = ?').bind(id).first<ChainRow>()
+      if (!chain) return json({ error: 'chain not found' }, 404)
+      if (chain.is_default === 1) {
+        return json({ error: `Cannot delete "${chain.name}": it is the default chain. Make another chain the default first.`, code: 'chain_is_default' }, 409)
+      }
+      if (chain.vault_address) {
+        return json({ error: `Cannot delete "${chain.name}": a vault is deployed at ${chain.vault_address}. A chain with a deployed vault can never be deleted from the registry.`, code: 'chain_has_vault' }, 409)
+      }
+      const deployment = await env.DB.prepare('SELECT id FROM deployments WHERE chain_id = ? LIMIT 1').bind(id).first<{ id: number }>()
+      if (deployment) {
+        return json({ error: `Cannot delete "${chain.name}": a deployment is recorded for it. Deployments are permanent audit history.`, code: 'chain_has_deployment' }, 409)
+      }
+      const tokenCount = await env.DB.prepare('SELECT COUNT(*) AS n FROM tokens WHERE chain_id = ?').bind(id).first<{ n: number }>()
+      if ((tokenCount?.n ?? 0) > 0) {
+        return json({ error: `Cannot delete "${chain.name}": ${tokenCount?.n} token(s) are still registered on it. Remove them from the Token Registry first.`, code: 'chain_has_tokens' }, 409)
+      }
+      await env.DB.prepare('DELETE FROM chains WHERE id = ?').bind(id).run()
+      await env.DB.prepare('INSERT INTO deleted_chains (id) VALUES (?)').bind(id).run()
+      await bumpSync(env)
+      await audit(env, authed, 'chain.delete', `chain ${id} (${chain.name}) deleted and tombstoned`)
+      return json({ ok: true, id, deleted: true })
     }
 
     // ---- Tokens / DEX registry ----
@@ -624,6 +856,7 @@ export default {
       const run = await env.DB.prepare(
         'INSERT INTO tokens (symbol, chain_id, address, decimals, verified, featured) VALUES (?, ?, ?, ?, ?, ?)',
       ).bind(symbol, chainId, address, decimals, body.verified ? 1 : 0, body.featured ? 1 : 0).run()
+      await bumpSync(env)
       await audit(env, authed, 'token.add', `${symbol} on ${chainId} (${address})`)
       const id = (run as unknown as { meta?: { last_row_id?: number } }).meta?.last_row_id ?? null
       return json({ ok: true, id }, 201)
@@ -632,6 +865,7 @@ export default {
       const id = url.searchParams.get('id')
       if (!id) return json({ error: 'id required' }, 400)
       await env.DB.prepare('DELETE FROM tokens WHERE id = ?').bind(Number(id)).run()
+      await bumpSync(env)
       await audit(env, authed, 'token.remove', `token id ${id} removed`)
       return json({ ok: true })
     }
@@ -671,16 +905,9 @@ export default {
 
     // ---- Fees and Limits (versioned) ----
     if (path === '/api/admin/fees' && req.method === 'GET') {
-      const row = await env.DB.prepare('SELECT * FROM fee_versions ORDER BY version DESC LIMIT 1').first<{
-        version: number
-        payload_json: string
-        published_by: string
-        created_at: string
-      }>()
-      if (!row) return json({ fees: null, note: 'No fee config published yet. Defaults apply in the app until you save one.' })
-      let payload: FeeConfig | null = null
-      try { payload = JSON.parse(row.payload_json) as FeeConfig } catch { payload = null }
-      return json({ fees: payload, version: row.version, publishedBy: row.published_by, publishedAt: row.created_at })
+      const latest = await getLatestFees(env)
+      if (!latest.fees) return json({ fees: null, note: 'No fee config published yet. Defaults apply in the app until you save one.' })
+      return json({ fees: latest.fees, version: latest.version, publishedBy: latest.publishedBy, publishedAt: latest.publishedAt })
     }
     if (path === '/api/admin/fees' && req.method === 'POST') {
       const body = await readJson(req)
@@ -689,6 +916,7 @@ export default {
       const maxRow = await env.DB.prepare('SELECT COALESCE(MAX(version), 0) AS v FROM fee_versions').first<{ v: number }>()
       const version = (maxRow?.v ?? 0) + 1
       await env.DB.prepare('INSERT INTO fee_versions (version, payload_json, published_by) VALUES (?, ?, ?)').bind(version, JSON.stringify(config), authed).run()
+      await bumpSync(env)
       await audit(env, authed, 'fees.publish', `fee config v${version} published (auto-sell fee ${config.autoSellFeePct}%)`)
       return json({ ok: true, version, fees: config }, 201)
     }
@@ -713,6 +941,7 @@ export default {
       const run = await env.DB.prepare(
         'INSERT INTO announcements (title, message, audience, expires_at) VALUES (?, ?, ?, ?)',
       ).bind(title, message, audience, expiresAt).run()
+      await bumpSync(env)
       await audit(env, authed, 'announcement.publish', `"${title}" to ${audience}`)
       const id = (run as unknown as { meta?: { last_row_id?: number } }).meta?.last_row_id ?? null
       return json({ ok: true, id }, 201)
@@ -721,8 +950,63 @@ export default {
       const id = url.searchParams.get('id')
       if (!id) return json({ error: 'id required' }, 400)
       await env.DB.prepare('DELETE FROM announcements WHERE id = ?').bind(Number(id)).run()
+      await bumpSync(env)
       await audit(env, authed, 'announcement.delete', `announcement id ${id} deleted`)
       return json({ ok: true })
+    }
+
+    // ---- Maintenance Mode ----
+    // GET returns the current state; POST sets it. Scope 'all' shows a
+    // full maintenance screen in the wallet, scope 'wallet' shows a banner
+    // and blocks on-chain actions while still allowing browsing. Either
+    // scope blocks signing. The admin portal itself is never blocked by
+    // this flag, so maintenance can always be switched off from here.
+    if (path === '/api/admin/maintenance' && req.method === 'GET') {
+      return json({ maintenance: await getMaintenanceState(env) })
+    }
+    if (path === '/api/admin/maintenance' && req.method === 'POST') {
+      const body = await readJson(req)
+      const enabled = body.enabled === true
+      const message = String(body.message ?? '').trim()
+      const scope = String(body.scope ?? 'wallet')
+      if (!['all', 'wallet'].includes(scope)) return json({ error: "scope must be 'all' or 'wallet'" }, 400)
+      if (message.length > 500) return json({ error: 'message must be 500 characters or fewer' }, 400)
+      if (enabled && message === '') return json({ error: 'message is required while maintenance is on — the wallet shows it to users' }, 400)
+      const existing = await env.DB.prepare('SELECT id FROM maintenance WHERE id = 1').first<{ id: number }>()
+      if (existing) {
+        await env.DB.prepare("UPDATE maintenance SET enabled = ?, message = ?, scope = ?, updated_by = ?, updated_at = datetime('now') WHERE id = ?").bind(enabled ? 1 : 0, message, scope, authed, 1).run()
+      } else {
+        await env.DB.prepare('INSERT INTO maintenance (id, enabled, message, scope, updated_by) VALUES (?, ?, ?, ?, ?)').bind(1, enabled ? 1 : 0, message, scope, authed).run()
+      }
+      await bumpSync(env)
+      await audit(env, authed, enabled ? 'maintenance.on' : 'maintenance.off', enabled ? `Maintenance ON (${scope}): "${message}"` : 'Maintenance OFF')
+      return json({ ok: true, maintenance: await getMaintenanceState(env) })
+    }
+
+    // ---- Network mode (Testnet / Mainnet switch) ----
+    // Global mode the wallet follows in real time via /api/sync. null =
+    // never set: the wallet shows all networks, as before. Flipping the
+    // mode does NOT deploy a vault, does NOT bypass the mainnet gate, and
+    // does NOT make locks/swaps go live on mainnet — a mainnet chain with
+    // no vault still refuses honestly in the wallet.
+    if (path === '/api/admin/network-mode' && req.method === 'GET') {
+      return json({ networkMode: await getNetworkMode(env) })
+    }
+    if (path === '/api/admin/network-mode' && req.method === 'POST') {
+      const body = await readJson(req)
+      const mode = body.mode === null || body.mode === undefined ? null : String(body.mode)
+      if (mode !== null && mode !== 'testnet' && mode !== 'mainnet') {
+        return json({ error: "mode must be 'testnet', 'mainnet' or null (all networks)" }, 400)
+      }
+      const existing = await env.DB.prepare('SELECT id FROM network_mode WHERE id = 1').first<{ id: number }>()
+      if (existing) {
+        await env.DB.prepare("UPDATE network_mode SET mode = ?, updated_by = ?, updated_at = datetime('now') WHERE id = ?").bind(mode, authed, 1).run()
+      } else {
+        await env.DB.prepare('INSERT INTO network_mode (id, mode, updated_by) VALUES (?, ?, ?)').bind(1, mode, authed).run()
+      }
+      await bumpSync(env)
+      await audit(env, authed, 'network_mode.set', mode === null ? 'Network mode cleared — wallet shows all networks' : `Network mode set to ${mode} — wallet follows on next sync`)
+      return json({ ok: true, networkMode: await getNetworkMode(env) })
     }
 
     // ---- App Config and Releases (HMAC-signed) ----
@@ -777,6 +1061,7 @@ export default {
       const count = await env.DB.prepare('SELECT COUNT(*) AS n FROM config_versions').first<{ n: number }>()
       const version = `v${(count?.n ?? 0) + 1}`
       await env.DB.prepare('INSERT INTO config_versions (version, payload_json, signature, published_by) VALUES (?, ?, ?, ?)').bind(version, payloadJson, signature, authed).run()
+      await bumpSync(env)
       await audit(env, authed, 'config.publish', `signed config ${version} published (min app ${minAppVersion})`)
       return json({ ok: true, version, payload, signature }, 201)
     }
@@ -1247,6 +1532,8 @@ export default {
         'INSERT INTO deployments (chain_id, address, tx_hash, compiler_version, bytecode_hash, artifact_hash, parameters_json, verification_status, env) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)',
       ).bind(params.chainId, params.address, params.txHash ?? null, `solc ${SOLC_PINNED}`, ARTIFACT_BYTECODE_HASH, params.sourceHash, JSON.stringify(params), verificationStatus, params.env).run()
       await env.DB.prepare('UPDATE chains SET vault_address = ?, updated_at = datetime(\'now\') WHERE id = ?').bind(params.address, params.chainId).run()
+      // A registered vault changes what the wallet reads for this chain.
+      await bumpSync(env)
       await audit(env, authed, 'studio.deploy_register', `StelixVault ${params.env} registered on ${chain.name} at ${params.address} (${verificationStatus})`)
       return json({
         ok: true, chain: chain.name, address: params.address, verificationStatus,
@@ -1371,6 +1658,126 @@ export default {
         gatePass: automatedPass || externalPass,
         note: 'Automated audit is NOT a substitute for an independent human audit. Mainnet requires a passing automated audit OR a recorded passing independent audit, plus a verified testnet deployment and a smoke-test attestation.',
       })
+    }
+
+    // ---- Multisig creator (Safe protocol) ----
+    // Prepare -> owners create the Safe in their own wallet (Safe web app /
+    // Safe CLI / `cast safe create`) -> confirm. The Worker never deploys
+    // a Safe and never holds a private key. A Safe address is recorded
+    // only after on-chain verification: contract code present at the
+    // address plus getThreshold() and getOwners() matching the prepared
+    // set, read from the chain's own RPC. Only a deployed Safe can be
+    // used as the StelixVault Owner in Contract Studio.
+    const multisigIdMatch = /^\/api\/admin\/multisigs\/(\d+)(\/(predicted|confirm))?$/.exec(path)
+    if (path === '/api/admin/multisigs' && req.method === 'GET') {
+      const { results } = await env.DB.prepare('SELECT * FROM multisigs ORDER BY created_at DESC, id DESC LIMIT 100').all()
+      return json({ multisigs: results ?? [] })
+    }
+    if (path === '/api/admin/multisigs' && req.method === 'POST') {
+      const body = await readJson(req)
+      const { multisig, errors } = validateMultisigInput(body)
+      if (!multisig) return json({ error: 'invalid multisig', details: errors }, 400)
+      const chain = await env.DB.prepare('SELECT * FROM chains WHERE id = ?').bind(multisig.chainId).first<ChainRow>()
+      if (!chain) return json({ error: 'chain not found in Chain Manager' }, 400)
+      const info = safeChainFor(multisig.chainId)
+      if (info && chain.chain_id !== info.chainId) {
+        return json({ error: `Chain Manager row "${multisig.chainId}" has chain id ${chain.chain_id}, but Safe expects ${info.chainId} for ${info.name}. Fix the chain row before preparing a multisig.` }, 400)
+      }
+      const run = await env.DB.prepare(
+        'INSERT INTO multisigs (chain_id, label, owners_json, threshold, salt_nonce, status, predicted_address, safe_address, deploy_tx_hash, factory_address, singleton_address, safe_version, created_by) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
+      ).bind(
+        multisig.chainId, multisig.label, JSON.stringify(multisig.owners), multisig.threshold,
+        multisig.saltNonce, 'prepared', multisig.predictedAddress, null, null,
+        multisig.factoryAddress, multisig.singletonAddress, multisig.safeVersion, authed,
+      ).run()
+      const id = (run as unknown as { meta?: { last_row_id?: number } }).meta?.last_row_id ?? null
+      await audit(env, authed, 'multisig.prepare', `Multisig prepared on ${multisig.chainId}: ${multisig.threshold}-of-${multisig.owners.length} (id ${id ?? ''}) — not deployed yet, no Safe address recorded`)
+      return json({ ok: true, id }, 201)
+    }
+    if (multisigIdMatch && multisigIdMatch[2] === '/predicted' && req.method === 'POST') {
+      const id = Number(multisigIdMatch[1])
+      const row = await env.DB.prepare('SELECT * FROM multisigs WHERE id = ?').bind(id).first<{ status: string }>()
+      if (!row) return json({ error: 'multisig not found' }, 404)
+      if (row.status !== 'prepared') return json({ error: 'This multisig is already deployed — its Safe address is fixed and cannot be changed to a prediction.' }, 409)
+      const body = await readJson(req)
+      const predicted = String(body.predictedAddress ?? body.predicted_address ?? '').trim()
+      if (!isAddress(predicted)) return json({ error: 'predictedAddress must be a valid 0x address (paste the address the Safe app shows before you deploy)' }, 400)
+      await env.DB.prepare('UPDATE multisigs SET predicted_address = ? WHERE id = ?').bind(predicted.toLowerCase(), id).run()
+      await audit(env, authed, 'multisig.predicted', `Multisig id ${id}: predicted Safe address ${predicted.toLowerCase()} recorded (not deployed yet — not usable as vault Owner)`)
+      return json({ ok: true, id, predictedAddress: predicted.toLowerCase() })
+    }
+    if (multisigIdMatch && multisigIdMatch[2] === '/confirm' && req.method === 'POST') {
+      const id = Number(multisigIdMatch[1])
+      const row = await env.DB.prepare('SELECT * FROM multisigs WHERE id = ?').bind(id).first<{
+        chain_id: string
+        owners_json: string
+        threshold: number
+        status: string
+      }>()
+      if (!row) return json({ error: 'multisig not found' }, 404)
+      if (row.status === 'deployed') return json({ error: 'This multisig is already deployed and recorded — it cannot be confirmed twice.' }, 409)
+      const body = await readJson(req)
+      const safeAddress = String(body.safeAddress ?? body.safe_address ?? '').trim()
+      const txHash = body.txHash ? String(body.txHash) : null
+      if (!isAddress(safeAddress)) return json({ error: 'safeAddress must be a valid 0x address' }, 400)
+      if (txHash !== null && !isTxHash(txHash)) return json({ error: 'txHash must be a valid 0x transaction hash' }, 400)
+      let owners: string[]
+      try {
+        owners = JSON.parse(row.owners_json) as string[]
+      } catch {
+        return json({ error: 'Stored owners for this multisig are corrupt — delete it and prepare it again.' }, 500)
+      }
+      const duplicate = await env.DB.prepare('SELECT id FROM multisigs WHERE chain_id = ? AND safe_address = ?').bind(row.chain_id, safeAddress.toLowerCase()).first()
+      if (duplicate) return json({ error: 'This Safe address is already recorded as a deployed multisig on this chain.' }, 409)
+      const chain = await env.DB.prepare('SELECT * FROM chains WHERE id = ?').bind(row.chain_id).first<ChainRow>()
+      if (!chain) return json({ error: 'chain not found in Chain Manager' }, 404)
+      const rpcUrl = (chain.rpc_urls.split(',')[0] ?? '').trim()
+      if (!rpcUrl) return json({ error: 'No RPC URL is configured for this chain — add one in Chain Manager before confirming.' }, 400)
+      // 1. Contract code must exist at the Safe address on this chain.
+      let code = '0x'
+      try {
+        const result = await rpcCall(rpcUrl, 'eth_getCode', [safeAddress, 'latest'])
+        if (typeof result === 'string') code = result
+      } catch {
+        return json({ error: 'Chain RPC unreachable — the Safe could not be verified on-chain. Try again when the RPC is reachable.' }, 502)
+      }
+      if (code === '0x' || code === '0x0' || /^0x0+$/.test(code) || code.length <= 2) {
+        return json({ error: 'No contract code exists at this address on this chain. The Safe has not been deployed yet — deploy it in your wallet first, then confirm.' }, 400)
+      }
+      // 2. On-chain threshold must equal the prepared threshold.
+      // 3. On-chain owners must equal the prepared owner set.
+      let onChainThreshold: number
+      let onChainOwners: string[]
+      try {
+        const thresholdHex = await ethCall(rpcUrl, safeAddress, '0x0d582f13')
+        onChainThreshold = Number(hexToBigInt(thresholdHex.slice(0, 2 + 64)))
+        const ownersHex = await ethCall(rpcUrl, safeAddress, '0xa0e67e2b')
+        onChainOwners = decodeAddressArray(ownersHex)
+      } catch {
+        return json({ error: 'Could not read the Safe configuration on-chain (getThreshold/getOwners failed). The address may not be a Safe, or the RPC is unreachable.' }, 502)
+      }
+      if (onChainThreshold !== row.threshold) {
+        return json({ error: `On-chain threshold is ${onChainThreshold}-of-${onChainOwners.length}, but this multisig was prepared as ${row.threshold}-of-${owners.length}. This Safe does not match the prepared multisig.` }, 400)
+      }
+      const want = [...owners].map((o) => o.toLowerCase()).sort()
+      const got = [...onChainOwners].map((o) => o.toLowerCase()).sort()
+      if (want.length !== got.length || want.some((o, i) => o !== got[i])) {
+        return json({ error: 'On-chain owners do not match the prepared owners. This Safe does not match the prepared multisig — check the chain and the Safe address.' }, 400)
+      }
+      await env.DB.prepare(
+        "UPDATE multisigs SET status = ?, safe_address = ?, deploy_tx_hash = ?, deployed_at = datetime('now') WHERE id = ?",
+      ).bind('deployed', safeAddress.toLowerCase(), txHash, id).run()
+      await audit(env, authed, 'multisig.confirm', `Multisig id ${id} deployed and verified on-chain on ${row.chain_id}: Safe ${safeAddress.toLowerCase()} (${row.threshold}-of-${owners.length})`)
+      return json({ ok: true, id, safeAddress: safeAddress.toLowerCase(), chain: row.chain_id, threshold: row.threshold, owners }, 201)
+    }
+    if (multisigIdMatch && !multisigIdMatch[2] && req.method === 'DELETE') {
+      const id = Number(multisigIdMatch[1])
+      const row = await env.DB.prepare('SELECT * FROM multisigs WHERE id = ?').bind(id).first<{ status: string }>()
+      if (!row) return json({ error: 'multisig not found' }, 404)
+      if (row.status !== 'prepared') return json({ error: 'A deployed multisig is a permanent record — it cannot be deleted. Only a prepared (not yet deployed) multisig can be discarded.' }, 409)
+      await env.DB.prepare('DELETE FROM multisigs WHERE id = ?').bind(id).run()
+      await audit(env, authed, 'multisig.delete', `Prepared multisig id ${id} deleted (never deployed)`)
+      return json({ ok: true })
     }
 
     // ---- Audit log + backup ----
