@@ -13,8 +13,11 @@ interface IDexRouter {
         uint256 deadline
     ) external returns (uint256[] memory amounts);
 
+    /// @notice Quote only. Declared non-view because a Uniswap V3 quoter
+    /// (QuoterV2.quoteExactInputSingle) is not a view call — the
+    /// StelixV3RouterAdapter needs to call it. V2-style routers may still
+    /// implement this as view. The vault never calls this on-chain.
     function getAmountsOut(uint256 amountIn, address[] calldata path)
         external
-        view
         returns (uint256[] memory amounts);
 }

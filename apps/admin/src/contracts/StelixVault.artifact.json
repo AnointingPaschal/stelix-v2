@@ -10,10 +10,10 @@
   "sourceHashes": {
     "StelixVault.sol": "0b5e90fcf6bc5d0592ccecd1aa41e83fbc880ef844c3ad4eaee9adcecc6f0646",
     "interfaces/IERC20.sol": "ac5b97d53c8152fa800126cb6e25c91f6f33ecf03eac27605787011b5e880f6c",
-    "interfaces/IDexRouter.sol": "b13c8ee16fe2e40054fafed50facd1dc8d001be2d0afcc5d79dc8cfa5ebb86ab",
+    "interfaces/IDexRouter.sol": "5037edce2ff0613206931d9bdbc170154753bf2d3bdea51d078f446e87fc0920",
     "interfaces/IPriceFeed.sol": "2e835b160eec4912ad97be15d0f9865f078c703d8ae6859bf5bd71e3c52ebb14"
   },
-  "combinedSourceHash": "4d7fe77df06836442edba8157ffd0eea559e35c85d2f6051c6132641082fbcd7",
+  "combinedSourceHash": "28f32c593a0b170c4ac3d9275560f7f90ec12f1d632b9bb7e291e23bd8efea92",
   "abi": [
     {
       "inputs": [
@@ -1076,12 +1076,12 @@
       "type": "function"
     }
   ],
-  "bytecodeHash": "d5394648522d0feac750b808d4560a584280badba8ce17aec853b0c7df4b4dde",
-  "deployedBytecodeHash": "4a602a16e8e3d212fdbf1a2ad3510b9f283044ba5b66102aeb2570896ecf07df",
+  "bytecodeHash": "639235557b8510994d77f993e1d1eccdaa354ff2ece7eb740e9a5ad86cf2a6b8",
+  "deployedBytecodeHash": "da6e362752043544e691fe52f211ec3b6a5b04f9b81783c79be27b85ce75ec08",
   "bytecodeBytes": 12317,
   "deployedBytes": 11713,
   "sizeLimitBytes": 24576,
   "withinSizeLimit": true,
   "warnings": [],
-  "compiledAt": "2026-11-26T14:51:36.991Z"
+  "compiledAt": "2026-11-27T09:05:30.257Z"
 }

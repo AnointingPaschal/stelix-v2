@@ -5,6 +5,7 @@ import { SOLC_PINNED } from '../lib/types'
 import { ARC_TESTNET, arcNetworkFor } from '../lib/arcNetworks'
 import { mainnetConfirmPhrase, testnetChainIdFor, validateDeployParams } from '../lib/deployParams'
 import { api, type AuditGate, type CompileResult, type DeployPresetRow, type MultisigRow } from '../lib/api'
+import DeployAdapters from '../components/DeployAdapters'
 import type { Chain } from '../lib/types'
 import { LiveNote, PageHeader, SectionTitle } from '../components/ui'
 
@@ -248,6 +249,35 @@ export default function ContractStudio() {
     setBusy(false)
   }
 
+  // Adapters deployed from the admin with a connected wallet: save
+  // their addresses into the Deploy Preset for this network and fill
+  // the form from them, so the vault deploy below can proceed.
+  const onAdaptersDeployed = async (feed: string, adapter: string, deployer: string) => {
+    const existing = presetFor(effectiveChainId, env)
+    const saved = {
+      chainId: effectiveChainId, env,
+      label: existing?.label ?? '',
+      owner: existing?.owner || deployer,
+      keeper: existing?.keeper ?? '',
+      router: adapter, priceFeed: feed,
+      penaltyRecipient: existing?.penalty_recipient || deployer,
+      feeRecipient: existing?.fee_recipient || deployer,
+      autoSellFeeBps: existing?.auto_sell_fee_bps ?? 0,
+    }
+    try {
+      await api.saveDeployPreset(saved)
+      setPresets((prev) => {
+        const row = { id: existing?.id ?? 0, chain_id: saved.chainId, env: saved.env, label: saved.label, owner: saved.owner, keeper: saved.keeper, router: saved.router, price_feed: saved.priceFeed, penalty_recipient: saved.penaltyRecipient, fee_recipient: saved.feeRecipient, auto_sell_fee_bps: saved.autoSellFeeBps, updated_by: '', updated_at: new Date().toISOString() }
+        return existing ? prev.map((p) => (p.chain_id === saved.chainId && p.env === saved.env ? row : p)) : [...prev, row]
+      })
+      setParams((prev) => ({ ...prev, router: adapter, priceFeed: feed, owner: prev.owner || deployer, penaltyRecipient: prev.penaltyRecipient || deployer, feeRecipient: prev.feeRecipient || deployer }))
+      setNotice(`Adapters deployed and saved to your preset for ${effectiveChainId} (${env}): price feed ${feed}, router ${adapter}. Router and Price Feed are now filled in below — deploy the vault next.`)
+    } catch (e) {
+      setParams((prev) => ({ ...prev, router: adapter, priceFeed: feed }))
+      setError(`Adapters deployed (${feed} / ${adapter}) but the preset could not be saved: ${e instanceof Error ? e.message : 'save failed'} — paste the two addresses into Router and Price Feed below.`)
+    }
+  }
+
   const attestSmoke = async () => {
     setError(''); setNotice('')
     try {
@@ -321,6 +351,12 @@ export default function ContractStudio() {
             )}
             {!isArc && (
               <p className="field-hint">Mainnet only — the registry holds no verified testnet for {networkName}, so no testnet is offered here. Add a testnet chain in Chain Manager to enable a testnet flow for it.</p>
+            )}
+            {isArc && (
+              <DeployAdapters network={arcNet} explorerUrl={net.explorerUrl} onDeployed={onAdaptersDeployed} />
+            )}
+            {!isArc && (
+              <p className="field-hint">No adapter deploy here for {networkName}: EVM chains with a native V2 router use it directly as the Router. Solana deploys with the Solana CLI, not from this page.</p>
             )}
             <label>Constructor parameters — StelixVault(owner, keeper, router, priceFeed, penaltyRecipient, feeRecipient, autoSellFeeBps)</label>
             {presetFor(effectiveChainId, env) ? (
