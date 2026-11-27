@@ -506,6 +506,33 @@ describe('Worker API (live endpoints, no sample data)', () => {
     expect((deployments.body.deployments as unknown[]).length).toBe(0)
   })
 
+  it('deploy register: retries a transient RPC failure and then registers', async () => {
+    // The mainnet vault registration at ~20:10 WAT failed on a one-off
+    // RPC hiccup even though the RPC answers in ~34 ms from the Workers
+    // runtime — rpcCall retries once so a single blip cannot fail a save.
+    let codeCalls = 0
+    globalThis.fetch = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input)
+      if (url.includes('explorer')) return new Response(JSON.stringify({ status: '1', result: [{ SourceCode: '' }] }), { status: 200 })
+      let method = ''
+      try { method = (JSON.parse(String(init?.body ?? '{}')) as { method?: string }).method ?? '' } catch { method = '' }
+      if (method === 'eth_getCode') {
+        codeCalls++
+        if (codeCalls === 1) throw new Error('fetch failed')
+        return new Response(JSON.stringify({ jsonrpc: '2.0', id: 1, result: '0x6080604052' }), { status: 200 })
+      }
+      return new Response(JSON.stringify({ jsonrpc: '2.0', id: 1, result: '0x' + '0'.repeat(64) }), { status: 200 })
+    }) as unknown as typeof fetch
+    const res = await call(env, '/api/admin/deploy/register', {
+      method: 'POST', token,
+      body: { ...DEPLOY_PARAMS, address: '0x8888888888888888888888888888888888888888', sourceHash: '0b5e90fcf6bc5d0592ccecd1aa41e83fbc880ef844c3ad4eaee9adcecc6f0646' },
+    })
+    expect(res.status).toBe(201)
+    expect(codeCalls).toBe(2)
+    const deployments = await call(env, '/api/admin/deployments', { token })
+    expect((deployments.body.deployments as unknown[]).length).toBe(1)
+  })
+
   it('deploy register: mainnet is gated without audit/testnet/smoke evidence', async () => {
     const res = await call(env, '/api/admin/deploy/register', {
       method: 'POST', token,

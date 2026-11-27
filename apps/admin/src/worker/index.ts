@@ -432,15 +432,29 @@ async function getCircleAppId(env: Env): Promise<string | null> {
 }
 
 async function rpcCall(rpcUrl: string, method: string, params: unknown[]): Promise<unknown> {
-  const r = await fetchWithTimeout(rpcUrl, {
-    method: 'POST',
-    headers: { 'content-type': 'application/json' },
-    body: JSON.stringify({ jsonrpc: '2.0', id: 1, method, params }),
-  })
-  if (!r.ok) throw new Error(`RPC ${method} failed: HTTP ${r.status}`)
-  const body = (await r.json()) as { result?: unknown; error?: { message?: string } }
-  if (body.error) throw new Error(`RPC ${method} error: ${body.error.message ?? 'unknown'}`)
-  return body.result
+  // Reads only (eth_getCode / eth_call), so a single retry is safe. The
+  // Arc mainnet RPC answered in 34 ms from the Workers runtime in a
+  // 2026-11-27 probe, but the mainnet vault registration at ~20:10 WAT
+  // failed on a one-off RPC hiccup — without a retry the whole save
+  // failed and the user had to tap Register again.
+  let lastError: unknown = null
+  for (let attempt = 0; attempt < 2; attempt++) {
+    if (attempt > 0) await new Promise((r) => setTimeout(r, 500))
+    try {
+      const r = await fetchWithTimeout(rpcUrl, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ jsonrpc: '2.0', id: 1, method, params }),
+      })
+      if (!r.ok) throw new Error(`RPC ${method} failed: HTTP ${r.status}`)
+      const body = (await r.json()) as { result?: unknown; error?: { message?: string } }
+      if (body.error) throw new Error(`RPC ${method} error: ${body.error.message ?? 'unknown'}`)
+      return body.result
+    } catch (e) {
+      lastError = e
+    }
+  }
+  throw lastError
 }
 
 const pad32 = (addr: string) => '0'.repeat(24) + addr.slice(2).toLowerCase()

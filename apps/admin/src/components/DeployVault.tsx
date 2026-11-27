@@ -156,7 +156,7 @@ export default function DeployVault({ chainId, network, explorerUrl, params, loc
       const addr = await vault.getAddress()
       setVaultAddress(addr)
       setLog((l) => [...l, `StelixVault deployed at ${addr}`])
-      setLog((l) => [...l, 'Next: tap "Verify on explorer", then "Register in Chain Manager" below — registration checks on-chain code and the source hash before writing anything to D1.'])
+      setLog((l) => [...l, 'Saving it to the database now — registration checks on-chain code and the source hash before writing anything to D1. If the save fails, the address stays in the form above.'])
       onDeployed(addr, txHash)
     } catch (e) { setError(friendlyError(e)) }
     setBusy(false)

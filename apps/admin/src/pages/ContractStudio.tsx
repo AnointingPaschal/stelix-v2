@@ -306,7 +306,13 @@ export default function ContractStudio() {
   const registerDeployment = async (registerEnv: 'testnet' | 'mainnet', addr: string, tx: string, compileResult: CompileResult | null, auto = false): Promise<boolean> => {
     setError(''); setNotice('')
     const fail = (msg: string) => {
-      setError(msg + (auto ? ' The deployed address is still in the form above — tap "Register in Chain Manager" to save it.' : ''))
+      // The manual save button differs by network: testnet has
+      // "Register in Chain Manager" in the Deploy card, mainnet registers
+      // from the "Deploy to mainnet" button in the Mainnet gate card.
+      const manual = registerEnv === 'mainnet'
+        ? ' The deployed address is still in the form above — tap "Deploy to mainnet" in the Mainnet gate card below to save it.'
+        : ' The deployed address is still in the form above — tap "Register in Chain Manager" to save it.'
+      setError(msg + (auto ? manual : ''))
       return false
     }
     if (!addr.trim()) return fail('Enter the deployed contract address first.')
