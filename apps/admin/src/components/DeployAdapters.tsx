@@ -52,23 +52,57 @@ export default function DeployAdapters({ network, explorerUrl, onDeployed }: Pro
     try {
       await provider.send('wallet_switchEthereumChain', [{ chainId: `0x${network.chainId.toString(16)}` }])
     } catch (e) {
-      const code = (e as { code?: number })?.code
-      if (code !== 4902) {
-        // Switch failed for another reason (e.g. user rejected, or the
-        // chain is already added under a different RPC). Re-check: if
-        // MetaMask is now on the right chain, carry on.
+      // ethers v6 wraps the wallet's error: the 4902 lives in
+      // e.error.code / e.info.error.code, while e.code is just
+      // UNKNOWN_ERROR — the previous check read only e.code, so a
+      // 4902 "Unrecognized chain ID" never reached the add-chain
+      // fallback and was thrown instead. Fixed 2026-11-27.
+      const walk = (o: unknown, depth = 0): number | undefined => {
+        if (o == null || depth > 4) return undefined
+        if (typeof o === 'number') return o
+        if (typeof o === 'object') {
+          const rec = o as Record<string, unknown>
+          if (typeof rec.code === 'number') return rec.code
+          for (const v of Object.values(rec)) { const c = walk(v, depth + 1); if (c !== undefined) return c }
+        }
+        return undefined
+      }
+      const code = walk(e)
+      if (code === 4001) throw e // user rejected the switch — do not retry
+      // Any other switch failure (4902 unrecognised chain, -32602,
+      // stale chain list in this browser) → try adding the chain.
+      // If the chain is in fact already added, MetaMask returns to
+      // the switch path on the re-check below instead of erroring.
+      try {
+        await provider.send('wallet_addEthereumChain', [{
+          chainId: `0x${network.chainId.toString(16)}`,
+          chainName: network.name,
+          nativeCurrency: { name: 'USDC', symbol: 'USDC', decimals: 18 },
+          rpcUrls: [network.rpcUrl],
+          blockExplorerUrls: [network.explorerUrl],
+        }])
+      } catch (addErr) {
         const after = await provider.getNetwork()
         if (Number(after.chainId) === network.chainId) return
-        throw e
+        throw addErr
       }
-      await provider.send('wallet_addEthereumChain', [{
-        chainId: `0x${network.chainId.toString(16)}`,
-        chainName: network.name,
-        nativeCurrency: { name: 'USDC', symbol: 'USDC', decimals: 18 },
-        rpcUrls: [network.rpcUrl],
-        blockExplorerUrls: [network.explorerUrl],
-      }])
+      const after = await provider.getNetwork()
+      if (Number(after.chainId) !== network.chainId) {
+        // Add succeeded but MetaMask did not switch (some wallets
+        // add without switching) — switch once more, now it exists.
+        await provider.send('wallet_switchEthereumChain', [{ chainId: `0x${network.chainId.toString(16)}` }])
+      }
     }
+  }
+
+  // MetaMask/ethers errors arrive as one huge JSON blob. Show the user
+  // the one line that matters instead of the whole payload.
+  const friendlyError = (e: unknown) => {
+    const msg = e instanceof Error ? e.message : 'Could not connect wallet.'
+    if (msg.includes('Unrecognized chain ID') || msg.includes('4902')) return 'MetaMask does not know Arc Testnet yet. Tap Connect wallet again — the admin will now add Arc Testnet (chain 5042002, RPC https://rpc.testnet.arc.io) and switch to it. If MetaMask asks you to approve adding the network, approve it.'
+    if (msg.includes('nativeCurrency.decimals')) return 'MetaMask refused the chain details. Please hard-refresh this page — the fixed version uses decimals 18 for the chain record — then tap Connect wallet again.'
+    if (msg.includes('User denied') || msg.includes('rejected')) return 'You rejected the request in MetaMask. Tap Connect wallet again and approve it in MetaMask.'
+    return msg.length > 300 ? `${msg.slice(0, 300)}…` : msg
   }
 
   const connect = async () => {
@@ -83,7 +117,7 @@ export default function DeployAdapters({ network, explorerUrl, onDeployed }: Pro
       await ensureNetwork(provider)
       setWallet(address)
       setLog([`Connected ${address} on ${network.name} (chain ${network.chainId}). Fund it with test USDC from https://faucet.circle.com (Arc Testnet) before deploying.`])
-    } catch (e) { setError(e instanceof Error ? e.message : 'Could not connect wallet.') }
+    } catch (e) { setError(friendlyError(e)) }
     setBusy(false)
   }
 
@@ -120,7 +154,7 @@ export default function DeployAdapters({ network, explorerUrl, onDeployed }: Pro
       setLog((l) => [...l, `StelixV3RouterAdapter deployed at ${adapterAddr}`])
       setLog((l) => [...l, 'Both adapters deployed. Saving them into your Deploy Preset for this network — Contract Studio will fill Router and Price Feed from it.'])
       onDeployed(feedAddr, adapterAddr, deployer)
-    } catch (e) { setError(e instanceof Error ? e.message : 'Adapter deploy failed.') }
+    } catch (e) { setError(friendlyError(e)) }
     setBusy(false)
   }
 
