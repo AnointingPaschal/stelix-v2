@@ -42,8 +42,7 @@ export interface EvmNetwork {
   blocker?: string
 }
 
-export const EVM_TESTNETS: DeployNetwork[] = [
-  {
+export const EVM_TESTNETS: DeployNetwork[] = [  {
     id: 'bnb-testnet', name: 'BNB Testnet', env: 'testnet', chainId: 97,
     rpcUrl: 'https://bsc-testnet-dataseed.bnbchain.org',
     explorerUrl: 'https://testnet.bscscan.com',
@@ -90,6 +89,103 @@ export const EVM_TESTNETS: DeployNetwork[] = [
   },
 ]
 
+// Mainnet rows. Every address below was verified 2026-11-27 against an
+// official source — do not invent others, and never paste a router from
+// memory: two candidates supplied for this build were WRONG and were
+// caught only by checking them (Base V3 SwapRouter02
+// 0x2626664c2603336E57B271c5C0b26F21AB9933d8 and Base USDC
+// 0x833589fCD6eDb6E08f4c7C32D4f71b54bd029029 both share their first
+// 32 hex chars with the real address and differ only at the end).
+//   Arc Mainnet: Uniswap/contracts deployments/json/5042.json +
+//     arc.etherscan.io — V3 SwapRouter02
+//     0x53BF6B0684Ec7eF91e1387Da3D1a1769bC5A6F77 (also in arcNetworks.ts).
+//     Arc also has a real V2 Router02
+//     0x1f7d7550B1b028f7571E69A784071F0205FD2EfA; the vault keeps the
+//     V3-adapter path, same as testnet, so nothing changes there.
+//   BNB Mainnet: bscscan.com "PancakeSwap: Router v2"
+//     0x10ED43C718714eb63d5aA57B78B54704E256024E. USDT is Binance-Peg
+//     USDT, 18 decimals — the V2 feed constructor must get 18.
+//   Ethereum Mainnet: official Uniswap V2 deployments page — V2
+//     Router02 0x7a250d5630B4cF539739dF2C5dAcb4c659F2488D
+//     (mainnet only; Sepolia's is 0xeE567Fe…).
+//   Base Mainnet: official Uniswap V3 Base deployments page — V3
+//     SwapRouter02 0x2626664c2603336E57B271c5C0b26F421741e481.
+//     Native USDC 0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913 (6 dec,
+//     Basescan FiatTokenProxy + Circle docs).
+//   Polygon Mainnet: official Uniswap V3 Polygon deployments page —
+//     V3 SwapRouter02 0x68b3465833fb72A70ecDF485E0e4C7bD8665Fc45.
+//     0xE592427A… is the v1 SwapRouter, NOT SwapRouter02: its
+//     exactInputSingle takes a deadline parameter, so the adapter
+//     (built for SwapRouter02's deadline-free exactInputSingle)
+//     would break against it. Gas token is POL, not MATIC.
+// D1 (chains table) is the live registry — migration 0014 sets the
+// mainnet dex_router values there to match these, and fixes the
+// wrong Base USDC that migration 0013 wrote.
+export const EVM_MAINNETS: DeployNetwork[] = [
+  {
+    id: 'arc-mainnet', name: 'Arc Mainnet', env: 'mainnet', chainId: 5042,
+    rpcUrl: 'https://rpc.mainnet.arc.io',
+    explorerUrl: 'https://explorer.arc.io',
+    nativeSymbol: 'USDC', nativeDecimals: 6,
+    stablecoin: 'USDC', stablecoinAddress: '0x3600000000000000000000000000000000000000', stablecoinDecimals: 6,
+    routerKind: 'v3', dexRouter: '0x53BF6B0684Ec7eF91e1387Da3D1a1769bC5A6F77',
+    dexRouterKind: 'Uniswap V3 SwapRouter02 (mainnet)',
+    feedKind: 'v3-twap',
+  },
+  {
+    id: 'bnb', name: 'BNB Chain', env: 'mainnet', chainId: 56,
+    rpcUrl: 'https://bsc-dataseed.bnbchain.org',
+    explorerUrl: 'https://bscscan.com',
+    nativeSymbol: 'BNB', nativeDecimals: 18,
+    stablecoin: 'USDT', stablecoinAddress: '0x55d398326f99059fF775485246999027B3197955', stablecoinDecimals: 18,
+    routerKind: 'v2', dexRouter: '0x10ED43C718714eb63d5aA57B78B54704E256024E',
+    dexRouterKind: 'PancakeSwap V2 Router (mainnet)',
+    feedKind: 'v2-twap',
+  },
+  {
+    id: 'base', name: 'Base', env: 'mainnet', chainId: 8453,
+    rpcUrl: 'https://mainnet.base.org',
+    explorerUrl: 'https://basescan.org',
+    nativeSymbol: 'ETH', nativeDecimals: 18,
+    stablecoin: 'USDC', stablecoinAddress: '0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913', stablecoinDecimals: 6,
+    routerKind: 'v3', dexRouter: '0x2626664c2603336E57B271c5C0b26F421741e481',
+    dexRouterKind: 'Uniswap V3 SwapRouter02 (mainnet)',
+    feedKind: 'v3-twap',
+  },
+  {
+    id: 'ethereum', name: 'Ethereum', env: 'mainnet', chainId: 1,
+    rpcUrl: 'https://eth.llamarpc.com',
+    explorerUrl: 'https://etherscan.io',
+    nativeSymbol: 'ETH', nativeDecimals: 18,
+    stablecoin: 'USDT', stablecoinAddress: '0xdAC17F958D2ee523a2206206994597C13D831ec7', stablecoinDecimals: 6,
+    routerKind: 'v2', dexRouter: '0x7a250d5630B4cF539739dF2C5dAcb4c659F2488D',
+    dexRouterKind: 'Uniswap V2 Router02 (mainnet)',
+    feedKind: 'v2-twap',
+  },
+  {
+    id: 'polygon', name: 'Polygon', env: 'mainnet', chainId: 137,
+    rpcUrl: 'https://polygon-rpc.com',
+    explorerUrl: 'https://polygonscan.com',
+    nativeSymbol: 'POL', nativeDecimals: 18,
+    stablecoin: 'USDT', stablecoinAddress: '0xc2132D05D31c914a87C6611C10748AEb04B58e8F', stablecoinDecimals: 6,
+    routerKind: 'v3', dexRouter: '0x68b3465833fb72A70ecDF485E0e4C7bD8665Fc45',
+    dexRouterKind: 'Uniswap V3 SwapRouter02 (mainnet)',
+    feedKind: 'v3-twap',
+  },
+]
+
+/** D1 slug of the mainnet row for a chain family, or null (Solana). */
+export const mainnetIdForFamily = (family: string): string | null => {
+  switch (family) {
+    case 'arc': return 'arc-mainnet'
+    case 'bnb': return 'bnb'
+    case 'base': return 'base'
+    case 'ethereum': return 'ethereum'
+    case 'polygon': return 'polygon'
+    default: return null
+  }
+}
+
 /** The network object the browser-deploy cards (Deploy Adapters /
  *  Deploy Vault) need. Arc's ArcNetwork already has every field except
  *  routerKind/feedKind, which Contract Studio adds for the selected
@@ -129,3 +225,6 @@ export const testnetIdForFamily = (family: string): string | null => {
 
 export const evmTestnetFor = (id: string): DeployNetwork | undefined =>
   EVM_TESTNETS.find((n) => n.id === id)
+
+export const evmMainnetFor = (id: string): DeployNetwork | undefined =>
+  EVM_MAINNETS.find((n) => n.id === id)

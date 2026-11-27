@@ -1,16 +1,22 @@
-// Deploy StelixVault from the admin — Testnet only, every EVM chain.
-// Same pattern as DeployAdapters: the admin never holds a private key
-// and never broadcasts. The user connects their wallet in THIS browser,
-// signs one deployment transaction with the 7 constructor args from the
-// Deploy Preset, pays test gas, and the admin fills the deployed
-// address + tx hash into Contract Studio so it can be verified on the
-// explorer and registered in Chain Manager. Mainnet is deliberately NOT
-// offered here: it stays behind the Mainnet gate (audit, verified
-// testnet flow, smoke-test attestation, typed confirmation) and is
-// deployed with Foundry only. The bytecode comes from the pinned
-// solc 0.8.24 artifact (scripts/compile.mjs), so the deployed vault is
-// exactly the reviewed source — the Worker refuses to register an
-// address whose source hash does not match that artifact.
+// Deploy StelixVault from the admin — every EVM chain, testnet AND
+// mainnet. Same pattern as DeployAdapters: the admin never holds a
+// private key and never broadcasts. The user connects their wallet in
+// THIS browser, signs one deployment transaction with the 7 constructor
+// args from the Deploy Preset, pays the gas, and the admin fills the
+// deployed address + tx hash into Contract Studio so it can be verified
+// on the explorer and registered in Chain Manager. The bytecode comes
+// from the pinned solc 0.8.24 artifact (scripts/compile.mjs), so the
+// deployed vault is exactly the reviewed source — the Worker refuses to
+// register an address whose source hash does not match that artifact.
+//
+// Mainnet is GATED, not open: Contract Studio passes locked=true until
+// the mainnet gate passes (passing audit, verified testnet deployment
+// on this chain, recorded small-value smoke test) AND the typed
+// confirmation naming the network matches. Registration in Chain
+// Manager enforces the same gate server-side, so even a deployed vault
+// cannot be registered until the gate passes. On mainnet the keeper
+// MUST be a different wallet from the owner — deploy refuses
+// otherwise, because the keeper key goes into the keeper service.
 import { useState } from 'react'
 import { BrowserProvider, ContractFactory, type InterfaceAbi } from 'ethers'
 import { BadgeCheck, ShieldAlert, Wallet } from 'lucide-react'
@@ -37,10 +43,14 @@ type Props = {
   network: DeployNetwork
   explorerUrl: string
   params: VaultParams
+  /** Mainnet gate lock, set by Contract Studio: true until the gate
+   *  passes AND the typed confirmation matches. Always false on testnet. */
+  locked: boolean
+  lockReason?: string
   onDeployed: (address: string, txHash: string) => void
 }
 
-export default function DeployVault({ chainId, network, explorerUrl, params, onDeployed }: Props) {
+export default function DeployVault({ chainId, network, explorerUrl, params, locked, lockReason, onDeployed }: Props) {
   const [wallet, setWallet] = useState('')
   const [busy, setBusy] = useState(false)
   const [log, setLog] = useState<string[]>([])
@@ -54,7 +64,7 @@ export default function DeployVault({ chainId, network, explorerUrl, params, onD
     const msg = e instanceof Error ? e.message : 'Vault deploy failed.'
     if (msg.includes('4100') || msg.includes('not been authorized')) return 'MetaMask has not authorised this site to send transactions yet (code 4100). Tap Connect wallet again, then Deploy vault — and approve the transaction when MetaMask pops it up.'
     if (msg.includes('User denied') || msg.includes('rejected')) return 'You rejected the request in MetaMask. Tap Deploy vault again and approve it in MetaMask.'
-    if (msg.includes('insufficient funds') || msg.includes('insufficient balance')) return `Your wallet does not have enough test ${network.nativeSymbol} for the gas. Top it up${network.faucetUrl ? ` from ${network.faucetUrl}` : ''} and try again.`
+    if (msg.includes('insufficient funds') || msg.includes('insufficient balance')) return `Your wallet does not have enough ${network.env === 'mainnet' ? `real ${network.nativeSymbol}` : `test ${network.nativeSymbol}`} for the gas. ${network.env === 'mainnet' ? 'Top it up with real funds and try again.' : `Top it up${network.faucetUrl ? ` from ${network.faucetUrl}` : ''} and try again.`}`
     return msg.length > 300 ? `${msg.slice(0, 300)}…` : msg
   }
 
@@ -99,15 +109,22 @@ export default function DeployVault({ chainId, network, explorerUrl, params, onD
 
   const deploy = async () => {
     setError(''); setLog([])
+    if (locked) { setError(lockReason ?? 'Mainnet is gated — see the Mainnet gate card below.'); return }
     if (!wallet) { setError('Connect your wallet first.'); return }
     const { errors } = validateDeployParams({
-      chainId, env: 'testnet',
+      chainId, env: network.env,
       owner: params.owner.trim(), keeper: params.keeper.trim(), router: params.router.trim(),
       priceFeed: params.priceFeed.trim(), penaltyRecipient: params.penaltyRecipient.trim(),
       feeRecipient: params.feeRecipient.trim(), autoSellFeeBps: Number(params.autoSellFeeBps),
     })
     if (errors.length > 0) { setError(`Cannot deploy yet: ${errors.join(' ')}`); return }
     if (params.owner.trim().toLowerCase() === params.keeper.trim().toLowerCase()) {
+      if (network.env === 'mainnet') {
+        // On mainnet the keeper key goes into the keeper service, so it
+        // must never be the owner's key. Refuse instead of warning.
+        setError('Keeper is the same address as Owner. On mainnet the keeper must be a separate dedicated wallet — its private key goes into the keeper service, and it must never be your main wallet key. Set a different keeper in Deploy Presets first.')
+        return
+      }
       setLog((l) => [...l, 'Note: Keeper is the same address as Owner. That is fine for a testnet test, but on mainnet the keeper must be a separate dedicated wallet — its private key goes into the keeper service, and it must never be your main wallet key.'])
     }
     setBusy(true)
@@ -146,17 +163,22 @@ export default function DeployVault({ chainId, network, explorerUrl, params, onD
 
   return (
     <div className="card" style={{ marginTop: 12 }}>
-      <h3 style={{ marginTop: 0 }}>Deploy vault — from this admin (Testnet only)</h3>
+      <h3 style={{ marginTop: 0 }}>Deploy vault — from this admin{network.env === 'mainnet' ? ' (Mainnet — gated)' : ''}</h3>
       <p className="muted">
         Deploy StelixVault on {network.name} with your own wallet, using the 7 constructor values already filled in above.
-        The admin never sees your private key — your wallet signs the one deployment transaction and pays the test {network.nativeSymbol} gas.
+        The admin never sees your private key — your wallet signs the one deployment transaction and pays the {network.env === 'mainnet' ? `real ${network.nativeSymbol}` : `test ${network.nativeSymbol}`} gas.
         After it confirms, the address is filled into the "Deployed contract address" box below, so you can verify it on the explorer and register it in Chain Manager.
       </p>
-      <div className="notice alert"><ShieldAlert /><span><b>Testnet only.</b> Mainnet is not deployed from here — it stays behind the Mainnet gate below (audit, verified testnet flow, smoke-test attestation, typed confirmation) and is deployed with Foundry only. Mainnet is real money.</span></div>
+      {network.env === 'mainnet' && locked && (
+        <div className="notice alert"><ShieldAlert /><span><b>Mainnet vault deploy is locked.</b> {lockReason ?? 'See the Mainnet gate card below.'} Mainnet is real money — a vault deployed here holds real user funds once locks are created.</span></div>
+      )}
+      {network.env === 'mainnet' && !locked && (
+        <div className="notice alert"><ShieldAlert /><span><b>Mainnet is real money.</b> The gate passed and the typed confirmation matches, so this deploy is unlocked. Check the 7 constructor values above one more time before you sign — the vault is non-upgradeable, and a wrong owner, keeper, router or price feed cannot be fixed without redeploying.</span></div>
+      )}
       {error && <div className="notice alert"><ShieldAlert /><span>{error}</span></div>}
       <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
         <button className="btn ghost" onClick={connect} disabled={busy}><Wallet />{wallet ? `Connected: ${wallet.slice(0, 6)}…${wallet.slice(-4)}` : 'Connect wallet'}</button>
-        <button className="btn mint" onClick={deploy} disabled={busy || !wallet}>{busy ? 'Deploying…' : 'Deploy vault from admin'}</button>
+        <button className="btn mint" onClick={deploy} disabled={busy || locked || !wallet}>{busy ? 'Deploying…' : 'Deploy vault from admin'}</button>
       </div>
       {log.length > 0 && <pre>{log.join('\n')}</pre>}
       {vaultAddress && (

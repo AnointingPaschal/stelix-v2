@@ -267,7 +267,11 @@ export const CHAINS: ChainConfig[] = [
     nativeDecimals: 18,
     exitStablecoin: 'USDC',
     exitStablecoinLabel: 'auto-sell to USDC',
-    exitStablecoinAddress: '0x833589fCD6eDb6E08f4c7C32D4f71b54bd029029',
+    // Base native USDC — verified 2026-11-27 on Basescan (FiatTokenProxy)
+    // and Circle docs: 0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913.
+    // The old value …bd029029 differs in the last 7 chars and is not a
+    // real contract — never use it.
+    exitStablecoinAddress: '0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913',
     rpcUrl: rpcFromEnv('base', 'https://mainnet.base.org'),
     rpcUrls: ['https://mainnet.base.org', 'https://base.llamarpc.com'],
     explorerUrl: 'https://basescan.org',

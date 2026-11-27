@@ -1,19 +1,22 @@
-// Deploy Adapters from the admin — every EVM testnet, not just Arc.
+// Deploy Adapters from the admin — every EVM chain, testnet AND mainnet.
 // The admin itself never holds a private key and never broadcasts.
 // This component deploys the price-feed (and, for V3 chains, the router
 // adapter) with the wallet connected in THIS browser (MetaMask / any
 // injected wallet): the user signs the deployment transactions, pays
-// test gas, and the admin then saves the addresses into the Deploy
+// the gas, and the admin then saves the addresses into the Deploy
 // Preset for that network, so Contract Studio fills Router / Price Feed.
-//   V3 chains (Arc, Base Sepolia): UniswapV3TwapFeed + StelixV3RouterAdapter.
-//   V2 chains (BNB Testnet, Ethereum Sepolia): the vault speaks V2
-//     natively, so the router needs NO adapter — only PancakeV2TwapFeed
-//     (works for any V2 pair) is deployed, and the Router field is the
-//     V2 router itself.
-//   No-router chains (Polygon Amoy): this card is not rendered; the
-//     page shows the blocker instead.
-// Mainnet is deliberately NOT offered here yet: prove the adapters +
-// vault on testnet first, then deploy mainnet adapters with Foundry.
+//   V3 chains (Arc, Base): UniswapV3TwapFeed + StelixV3RouterAdapter.
+//   V2 chains (BNB, Ethereum): the vault speaks V2 natively, so the
+//     router needs NO adapter — only PancakeV2TwapFeed (works for any
+//     V2 pair) is deployed, and the Router field is the V2 router itself.
+//   No-router chains: this card is not rendered; the page shows the
+//     blocker instead.
+// Mainnet deploys are real money: the wallet pays real gas in the
+// chain's native token, and the deployed feed/adapter are permanent
+// contracts. The adapters themselves hold no user funds — the vault is
+// the gated part (DeployVault), not the adapters. Every mainnet router
+// and stablecoin address in evmNetworks.ts was verified 2026-11-27
+// against an official source before mainnet was enabled here.
 // If no injected wallet is present, the Foundry command below is the
 // fallback — same contracts, same constructor args.
 import { useState } from 'react'
@@ -124,7 +127,7 @@ export default function DeployAdapters({ network, explorerUrl, onDeployed }: Pro
       const address = await signer.getAddress()
       await ensureNetwork(provider)
       setWallet(address)
-      setLog([`Connected ${address} on ${network.name} (chain ${network.chainId}). Fund it with test ${network.nativeSymbol}${network.faucetUrl ? ` from ${network.faucetUrl}` : ''} before deploying.`])
+      setLog([`Connected ${address} on ${network.name} (chain ${network.chainId}). ${isMainnet ? `Fund it with real ${network.nativeSymbol} before deploying — mainnet gas is real money.` : `Fund it with test ${network.nativeSymbol}${network.faucetUrl ? ` from ${network.faucetUrl}` : ''} before deploying.`}`])
     } catch (e) { setError(friendlyError(e)) }
     setBusy(false)
   }
@@ -200,13 +203,13 @@ export default function DeployAdapters({ network, explorerUrl, onDeployed }: Pro
   const foundryCmd = network.routerKind === 'v2'
     ? [
       'cd contracts',
-      `RPC_URL=${network.rpcUrl} PRIVATE_KEY=$TESTNET_DEPLOYER_KEY \\`,
+      `RPC_URL=${network.rpcUrl} PRIVATE_KEY=$${isMainnet ? 'MAINNET' : 'TESTNET'}_DEPLOYER_KEY \\`,
       `STABLE=${network.stablecoinAddress} STABLE_DECIMALS=${network.stablecoinDecimals} \\`,
       'forge script script/DeployV2Feed.s.sol --rpc-url $RPC_URL --broadcast --verify',
     ].join('\n')
     : [
       'cd contracts',
-      `RPC_URL=${network.rpcUrl} PRIVATE_KEY=$TESTNET_DEPLOYER_KEY \\`,
+      `RPC_URL=${network.rpcUrl} PRIVATE_KEY=$${isMainnet ? 'MAINNET' : 'TESTNET'}_DEPLOYER_KEY \\`,
       `USDC=${network.stablecoinAddress} V3_ROUTER=${network.dexRouter} \\`,
       'forge script script/DeployAdapters.s.sol --rpc-url $RPC_URL --broadcast --verify',
     ].join('\n')
@@ -222,7 +225,7 @@ export default function DeployAdapters({ network, explorerUrl, onDeployed }: Pro
         )}
       </p>
       {isMainnet && (
-        <div className="notice alert"><ShieldAlert /><span><b>Mainnet adapters are not deployed from the admin yet.</b> Prove the adapters and the vault on {network.name.replace(/ Mainnet$/, '')} Testnet first, then deploy mainnet adapters with the Foundry command below. Mainnet is real money.</span></div>
+        <div className="notice alert"><ShieldAlert /><span><b>Mainnet is real money.</b> Your wallet pays real {network.nativeSymbol} gas for these deploys, and the feed and adapter are permanent contracts on {network.name}. The adapters hold no user funds — the vault itself is the gated part — but check the addresses above before you sign: {network.stablecoin} {network.stablecoinAddress} · router {network.dexRouter}.</span></div>
       )}
       {error && <div className="notice alert"><ShieldAlert /><span>{error}</span></div>}
       <p className="field-hint">
@@ -233,8 +236,8 @@ export default function DeployAdapters({ network, explorerUrl, onDeployed }: Pro
       </p>
       {!hasWallet && <p className="field-hint">No injected wallet in this browser. Use MetaMask on a computer, or the Foundry command below.</p>}
       <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
-        <button className="btn ghost" onClick={connect} disabled={busy || isMainnet}><Wallet />{wallet ? `Connected: ${wallet.slice(0, 6)}…${wallet.slice(-4)}` : 'Connect wallet'}</button>
-        <button className="btn mint" onClick={deploy} disabled={busy || isMainnet || !wallet}>{busy ? 'Deploying…' : 'Deploy adapters from admin'}</button>
+        <button className="btn ghost" onClick={connect} disabled={busy}><Wallet />{wallet ? `Connected: ${wallet.slice(0, 6)}…${wallet.slice(-4)}` : 'Connect wallet'}</button>
+        <button className="btn mint" onClick={deploy} disabled={busy || !wallet}>{busy ? 'Deploying…' : 'Deploy adapters from admin'}</button>
       </div>
       {log.length > 0 && <pre>{log.join('\n')}</pre>}
       {feedAddress && (

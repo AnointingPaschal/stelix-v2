@@ -3,7 +3,7 @@ import { BadgeCheck, Code2, FileCode2, Hammer, Rocket, ShieldAlert } from 'lucid
 import source from '../contracts/StelixVault.sol?raw'
 import { SOLC_PINNED } from '../lib/types'
 import { ARC_TESTNET, arcNetworkFor } from '../lib/arcNetworks'
-import { evmTestnetFor, testnetIdForFamily, type DeployNetwork } from '../lib/evmNetworks'
+import { evmMainnetFor, evmTestnetFor, testnetIdForFamily, type DeployNetwork } from '../lib/evmNetworks'
 import { mainnetConfirmPhrase, testnetChainIdFor, validateDeployParams } from '../lib/deployParams'
 import { api, type AuditGate, type CompileResult, type DeployPresetRow, type MultisigRow } from '../lib/api'
 import DeployAdapters from '../components/DeployAdapters'
@@ -67,24 +67,28 @@ export default function ContractStudio() {
   const chain = chains.find((c) => c.id === effectiveChainId)
   const arcNet = arcNetworkFor(env)
   const evmTestnet = env === 'testnet' && !isArc ? evmTestnetFor(effectiveChainId) : undefined
-  const networkName = isArc ? arcNet.name : (chain?.name ?? evmTestnet?.name ?? FAMILY_NAMES[chainFamily] ?? chainFamily)
+  const evmMainnet = env === 'mainnet' && !isArc ? evmMainnetFor(effectiveChainId) : undefined
+  const networkName = isArc ? arcNet.name : (chain?.name ?? evmTestnet?.name ?? evmMainnet?.name ?? FAMILY_NAMES[chainFamily] ?? chainFamily)
   // Arc mainnet display falls back to the verified constants when the
   // "arc-mainnet" row is absent from D1 (fallback only; migration 0006
   // has been applied to live D1, so the row is normally present).
   const arcMainnetRowMissing = isArc && env === 'mainnet' && !chain
   // The network object the browser-deploy cards need. Arc is V3 (same
-  // as before); other testnets come from the verified EVM registry;
-  // mainnet is null — the admin never deploys mainnet from a browser.
-  const deployNet: DeployNetwork | null = env !== 'testnet' ? null
-    : isArc ? {
-      id: arcNet.id, name: arcNet.name, env: 'testnet', chainId: arcNet.chainId,
+  // as before); other testnets and mainnets come from the verified EVM
+  // registry (evmNetworks.ts) — mainnet routers and stablecoins were
+  // verified 2026-11-27 against official sources before mainnet deploy
+  // was enabled here. The vault card on mainnet is additionally locked
+  // behind the mainnet gate (see vaultLocked below); the adapters card
+  // is not gated — adapters hold no user funds.
+  const deployNet: DeployNetwork | null = isArc ? {
+      id: arcNet.id, name: arcNet.name, env, chainId: arcNet.chainId,
       rpcUrl: arcNet.rpcUrl, explorerUrl: arcNet.explorerUrl,
       nativeSymbol: 'USDC', nativeDecimals: 6,
       stablecoin: 'USDC', stablecoinAddress: arcNet.stablecoinAddress, stablecoinDecimals: 6,
       routerKind: 'v3', dexRouter: arcNet.dexRouter, dexRouterKind: arcNet.dexRouterKind,
       feedKind: 'v3-twap', faucetUrl: 'https://faucet.circle.com',
     }
-    : evmTestnet ?? null
+    : (env === 'testnet' ? evmTestnet : evmMainnet) ?? null
   const net = isArc
     ? {
       chainId: chain?.chainId ?? arcNet.chainId,
@@ -96,12 +100,12 @@ export default function ContractStudio() {
       vaultAddress: chain?.vaultAddress ?? null,
     }
     : {
-      chainId: chain?.chainId ?? evmTestnet?.chainId ?? 0,
-      rpcUrl: chain?.rpcUrls[0] ?? evmTestnet?.rpcUrl ?? '',
-      explorerUrl: chain?.explorerUrl ?? evmTestnet?.explorerUrl ?? '',
-      stablecoinAddress: chain?.stablecoinAddress ?? evmTestnet?.stablecoinAddress ?? '',
-      dexRouter: chain?.dexRouter ?? evmTestnet?.dexRouter ?? '',
-      routerKind: evmTestnet?.dexRouterKind ?? 'DEX router',
+      chainId: chain?.chainId ?? deployNet?.chainId ?? 0,
+      rpcUrl: chain?.rpcUrls[0] ?? deployNet?.rpcUrl ?? '',
+      explorerUrl: chain?.explorerUrl ?? deployNet?.explorerUrl ?? '',
+      stablecoinAddress: chain?.stablecoinAddress ?? deployNet?.stablecoinAddress ?? '',
+      dexRouter: chain?.dexRouter ?? deployNet?.dexRouter ?? '',
+      routerKind: deployNet?.dexRouterKind ?? 'DEX router',
       vaultAddress: chain?.vaultAddress ?? null,
     }
 
@@ -169,6 +173,15 @@ export default function ContractStudio() {
   // under the testnet counterpart row ("arc" for "arc-mainnet").
   const verifiedTestnet = deploys.some((d) => d.chain_id === testnetChainIdFor(effectiveChainId) && d.env === 'testnet' && d.verification_status === 'verified')
   const mainnetReady = auditGatePass && (verifiedTestnet || testnetPassed) && smokeAttested
+  // Mainnet vault lock: the gate must pass AND the typed confirmation
+  // naming this network must match. The Worker enforces the same gate
+  // server-side at registration, so this lock is the UI half of it.
+  const vaultLocked = env === 'mainnet' && (!mainnetReady || confirmText.trim() !== mainnetConfirmPhrase(networkName))
+  const vaultLockReason = env !== 'mainnet' ? ''
+    : !auditGatePass ? 'Audit gate has not passed — run the automated audit with zero open critical/high findings, or record a passing independent audit.'
+    : !(verifiedTestnet || testnetPassed) ? 'No verified testnet deployment (or ticked testnet flow) on this chain yet — prove the full lock → target → auto-sell flow on testnet first.'
+    : !smokeAttested ? 'No small-value mainnet smoke-test attestation recorded for this chain yet — record one in the Mainnet gate card below.'
+    : 'Typed confirmation does not match — type the exact phrase from the Mainnet gate card below.'
 
   /** Switching chain or testnet/mainnet clears the 7 constructor fields and
    *  every confirmation, then fills them from the saved preset for that
@@ -393,13 +406,13 @@ export default function ContractStudio() {
             {chainFamily === 'solana' && (
               <p className="field-hint">Solana deploys with the Solana CLI, not from this page — the Solana program is an Anchor program, not an EVM contract. Its program ID is registered in Chain Manager the same way after deployment.</p>
             )}
-            {env === 'testnet' && deployNet && deployNet.routerKind === 'none' && (
+            {deployNet && deployNet.routerKind === 'none' && (
               <div className="notice alert">
                 <ShieldAlert />
-                <span><b>Cannot deploy on {networkName} yet.</b> {deployNet.blocker ?? 'No verified router on this testnet yet.'}</span>
+                <span><b>Cannot deploy on {networkName} yet.</b> {deployNet.blocker ?? 'No verified router on this network yet.'}</span>
               </div>
             )}
-            {env === 'testnet' && deployNet && deployNet.routerKind !== 'none' && (
+            {deployNet && deployNet.routerKind !== 'none' && (
               <DeployAdapters network={deployNet} explorerUrl={net.explorerUrl} onDeployed={onAdaptersDeployed} />
             )}
             <label>Constructor parameters — StelixVault(owner, keeper, router, priceFeed, penaltyRecipient, feeRecipient, autoSellFeeBps)</label>
@@ -448,12 +461,14 @@ export default function ContractStudio() {
               <button className="btn mint" onClick={() => prepare(env)} disabled={busy}><Rocket />{env === 'mainnet' ? 'Prepare mainnet deploy' : 'Prepare testnet deploy'}</button>
             </div>
             {prepareCmd && <pre>{prepareCmd}</pre>}
-            {env === 'testnet' && deployNet && deployNet.routerKind !== 'none' && (
+            {deployNet && deployNet.routerKind !== 'none' && (
               <DeployVault
                 chainId={effectiveChainId}
                 network={deployNet}
                 explorerUrl={net.explorerUrl}
                 params={params as VaultParams}
+                locked={vaultLocked}
+                lockReason={vaultLockReason}
                 onDeployed={onVaultDeployed}
               />
             )}

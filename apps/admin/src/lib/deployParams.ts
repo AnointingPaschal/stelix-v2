@@ -3,9 +3,11 @@
 // the form and the API enforce the same rules. The constructor is exactly
 // StelixVault(address owner, address keeper, address router, address
 // priceFeed, address penaltyRecipient, address feeRecipient, uint16
-// autoSellFeeBps) — feeBps max 1000 (10%). No mainnet deploy is ever
-// performed by this code; the deployer flow (Foundry script, testnet-only
-// key) broadcasts, and the admin only registers a verified address.
+// autoSellFeeBps) — feeBps max 1000 (10%). Mainnet deploys from the
+// admin (DeployVault) are gated by the mainnet gate (audit, verified
+// testnet deployment, smoke-test attestation, typed confirmation) in
+// Contract Studio, and registration enforces the same gate server-side
+// in the Worker.
 export interface DeployParams {
   chainId: string
   env: 'testnet' | 'mainnet'

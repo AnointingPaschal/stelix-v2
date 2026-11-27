@@ -56,7 +56,7 @@ export const SWAP_CATALOGUE: Record<string, SwapTokenEntry[]> = {
   base: [
     { symbol: 'ETH', name: 'Ether', chainId: 'base', address: '', decimals: 18, coingeckoId: 'ethereum' },
     { symbol: 'WETH', name: 'Wrapped Ether', chainId: 'base', address: '0x4200000000000000000000000000000000000006', decimals: 18, coingeckoId: 'ethereum' },
-    { symbol: 'USDC', name: 'USD Coin', chainId: 'base', address: '0x833589fCD6eDb6E08f4c7C32D4f71b54bd029029', decimals: 6, coingeckoId: 'usd-coin' },
+    { symbol: 'USDC', name: 'USD Coin', chainId: 'base', address: '0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913', decimals: 6, coingeckoId: 'usd-coin' },
   ],
   ethereum: [
     { symbol: 'ETH', name: 'Ether', chainId: 'ethereum', address: '', decimals: 18, coingeckoId: 'ethereum' },
