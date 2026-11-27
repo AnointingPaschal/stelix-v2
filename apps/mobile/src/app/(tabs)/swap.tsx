@@ -21,8 +21,7 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { ArrowDownUp, ChevronDown, Search, Settings } from 'lucide-react-native';
 import { useLocalSearchParams } from 'expo-router';
 import { COLORS } from '../../theme';
-import { useApp } from '../../store/AppContext';
-import { fmtNum, fmtPct, fmtPrice, fmtUsd } from '../../lib/format';
+import { useApp } from '../../store/AppContext';import { fmtNum, fmtPct, fmtPrice, fmtUsd } from '../../lib/format';
 import { minimumReceive, priceImpactPieces } from '../../lib/vault';
 import {
   fetchCandlesForTf,
@@ -43,7 +42,6 @@ import {
   type SwapQuote,
 } from '../../lib/swap';
 import { getSignerForChain } from '../../lib/signer';
-import { VAULT_DEFAULTS } from '../../lib/chains';
 import { mergeSwapTokens, swapButtonState, type SwapToken } from '../../lib/swapTokens';
 import { BottomSheet, Btn, Card, NetworkSheet, RiskNote } from '../../components/ui';
 import { TokenLogo } from '../../components/TokenLogo';
@@ -219,7 +217,7 @@ export default function Swap() {
     const out = usd / toPrice;
     const impact =
       toMarket?.liquidityUsd != null
-        ? priceImpactPieces(usd, toMarket.liquidityUsd, VAULT_DEFAULTS.maxPriceImpactBps)
+        ? priceImpactPieces(usd, toMarket.liquidityUsd, adminFees.fees.maxPriceImpactPct * 100)
         : null;
     return {
       usd,
@@ -272,7 +270,7 @@ export default function Swap() {
     }, 600);
     return () => clearTimeout(t);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [amount, fromSymbol, toSymbol, slippage, chain.id]);
+  }, [amount, fromSymbol, toSymbol, slippage, chain.id, adminFees.fees.maxPriceImpactPct]);
 
   const outAmount = liveQuote?.amountOutHuman ?? estimate?.out ?? 0;
   const outMin = liveQuote?.minReceiveHuman ?? estimate?.minOut ?? 0;
@@ -282,7 +280,7 @@ export default function Swap() {
       : estimate?.rate ?? 0
     : estimate?.rate ?? 0;
   const impact = liveQuote?.priceImpactBps !== null && liveQuote?.priceImpactBps !== undefined
-    ? { impactBps: liveQuote.priceImpactBps, ok: liveQuote.priceImpactBps <= VAULT_DEFAULTS.maxPriceImpactBps, pieces: 1 }
+    ? { impactBps: liveQuote.priceImpactBps, ok: liveQuote.priceImpactBps <= adminFees.fees.maxPriceImpactPct * 100, pieces: 1 }
     : estimate?.impact ?? null;
 
   const route = useMemo(() => {

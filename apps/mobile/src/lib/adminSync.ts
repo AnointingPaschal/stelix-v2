@@ -60,6 +60,12 @@ export interface AdminFeeConfig {
   trailingStopOptions: string;
   defaultSlippagePct: number;
   penaltyDestination: 'burn' | 'treasury' | 'relock';
+  /** Hours after locking before a penalty break is allowed (default 24). */
+  breakCoolingOffHours: number;
+  /** Hours a guardian break waits for approval (default 48). */
+  guardianBreakDelayHours: number;
+  /** Swaps above this price impact are split or blocked (default 5). */
+  maxPriceImpactPct: number;
 }
 
 export interface AdminAnnouncement {
@@ -175,6 +181,11 @@ function parseFeeConfig(v: unknown): AdminFeeConfig | null {
     trailingStopOptions: v.trailingStopOptions,
     defaultSlippagePct,
     penaltyDestination: dest === 'burn' || dest === 'relock' ? dest : 'treasury',
+    // Newer fields (2026-11-27): older published configs lack them, so
+    // they fall back to the app defaults instead of failing the parse.
+    breakCoolingOffHours: asNumber(v.breakCoolingOffHours) ?? VAULT_DEFAULTS.breakCoolingOffHours,
+    guardianBreakDelayHours: asNumber(v.guardianBreakDelayHours) ?? VAULT_DEFAULTS.guardianBreakDelayHours,
+    maxPriceImpactPct: asNumber(v.maxPriceImpactPct) ?? VAULT_DEFAULTS.maxPriceImpactBps / 100,
   };
 }
 
@@ -371,6 +382,9 @@ export const DEFAULT_FEE_CONFIG: AdminFeeConfig = {
   trailingStopOptions: 'Off, 10%, 15%, 20%',
   defaultSlippagePct: VAULT_DEFAULTS.slippageBps / 100,
   penaltyDestination: 'treasury',
+  breakCoolingOffHours: VAULT_DEFAULTS.breakCoolingOffHours,
+  guardianBreakDelayHours: VAULT_DEFAULTS.guardianBreakDelayHours,
+  maxPriceImpactPct: VAULT_DEFAULTS.maxPriceImpactBps / 100,
 };
 
 export interface EffectiveFees {
@@ -447,46 +461,21 @@ export function isTestnetChain(c: ChainConfig): boolean {
 }
 
 /**
- * Arc is ONE chain in the picker, never two. The registry keeps both
- * variants — 'arc' (testnet 5042002) and 'arc-mainnet' (mainnet 5042) —
- * as source data, but the user must never be able to pick Arc Mainnet
- * in the app. Which variant the single 'Arc' entry uses comes ONLY
- * from the admin network_mode: 'mainnet' => the mainnet variant,
- * anything else (null = admin never set a mode, or 'testnet') => the
- * testnet variant (testnet-first default). The picker therefore shows
- * exactly one Arc row, labelled with the mode it is on and "set by
- * admin". The mainnet variant still has vaultContract null, so vault
- * actions on Arc Mainnet still refuse honestly — the mode switch
- * never deploys a vault or bypasses the mainnet gate.
- */
-export function collapseArcPair(chains: ChainConfig[], mode: NetworkMode): ChainConfig[] {
-  const testnet = chains.find((c) => c.id === 'arc');
-  const mainnet = chains.find((c) => c.id === 'arc-mainnet');
-  if (!testnet || !mainnet) return [...chains];
-  const variant = mode === 'mainnet' ? mainnet : testnet;
-  const arc: ChainConfig = {
-    ...variant,
-    id: 'arc',
-    name: 'Arc',
-    isDefault: testnet.isDefault ?? mainnet.isDefault,
-    pairedChainId: 'arc-mainnet',
-  };
-  return chains.filter((c) => c.id !== 'arc-mainnet').map((c) => (c.id === 'arc' ? arc : c));
-}
-
-/**
- * Chains visible under a mode. null (admin never chose) = all chains,
- * exactly as before. 'testnet' = testnet chains only; 'mainnet' = mainnet
- * chains only. The per-chain `active` flag still applies on top — this
- * only filters by testnet/mainnet. Arc is collapsed to ONE entry first
- * (see collapseArcPair): mode null/testnet => Arc testnet, mode mainnet
- * => Arc mainnet, never both in the list.
+ * Arc Testnet ('arc', 5042002) and Arc Mainnet ('arc-mainnet', 5042) are
+ * TWO separate picker entries, each with its own id, chain id and RPC
+ * (2026-11-27: the user asked for individual switching, as before).
+ * They must never share an id: every balance / history / signing read
+ * re-resolves the chain by id (see lib/chains.ts getChain), so a shared
+ * id made mainnet reads silently hit the testnet RPC — testnet tokens
+ * showed on Mainnet and mainnet-only tokens (STX) were dropped as
+ * unreadable. The admin network_mode still filters the list
+ * (testnet-only / mainnet-only), but within the allowed set the user
+ * picks either Arc variant freely.
  */
 export function filterChainsByMode(chains: ChainConfig[], mode: NetworkMode): ChainConfig[] {
-  const collapsed = collapseArcPair(chains, mode);
-  if (mode === null) return [...collapsed];
+  if (mode === null) return [...chains];
   const wantTestnet = mode === 'testnet';
-  return collapsed.filter((c) => isTestnetChain(c) === wantTestnet);
+  return chains.filter((c) => isTestnetChain(c) === wantTestnet);
 }
 
 /**
@@ -501,20 +490,17 @@ export function pickChainForMode(
   mode: NetworkMode,
 ): ChainConfig | null {
   const visible = filterChainsByMode(chains, mode).filter((c) => c.active);
-  // Arc is collapsed to one 'arc' entry: a current chain of
-  // 'arc-mainnet' (picked before this change) is the Arc MAINNET
-  // variant, so it only "fits" when the visible Arc entry is also
-  // the mainnet variant (same chain id) — an id-only check would
-  // wrongly say the mainnet chain already fits testnet mode.
-  const currentVariant = current.id === 'arc-mainnet' ? { ...current, id: 'arc' } : current;
+  // Each Arc variant has its own id, so the fit check compares the
+  // current chain directly: 'arc-mainnet' only fits mainnet mode,
+  // 'arc' only fits testnet mode.
   if (
     visible.some(
-      (c) => c.id === currentVariant.id && c.chainId === currentVariant.chainId && c.testnet === currentVariant.testnet,
+      (c) => c.id === current.id && c.chainId === current.chainId && c.testnet === current.testnet,
     )
   ) {
     return null;
   }
-  const pairId = current.pairedChainId === 'arc-mainnet' ? 'arc' : current.pairedChainId;
+  const pairId = current.pairedChainId;
   const pair = pairId ? visible.find((c) => c.id === pairId) : undefined;
   if (pair) return pair;
   return visible.find((c) => c.isDefault) ?? visible[0] ?? null;

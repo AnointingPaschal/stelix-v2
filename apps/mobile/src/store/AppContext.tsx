@@ -31,10 +31,16 @@ import {
   type MaintenanceState,
   type NetworkMode,
 } from '../lib/adminSync';
-import { fetchBalances, loadImportedTokens, type TokenBalance } from '../lib/balances';
+import { fetchBalances, loadImportedTokens, migrateArcImportedTokens, migrateImportedTokensForWallet, type TokenBalance } from '../lib/balances';
 import { fetchHistory, filterHistory, type TxRecord } from '../lib/history';
 import { getUserLocksOnChain, lockedByToken, mapChainLockToBullLock, type BullLock } from '../lib/vault';
-import { getWalletMeta, hasWallet } from '../lib/wallet';
+import {
+  getActiveWalletMeta,
+  listWallets,
+  removeWallet as removeStoredWallet,
+  setActiveWalletId as setStoredActiveWalletId,
+  type WalletMeta,
+} from '../lib/wallet';
 import { kvGet, kvSet } from '../lib/storage';
 import { parseStoredSettings, SETTINGS_KEY, type AppSettings } from '../lib/settings';
 
@@ -98,6 +104,21 @@ interface AppState {
   onboarded: boolean;
   unlocked: boolean;
   address: string;
+  /** Every wallet saved on this device, oldest first ("Wallet 1" is the
+   *  first wallet ever created/imported here). Creating or importing a
+   *  wallet adds to this list — it never replaces another wallet. */
+  wallets: WalletMeta[];
+  /** Id of the active wallet (see lib/wallet.ts walletIdFor). */
+  activeWalletId: string | null;
+  /** Switch to another saved wallet (balances, locks, history and
+   *  signing follow it). */
+  switchWallet: (id: string) => Promise<void>;
+  /** Delete a wallet from this device (the caller must warn about the
+   *  seed-phrase backup first). Switches to another wallet, or back to
+   *  onboarding when none remain. */
+  removeWallet: (id: string) => Promise<void>;
+  /** Re-read the saved wallets from storage (after create/import). */
+  refreshWallets: () => Promise<void>;
   /** Solana address derived from the same mnemonic ('' when none — e.g.
    *  wallets imported from a raw private key). Used for Solana balances
    *  and history; the EVM address is meaningless on Solana. */
@@ -194,6 +215,8 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
   const [onboarded, setOnboarded] = useState(false);
   const [unlocked, setUnlocked] = useState(false);
   const [address, setAddress] = useState('');
+  const [wallets, setWallets] = useState<WalletMeta[]>([]);
+  const [activeWalletId, setActiveWalletIdState] = useState<string | null>(null);
   const [solanaAddress, setSolanaAddress] = useState('');
   const [chain, setChainState] = useState<ChainConfig>(DEFAULT_CHAIN);
   const [availableChains, setAvailableChains] = useState<ChainConfig[]>(ACTIVE_CHAINS);
@@ -424,7 +447,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     if (!chainAddress) return;
     setLoading(true);
     try {
-      const imported = await loadImportedTokens();
+      const imported = await loadImportedTokens(address);
       const res = await fetchBalances(chain.id, chainAddress, imported);
       // Balances come back with locked: 0 (the RPC layer does not know
       // about locks) — keep the locked figures refreshLocks filled in,
@@ -445,7 +468,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     } finally {
       setLoading(false);
     }
-  }, [chainAddress, chain.id]);
+  }, [chainAddress, chain.id, address]);
 
   const refreshLocks = useCallback(async () => {
     if (!address) return;
@@ -497,8 +520,9 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     await Promise.all([refreshBalances(), refreshLocks(), refreshHistory(), refreshAdmin()]);
   }, [refreshBalances, refreshLocks, refreshHistory, refreshAdmin]);
 
-  // On launch: if a wallet is stored, surface its address (locked until
-  // the user unlocks with the session password). The SecureStore read is
+  // On launch: load every saved wallet (migrating the old single-wallet
+  // keys once) and surface the active wallet's address (locked until the
+  // user unlocks with the session password). The SecureStore read is
   // async — until it resolves the root layout shows the splash, so the
   // user never sees a blank white page on first load / reload.
   // Settings are loaded here too (kv: AsyncStorage on native,
@@ -514,12 +538,25 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
       try {
         const stored = await kvGet(SETTINGS_KEY);
         if (!cancelled && stored) setSettings(parseStoredSettings(stored));
-        if (await hasWallet()) {
-          const meta = await getWalletMeta();
-          if (!cancelled && meta) {
-            setAddress(meta.address);
-            setSolanaAddress(meta.solanaAddress ?? '');
+        const metas = await listWallets();
+        if (!cancelled && metas.length > 0) {
+          const active = await getActiveWalletMeta();
+          if (active) {
+            setWallets(metas);
+            setActiveWalletIdState(active.id);
+            setAddress(active.address);
+            setSolanaAddress(active.solanaAddress ?? '');
             setOnboarded(true);
+            // The old device-wide imported-token list belongs to this
+            // wallet — move it onto the wallet's own list once, then
+            // re-attribute any legacy 'arc' rows to the Arc network
+            // their contract actually lives on (testnet vs mainnet).
+            await migrateImportedTokensForWallet(active.address);
+            await migrateArcImportedTokens(active.address);
+            for (const w of metas) {
+              if (w.id !== active.id) await migrateArcImportedTokens(w.address);
+            }
+            await migrateArcImportedTokens();
           }
         }
       } finally {
@@ -619,12 +656,49 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     setHistoryError(null);
   }, []);
 
+  const refreshWallets = useCallback(async () => {
+    const metas = await listWallets();
+    setWallets(metas);
+    const active = await getActiveWalletMeta();
+    if (active) {
+      setActiveWalletIdState(active.id);
+      setAddress(active.address);
+      setSolanaAddress(active.solanaAddress ?? '');
+    } else {
+      setActiveWalletIdState(null);
+    }
+  }, []);
+
+  const switchWallet = useCallback(async (id: string) => {
+    const meta = await setStoredActiveWalletId(id);
+    setActiveWalletIdState(meta.id);
+    setAddress(meta.address);
+    setSolanaAddress(meta.solanaAddress ?? '');
+    // The [unlocked, address, chain.id] effect refreshes balances /
+    // locks / history for the new wallet; imported tokens are per-wallet
+    // (see refreshBalances), so nothing else needs resetting here.
+  }, []);
+
+  const removeWallet = useCallback(async (id: string) => {
+    const { wallets: next, active } = await removeStoredWallet(id);
+    setWallets(next);
+    if (active) {
+      setActiveWalletIdState(active.id);
+      setAddress(active.address);
+      setSolanaAddress(active.solanaAddress ?? '');
+    } else {
+      // No wallets left — back to onboarding.
+      resetState();
+    }
+  }, [resetState]);
+
   const signingBlocked = maintenanceBlocksSigning(maintenance);
   const maintenanceBlocksAppValue = maintenanceBlocksAppFn(maintenance);
 
   const value = useMemo<AppState>(
     () => ({
-      onboarded, unlocked, address, solanaAddress, chainAddress, chain,
+      onboarded, unlocked, address, wallets, activeWalletId, switchWallet, removeWallet, refreshWallets,
+      solanaAddress, chainAddress, chain,
       availableChains, refreshChains, refreshAdmin,
       adminFees, announcements: visibleAnnouncements, appConfig, adminTokens, adminTokensSynced,
       maintenance, signingBlocked, maintenanceBlocksApp: maintenanceBlocksAppValue,
@@ -637,7 +711,8 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
       addLock, updateLock, addTx, markNotificationsRead, updateSettings,
       setShowDust, refreshBalances, refreshLocks, refreshAll, resetState,
     }),
-    [onboarded, unlocked, address, solanaAddress, chainAddress, chain, availableChains, refreshChains, refreshAdmin,
+    [onboarded, unlocked, address, wallets, activeWalletId, switchWallet, removeWallet, refreshWallets,
+     solanaAddress, chainAddress, chain, availableChains, refreshChains, refreshAdmin,
      adminFees, visibleAnnouncements, appConfig, adminTokens, adminTokensSynced,
      maintenance, signingBlocked, maintenanceBlocksAppValue, adminLastSyncAt, adminSyncVersion, dismissAnnouncement,
      networkMode, transactionActive, setTransactionActive,

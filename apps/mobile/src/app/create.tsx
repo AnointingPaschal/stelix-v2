@@ -7,7 +7,7 @@
  *  Errors are shown INLINE on the page. Never use Alert.alert here:
  *  on react-native-web Alert.alert is an empty no-op, so a failure used
  *  to look like a silent dead button (2026-11-26 bug). */
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { KeyboardAvoidingView, Platform, Pressable, ScrollView, StyleSheet, Text, TextInput, View } from 'react-native';
 import { router } from 'expo-router';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
@@ -17,7 +17,7 @@ import { Btn, Card, RiskNote, centeredContent } from '../components/ui';
 import { useApp } from '../store/AppContext';
 
 export default function CreateWallet() {
-  const { setOnboarded, setUnlocked, setAddress } = useApp();
+  const { setOnboarded, setUnlocked, refreshWallets } = useApp();
   const insets = useSafeAreaInsets();
 
   const [step, setStep] = useState(0);
@@ -28,6 +28,13 @@ export default function CreateWallet() {
   const [saved, setSaved] = useState(false);
   const [error, setError] = useState('');
   const [busy, setBusy] = useState(false);
+  // When wallets already exist, the new wallet is ADDED alongside them
+  // under the SAME app password — the screen asks for the current
+  // password (verified before creating) instead of a new one.
+  const [hasExisting, setHasExisting] = useState(false);
+  useEffect(() => {
+    void import('../lib/wallet').then((m) => m.hasWallet().then(setHasExisting));
+  }, []);
 
   async function handleCreate() {
     setError('');
@@ -35,7 +42,7 @@ export default function CreateWallet() {
       setError('Password too short — use at least 8 characters for your app password.');
       return;
     }
-    if (password !== confirm) {
+    if (!hasExisting && password !== confirm) {
       setError('Passwords do not match — re-type the same password in both fields.');
       return;
     }
@@ -44,10 +51,14 @@ export default function CreateWallet() {
       // Lazy-load the wallet module (ethers) only when keys are actually
       // generated — importing it at the top level made /create (and the
       // first-load bundle) slow to render.
-      const { createWallet } = await import('../lib/wallet');
-      const { mnemonic: phrase, address } = await createWallet(password, name);
+      const { createWallet, verifySessionPassword } = await import('../lib/wallet');
+      if (hasExisting && !(await verifySessionPassword(password))) {
+        setError("That password doesn't unlock your current wallet — check it and try again.");
+        return;
+      }
+      const { mnemonic: phrase } = await createWallet(password, name);
       setMnemonic(phrase.split(' '));
-      setAddress(address);
+      await refreshWallets();
       setStep(1);
     } catch (e) {
       setError(`Could not create wallet: ${e instanceof Error ? e.message : String(e)}`);
@@ -74,7 +85,9 @@ export default function CreateWallet() {
         {step === 0 && (
           <>
             <Text style={styles.sub}>
-              Name your wallet and create a secure session password. This mathematically encrypts your private keys.
+              {hasExisting
+                ? 'Name your wallet. It is added alongside your existing wallets and uses the same app password.'
+                : 'Name your wallet and create a secure session password. This mathematically encrypts your private keys.'}
             </Text>
             <Text style={styles.label}>Wallet Name</Text>
             <TextInput
@@ -84,22 +97,37 @@ export default function CreateWallet() {
               onChangeText={setName}
               autoCapitalize="words"
             />
-            <Text style={styles.label}>App password</Text>
-            <TextInput
-              style={styles.input}
-              secureTextEntry
-              placeholder="Enter a strong password (8+ chars)"
-              value={password}
-              onChangeText={setPassword}
-            />
-            <Text style={styles.label}>Confirm password</Text>
-            <TextInput
-              style={styles.input}
-              secureTextEntry
-              placeholder="Re-type your password"
-              value={confirm}
-              onChangeText={setConfirm}
-            />
+            {hasExisting ? (
+              <>
+                <Text style={styles.label}>Your current app password</Text>
+                <TextInput
+                  style={styles.input}
+                  secureTextEntry
+                  placeholder="Enter your current app password"
+                  value={password}
+                  onChangeText={setPassword}
+                />
+              </>
+            ) : (
+              <>
+                <Text style={styles.label}>App password</Text>
+                <TextInput
+                  style={styles.input}
+                  secureTextEntry
+                  placeholder="Enter a strong password (8+ chars)"
+                  value={password}
+                  onChangeText={setPassword}
+                />
+                <Text style={styles.label}>Confirm password</Text>
+                <TextInput
+                  style={styles.input}
+                  secureTextEntry
+                  placeholder="Re-type your password"
+                  value={confirm}
+                  onChangeText={setConfirm}
+                />
+              </>
+            )}
             <Text style={styles.hint}>
               This password unlocks the wallet. Stelix cannot reset it — recovery needs your seed phrase.
             </Text>

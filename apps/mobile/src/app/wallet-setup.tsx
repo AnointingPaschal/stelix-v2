@@ -6,9 +6,9 @@
  *  Wallet / Create New Wallet row in the sheet any more (removed
  *  2026-11-27 at the user's instruction).
  *
- *  The warning is kept verbatim: creating or switching replaces the
- *  current wallet on this device — back up its seed phrase first or
- *  you will lose access to it. */
+ *  The warning is kept verbatim: new wallets are added alongside the
+ *  existing ones — nothing is replaced. Removing a wallet later deletes
+ *  it from this device, so back up its seed phrase first. */
 import { StyleSheet, Text, View } from 'react-native';
 import { router } from 'expo-router';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
@@ -51,7 +51,7 @@ export default function WalletSetup() {
         <Btn label="Import existing wallet" variant="ghost" onPress={() => router.push('/import')} />
       </Card>
       <Text style={styles.warn}>
-        Creating a new wallet or switching wallets replaces the current wallet on this device — back up its seed phrase first or you will lose access to it.
+        New wallets are added alongside your existing ones — nothing is replaced. Removing a wallet later deletes it from this device, so back up its seed phrase first.
       </Text>
       <RiskNote />
     </View>

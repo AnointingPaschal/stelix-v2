@@ -11,6 +11,9 @@ export interface FeeConfig {
   trailingStopOptions: string // e.g. 'Off, 10%, 15%, 20%'
   defaultSlippagePct: number // 0–50
   penaltyDestination: 'burn' | 'treasury' | 'relock'
+  breakCoolingOffHours: number // hours after locking before a penalty break is allowed; 0–72
+  guardianBreakDelayHours: number // hours a guardian break waits for approval; 0–168
+  maxPriceImpactPct: number // swaps above this price impact are split or blocked; 0–50
 }
 
 export const DEFAULT_FEES: FeeConfig = {
@@ -22,6 +25,9 @@ export const DEFAULT_FEES: FeeConfig = {
   trailingStopOptions: 'Off, 10%, 15%, 20%',
   defaultSlippagePct: 1.5,
   penaltyDestination: 'treasury',
+  breakCoolingOffHours: 24,
+  guardianBreakDelayHours: 48,
+  maxPriceImpactPct: 5,
 }
 
 export function validateFeePayload(input: unknown): { config: FeeConfig | null; errors: string[] } {
@@ -45,6 +51,12 @@ export function validateFeePayload(input: unknown): { config: FeeConfig | null; 
   if (twap === null || twap < 5 || twap > 120) errors.push('twapMinutes must be between 5 and 120')
   const slippage = num('defaultSlippagePct')
   if (slippage === null || slippage < 0 || slippage > 50) errors.push('defaultSlippagePct must be between 0 and 50')
+  const coolingOff = num('breakCoolingOffHours')
+  if (coolingOff !== null && (coolingOff < 0 || coolingOff > 72)) errors.push('breakCoolingOffHours must be between 0 and 72')
+  const guardianDelay = num('guardianBreakDelayHours')
+  if (guardianDelay !== null && (guardianDelay < 0 || guardianDelay > 168)) errors.push('guardianBreakDelayHours must be between 0 and 168')
+  const maxImpact = num('maxPriceImpactPct')
+  if (maxImpact !== null && (maxImpact < 0 || maxImpact > 50)) errors.push('maxPriceImpactPct must be between 0 and 50')
   if (typeof p.trailingStopOptions !== 'string' || p.trailingStopOptions.trim() === '') {
     errors.push('trailingStopOptions must be a non-empty string')
   }
@@ -62,6 +74,11 @@ export function validateFeePayload(input: unknown): { config: FeeConfig | null; 
       trailingStopOptions: (p.trailingStopOptions as string).trim(),
       defaultSlippagePct: slippage as number,
       penaltyDestination: p.penaltyDestination as FeeConfig['penaltyDestination'],
+      // Newer fields (2026-11-27): older published configs and older
+      // clients omit them — they default instead of failing validation.
+      breakCoolingOffHours: coolingOff ?? DEFAULT_FEES.breakCoolingOffHours,
+      guardianBreakDelayHours: guardianDelay ?? DEFAULT_FEES.guardianBreakDelayHours,
+      maxPriceImpactPct: maxImpact ?? DEFAULT_FEES.maxPriceImpactPct,
     },
     errors,
   }

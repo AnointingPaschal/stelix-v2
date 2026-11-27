@@ -17,7 +17,9 @@ export default function Fees() {
   const load = () => {
     api.getFees().then((d) => {
       if (d.fees) {
-        setFees(d.fees)
+        // Older published configs predate the break / impact fields —
+        // merge over the defaults so the form never shows undefined.
+        setFees({ ...DEFAULT_FEES, ...d.fees })
         setVersion(d.version ?? null)
         setMeta(d.publishedAt ? `Version ${d.version} · published ${d.publishedAt} by ${d.publishedBy ?? 'admin'}` : '')
       } else {
@@ -46,7 +48,7 @@ export default function Fees() {
       <PageHeader
         icon={<Percent />}
         title="Fees and Limits"
-        sub="Stelix fee settings, min / max lock amounts, penalty defaults, TWAP window, trailing-stop options. Changes are versioned and shown in the app review screen. Fees are snapshotted per lock at creation — changing them never affects existing locks."
+        sub="Stelix vault settings: min / max lock amounts, penalty defaults, cooling-off and guardian delays, TWAP window, trailing-stop options, slippage and max price impact. Changes are versioned and reach the app in real time. Fees are snapshotted per lock at creation — changing them never affects existing locks."
         pill={<LiveNote />}
       />
       <AlertModal kind="error" message={error} onClose={() => setError('')} />
@@ -80,6 +82,15 @@ export default function Fees() {
           <input value={fees.trailingStopOptions} onChange={(e) => setFees({ ...fees, trailingStopOptions: e.target.value })} />
           <label>Default slippage (%) — max 50</label>
           <input value={fees.defaultSlippagePct} inputMode="decimal" onChange={(e) => setFees({ ...fees, defaultSlippagePct: Number(e.target.value) })} />
+          <label>Penalty break cooling-off (hours) — 0 to 72</label>
+          <input value={fees.breakCoolingOffHours} inputMode="numeric" onChange={(e) => setFees({ ...fees, breakCoolingOffHours: Number(e.target.value) })} />
+          <p className="field-hint">Shown in Create Lock as “Penalty break (5%, 24h cooling-off)”. Hours after locking before a penalty break is allowed.</p>
+          <label>Guardian break delay (hours) — 0 to 168</label>
+          <input value={fees.guardianBreakDelayHours} inputMode="numeric" onChange={(e) => setFees({ ...fees, guardianBreakDelayHours: Number(e.target.value) })} />
+          <p className="field-hint">Shown in Create Lock as “Guardian break — approval + 48h delay”.</p>
+          <label>Max price impact on swaps (%) — max 50</label>
+          <input value={fees.maxPriceImpactPct} inputMode="decimal" onChange={(e) => setFees({ ...fees, maxPriceImpactPct: Number(e.target.value) })} />
+          <p className="field-hint">Swaps above this impact are split or blocked in the app Swap screen.</p>
         </div>
         <div className="card">
           <SectionTitle icon={<CheckCircle2 />}>Penalty destination</SectionTitle>

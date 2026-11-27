@@ -107,7 +107,7 @@ export default function Settings() {
       setNewPw('');
       setNewPw2('');
       setPwOk(true);
-      setPwMsg('Password changed — your wallet is now encrypted under the new password.');
+      setPwMsg('Password changed — all your wallets are now encrypted under the new password.');
     } catch (e) {
       setPwOk(false);
       setPwMsg(e instanceof Error ? e.message : String(e));
@@ -162,7 +162,7 @@ export default function Settings() {
 
   async function wipe() {
     if (wipeText.trim().toUpperCase() !== 'WIPE') {
-      setWipeMsg('Type WIPE to confirm — wiping removes the wallet from this device. Your seed phrase is the only recovery.');
+      setWipeMsg('Type WIPE to confirm — wiping removes all wallets from this device. Your seed phrase is the only recovery.');
       return;
     }
     await wipeWallet();

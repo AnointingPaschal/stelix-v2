@@ -25,10 +25,10 @@
  *     Do not format a native balance with 6; see
  *     EVM_NATIVE_RPC_DECIMALS below.
  * Arc MAINNET (chain id 5042, live 2026-09-16) is registered below as
- * `arc-mainnet` — registry source data ONLY, never a picker entry.
- * The picker shows ONE 'Arc' entry whose variant is chosen by the
- * admin network_mode (see collapseArcPair in lib/adminSync.ts):
- * testnet variant until the admin sets mainnet mode.
+ * `arc-mainnet` — a separate picker entry from Arc Testnet (`arc`),
+ * each with its own id, chain id and RPC (2026-11-27: the user asked
+ * for individual switching). The admin network_mode only filters the
+ * list (testnet-only / mainnet-only); it never merges the two.
  * against docs.arc.io ("Connect to Arc" and "RPC endpoints", checked
  * 2026-11-27: mainnet 5042 / testnet 5042002, RPC
  * https://rpc.mainnet.arc.io, explorer https://explorer.arc.io) and
@@ -204,12 +204,11 @@ export const CHAINS: ChainConfig[] = [
     uniswapV2Router: '0x1f7d7550B1b028f7571E69A784071F0205FD2EfA',
     vaultContract: null,
     status: 'live',
-    // DISABLED in the wallet: Arc stays TESTNET-FIRST until a mainnet
-    // deployment is explicitly approved. The entry exists so Contract
-    // Studio / admin can read mainnet RPC, explorer, USDC and routers
-    // from the registry; the picker only shows active chains, so this
-    // is not selectable. Re-enable by flipping active: true (see
-    // apps/mobile/SCOPE.md) — only after that mainnet decision.
+    // Built-in active is false (Arc stays TESTNET-FIRST by default);
+    // the admin registry overrides it — when the admin enables Arc
+    // Mainnet, it appears as its own picker entry. The entry exists
+    // so Contract Studio / admin can read mainnet RPC, explorer,
+    // USDC and Uniswap router addresses from the registry.
     active: false,
     pairedChainId: 'arc',
   },

@@ -12,7 +12,7 @@ import { router } from 'expo-router';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { COLORS } from '../theme';
 import { Btn, RiskNote, centeredContent } from '../components/ui';
-import { hasWallet, importWallet, isValidMnemonic, IMPORT_STEP_LABELS } from '../lib/wallet';
+import { hasWallet, importWallet, isValidMnemonic, verifySessionPassword, IMPORT_STEP_LABELS } from '../lib/wallet';
 import type { ImportStep } from '../lib/wallet';
 import { isStorageDegraded } from '../lib/storage';
 import { useApp } from '../store/AppContext';
@@ -20,7 +20,7 @@ import { useApp } from '../store/AppContext';
 type Method = 'seed' | 'key';
 
 export default function ImportWallet() {
-  const { setOnboarded, setUnlocked, setAddress } = useApp();
+  const { setOnboarded, setUnlocked, refreshWallets } = useApp();
   const insets = useSafeAreaInsets();
 
   const [method, setMethod] = useState<Method>('seed');
@@ -36,10 +36,10 @@ export default function ImportWallet() {
   // step name, so busy can never stick forever (2026-11-27 hang fix).
   const [step, setStep] = useState<ImportStep | null>(null);
   const [degraded, setDegraded] = useState(false);
-  // Importing REPLACES the wallet stored on this device — there is no
-  // multi-wallet support. The old screen never said so: a user tapping
-  // "Add / Import Wallet" from Home could silently lose access to
-  // their current wallet (recoverable only via its seed phrase).
+  // Importing ADDS the wallet alongside any already saved — it never
+  // replaces one. When wallets already exist, the import uses the
+  // CURRENT app password (verified below), not a new one, so every
+  // saved wallet keeps decrypting with the one password.
   const [hasExistingWallet, setHasExistingWallet] = useState(false);
   useEffect(() => {
     void hasWallet().then(setHasExistingWallet);
@@ -65,19 +65,23 @@ export default function ImportWallet() {
       setError('Password too short — use at least 8 characters for your app password.');
       return;
     }
-    if (password !== confirm) {
+    if (!hasExistingWallet && password !== confirm) {
       setError('Passwords do not match — re-type the same session password in both fields.');
       return;
     }
     setBusy(true);
     setStep('deriving-address');
     try {
-      const address = await importWallet(secret, password, name, {
+      if (hasExistingWallet && !(await verifySessionPassword(password))) {
+        setError("That password doesn't unlock your current wallet — check it and try again.");
+        return;
+      }
+      await importWallet(secret, password, name, {
         onProgress: (s) => setStep(s),
         // Default 90s overall timeout lives in importWallet; on expiry
         // it throws `Import timed out at <step>` into this catch.
       });
-      setAddress(address);
+      await refreshWallets();
       setOnboarded(true);
       setUnlocked(true);
       router.replace('/(tabs)');
@@ -102,8 +106,7 @@ export default function ImportWallet() {
         </Text>
         {hasExistingWallet ? (
           <Text style={styles.warn}>
-            A wallet already exists on this device. Importing replaces it — make sure you have saved the current
-            wallet&apos;s seed phrase first, or you will lose access to it.
+            Your existing wallets stay saved — this wallet is added alongside them and uses the same app password.
           </Text>
         ) : null}
 
@@ -129,22 +132,26 @@ export default function ImportWallet() {
           value={secret}
           onChangeText={setSecret}
         />
-        <Text style={styles.label}>Set a new session password</Text>
+        <Text style={styles.label}>{hasExistingWallet ? 'Your current app password' : 'Set a new session password'}</Text>
         <TextInput
           style={styles.input}
           secureTextEntry
-          placeholder="At least 8 characters"
+          placeholder={hasExistingWallet ? 'Enter your current app password' : 'At least 8 characters'}
           value={password}
           onChangeText={setPassword}
         />
-        <Text style={styles.label}>Confirm password</Text>
-        <TextInput
-          style={styles.input}
-          secureTextEntry
-          placeholder="Re-type your password"
-          value={confirm}
-          onChangeText={setConfirm}
-        />
+        {hasExistingWallet ? null : (
+          <>
+            <Text style={styles.label}>Confirm password</Text>
+            <TextInput
+              style={styles.input}
+              secureTextEntry
+              placeholder="Re-type your password"
+              value={confirm}
+              onChangeText={setConfirm}
+            />
+          </>
+        )}
         <View style={styles.spacer} />
         {error ? <Text style={styles.error}>{error}</Text> : null}
         {degraded ? (

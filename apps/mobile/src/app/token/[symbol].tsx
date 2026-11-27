@@ -690,7 +690,7 @@ export default function TokenDetail() {
         { label: 'Exit', value: targetPrice ? (autoSell ? exitLabel : 'Unlock to wallet') : 'Unlock to wallet' },
         { label: 'Ladder', value: ladderOn ? ladder.map((s) => `${s.percent}% @ ${s.multiple}x`).join(' · ') : 'Off' },
         { label: 'Trailing stop', value: trailing ? `${trailing / 100}%` : 'Off' },
-        { label: 'Break mode', value: breakMode === 'immutable' ? 'Immutable — no early break' : breakMode === 'penalty' ? `Penalty break — ${fees.defaultPenaltyPct}% after 24h cooling-off` : 'Guardian break — approval + 48h delay' },
+        { label: 'Break mode', value: breakMode === 'immutable' ? 'Immutable — no early break' : breakMode === 'penalty' ? `Penalty break — ${fees.defaultPenaltyPct}% after ${fees.breakCoolingOffHours}h cooling-off` : `Guardian break — approval + ${fees.guardianBreakDelayHours}h delay` },
         { label: 'Slippage', value: `${fees.defaultSlippagePct}%` },
         { label: 'Stelix fee', value: feeLabel },
         { label: 'Network fee', value: 'Estimated at signing' },
@@ -1125,7 +1125,7 @@ export default function TokenDetail() {
               <Text style={[styles.chipBtnText, breakMode === 'immutable' && styles.chipBtnTextOn]}>Immutable (strongest)</Text>
             </Pressable>
             <Pressable onPress={() => setBreakMode('penalty')} style={[styles.chipBtn, breakMode === 'penalty' && styles.chipBtnOn]}>
-              <Text style={[styles.chipBtnText, breakMode === 'penalty' && styles.chipBtnTextOn]}>Penalty break ({fees.defaultPenaltyPct}%, 24h cooling-off)</Text>
+              <Text style={[styles.chipBtnText, breakMode === 'penalty' && styles.chipBtnTextOn]}>Penalty break ({fees.defaultPenaltyPct}%, {fees.breakCoolingOffHours}h cooling-off)</Text>
             </Pressable>
             <Pressable onPress={() => setBreakMode('guardian')} style={[styles.chipBtn, breakMode === 'guardian' && styles.chipBtnOn]}>
               <Text style={[styles.chipBtnText, breakMode === 'guardian' && styles.chipBtnTextOn]}>Guardian break (Phase 2)</Text>
@@ -1232,7 +1232,7 @@ export default function TokenDetail() {
             <ReviewRow label="Exit" value={targetPrice ? (autoSell ? exitLabel : 'Unlock to wallet') : 'Unlock to wallet'} />
             <ReviewRow label="Ladder" value={ladderOn ? ladder.map((s) => `${s.percent}% @ ${s.multiple}x`).join(' · ') : 'Off'} />
             <ReviewRow label="Trailing stop" value={trailing ? `${trailing / 100}%` : 'Off'} />
-            <ReviewRow label="Break mode" value={breakMode === 'immutable' ? 'Immutable — no early break' : breakMode === 'penalty' ? `Penalty break — ${fees.defaultPenaltyPct}% after 24h cooling-off` : 'Guardian break — approval + 48h delay'} />
+            <ReviewRow label="Break mode" value={breakMode === 'immutable' ? 'Immutable — no early break' : breakMode === 'penalty' ? `Penalty break — ${fees.defaultPenaltyPct}% after ${fees.breakCoolingOffHours}h cooling-off` : `Guardian break — approval + ${fees.guardianBreakDelayHours}h delay`} />
             <ReviewRow label="Slippage" value={`${fees.defaultSlippagePct}%`} />
             <ReviewRow label="Minimum receive" value={targetPrice ? fmtUsd(minReceiveUsd) : '—'} />
             <ReviewRow label="Stelix fee" value={feeLabel} />

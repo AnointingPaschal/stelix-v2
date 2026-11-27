@@ -78,8 +78,7 @@ describe('importWallet hang fix', () => {
     expect(seen[0]).toBe('deriving-address');
     expect(seen).toContain('deriving-key');
     expect(seen).toContain('saving-wallet');
-    expect(seen).toContain('saving-meta');
-    expect(seen[seen.length - 1]).toBe('saving-meta');
+    expect(seen[seen.length - 1]).toBe('saving-wallet');
     const meta = await getWalletMeta();
     expect(meta?.address).toBe(address);
   });
@@ -112,6 +111,6 @@ describe('importWallet hang fix', () => {
     expect(IMPORT_STEP_LABELS['deriving-address']).toBe('Deriving address…');
     expect(IMPORT_STEP_LABELS['deriving-key']).toMatch(/10–30 s/);
     expect(IMPORT_STEP_LABELS['saving-wallet']).toBe('Saving wallet…');
-    expect(Object.keys(IMPORT_STEP_LABELS)).toHaveLength(6);
+    expect(Object.keys(IMPORT_STEP_LABELS)).toHaveLength(5);
   });
 });

@@ -27,6 +27,7 @@ import {
   Lock,
   TrendingUp,
   User,
+  X,
 } from 'lucide-react-native';
 import * as Clipboard from 'expo-clipboard';
 import { COLORS } from '../../theme';
@@ -62,7 +63,7 @@ interface ImportPreview {
 }
 
 export default function Home() {
-  const { address, chain, tokens, locks, refreshAll, refreshBalances, announcements, maintenance, signingBlocked, dismissAnnouncement, adminTokens, adminTokensSynced, networkMode } = useApp();
+  const { address, wallets, activeWalletId, switchWallet, removeWallet, chain, tokens, locks, refreshAll, refreshBalances, announcements, maintenance, signingBlocked, dismissAnnouncement, adminTokens, adminTokensSynced, networkMode } = useApp();
   const { width } = useWindowDimensions();
   const insets = useSafeAreaInsets();
   // 320–430px phones keep the compact v1 layout; 768px+ centres the
@@ -74,6 +75,9 @@ export default function Home() {
   const [hidden, setHidden] = useState(false);
   const [netOpen, setNetOpen] = useState(false);
   const [walletsOpen, setWalletsOpen] = useState(false);
+  /** Two-tap remove in the Wallets sheet: first tap arms the confirm,
+   *  second tap removes. Inline (never Alert.alert — a no-op on web). */
+  const [confirmRemoveId, setConfirmRemoveId] = useState<string | null>(null);
   const [importOpen, setImportOpen] = useState(false);
   const [importAddr, setImportAddr] = useState('');
   const [importMsg, setImportMsg] = useState('');
@@ -234,7 +238,7 @@ export default function Home() {
         name: importPreview.name,
         decimals: importPreview.decimals,
         logoUrl: importPreview.logoUrl,
-      });
+      }, address);
       await refreshBalances();
       setImportOk(`Imported ${importPreview.symbol} (${importPreview.name}).`);
       setImportAddr('');
@@ -438,23 +442,55 @@ export default function Home() {
 
       <NetworkSheet visible={netOpen} onClose={() => setNetOpen(false)} />
 
-      <BottomSheet visible={walletsOpen} onClose={() => setWalletsOpen(false)} title="Wallets">
-        <Pressable
-          style={styles.walletRow}
-          onPress={() => {
-            Clipboard.setStringAsync(address);
-            setWalletsOpen(false);
-          }}
-        >
-          <View style={styles.walletIcon}>
-            <User size={16} color="#fff" />
-          </View>
-          <View style={styles.walletMid}>
-            <Text style={styles.walletName}>Wallet 1</Text>
-            <Text style={styles.walletAddr}>{address ? shortAddress(address) : 'No wallet yet'}</Text>
-          </View>
-          <Check size={16} color={COLORS.mintDark} />
-        </Pressable>
+      <BottomSheet visible={walletsOpen} onClose={() => { setWalletsOpen(false); setConfirmRemoveId(null); }} title="Wallets">
+        {wallets.map((w, i) => {
+          const isActive = w.id === activeWalletId;
+          const confirming = confirmRemoveId === w.id;
+          return (
+            <View key={w.id} style={styles.walletRow}>
+              <Pressable
+                style={styles.walletRowMain}
+                onPress={async () => {
+                  if (isActive) {
+                    await Clipboard.setStringAsync(w.address);
+                  } else {
+                    await switchWallet(w.id);
+                  }
+                  setWalletsOpen(false);
+                }}
+              >
+                <View style={styles.walletIcon}>
+                  <User size={16} color="#fff" />
+                </View>
+                <View style={styles.walletMid}>
+                  <Text style={styles.walletName}>{w.name ?? `Wallet ${i + 1}`}</Text>
+                  <Text style={styles.walletAddr}>{shortAddress(w.address)}</Text>
+                </View>
+                {isActive ? <Check size={16} color={COLORS.mintDark} /> : null}
+              </Pressable>
+              {wallets.length > 1 ? (
+                <Pressable
+                  hitSlop={8}
+                  style={styles.walletRemoveBtn}
+                  onPress={async () => {
+                    if (!confirming) {
+                      setConfirmRemoveId(w.id);
+                      return;
+                    }
+                    setConfirmRemoveId(null);
+                    await removeWallet(w.id);
+                  }}
+                >
+                  {confirming ? (
+                    <Text style={styles.walletRemoveConfirm}>Remove?</Text>
+                  ) : (
+                    <X size={16} color={COLORS.textMuted} />
+                  )}
+                </Pressable>
+              ) : null}
+            </View>
+          );
+        })}
         <Pressable
           style={styles.walletRow}
           onPress={() => {
@@ -468,8 +504,8 @@ export default function Home() {
           <Text style={styles.walletName}>Import / Create wallet</Text>
           <ChevronRight size={16} color={COLORS.textMuted} />
         </Pressable>
-        <Text style={styles.sheetHint}>Tap the wallet to copy its address.</Text>
-        <Text style={styles.sheetHint}>Creating a new wallet or switching wallets replaces the current wallet on this device — back up its seed phrase first or you will lose access to it.</Text>
+        <Text style={styles.sheetHint}>Tap a wallet to switch to it. Tap the active wallet to copy its address.</Text>
+        <Text style={styles.sheetHint}>All your wallets stay saved on this device. Removing a wallet deletes it from this device — back up its seed phrase first.</Text>
       </BottomSheet>
 
       <BottomSheet
@@ -718,6 +754,8 @@ const styles = StyleSheet.create({
   },
   walletMid: { flex: 1 },
   walletName: { color: COLORS.text, fontSize: 14, fontWeight: '700' },
+  walletRemoveBtn: { alignItems: 'center', justifyContent: 'center', padding: 4 },
+  walletRemoveConfirm: { color: COLORS.red, fontSize: 13, fontWeight: '700' },
   walletRow: {
     alignItems: 'center',
     borderColor: COLORS.border,
@@ -728,6 +766,7 @@ const styles = StyleSheet.create({
     marginTop: 8,
     padding: 10,
   },
+  walletRowMain: { alignItems: 'center', flex: 1, flexDirection: 'row', gap: 10 },
   watchChange: { fontSize: 12, fontWeight: '700', marginTop: 2, textAlign: 'right' },
   watchMid: { flex: 1, minWidth: 0 },
   watchName: { color: COLORS.text, fontSize: 14, fontWeight: '700' },

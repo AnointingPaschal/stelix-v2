@@ -50,9 +50,9 @@ describe('keyboard UX: Wallets sheet has one Import / Create wallet entry', () =
     expect(text).toMatch(/router\.push\('\/import'\)/);
   });
 
-  it('both options carry the same replace-current-wallet warning', () => {
+  it('both options carry the same add-alongside warning (nothing is replaced)', () => {
     const text = src('src/app/wallet-setup.tsx');
-    expect(text).toMatch(/Creating a new wallet or switching wallets replaces the current wallet/);
+    expect(text).toMatch(/New wallets are added alongside your existing ones — nothing is replaced/);
     expect(text).toMatch(/back up its seed phrase first/);
   });
 

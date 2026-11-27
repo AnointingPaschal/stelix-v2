@@ -361,11 +361,11 @@ export function OptionSheet({
 
 /** Network picker — ACTIVE chains from the merged admin registry that
  *  match the admin's network mode (Testnet / Mainnet / all when the admin
- *  has never set a mode), Arc first (default). Arc appears ONCE: its
- *  testnet/mainnet variant is chosen by the admin mode (see
- *  collapseArcPair in lib/adminSync.ts), never by the user. The picker can never
- *  override the admin mode: it only lists chains the mode allows, and
- *  says so. A chain added in admin appears here after a refresh. */
+ *  has never set a mode), Arc first (default). Arc Testnet and Arc
+ *  Mainnet are separate entries the user picks freely (2026-11-27: the
+ *  user asked for individual switching). The picker can never override
+ *  the admin mode: it only lists chains the mode allows, and says so.
+ *  A chain added in admin appears here after a refresh. */
 export function NetworkSheet({ visible, onClose }: { visible: boolean; onClose: () => void }) {
   const { chain, setChain, availableChains, refreshChains, networkMode } = useApp();
   const chains = availableChains.filter((c) => c.active);
@@ -393,7 +393,7 @@ export function NetworkSheet({ visible, onClose }: { visible: boolean; onClose: 
       footer={
         <Text style={styles.sheetHint}>
           {networkMode === null
-            ? 'Arc is on Testnet. Showing all networks.'
+            ? 'Showing all networks.'
             : `Showing ${networkMode === 'testnet' ? 'Testnet' : 'Mainnet'} networks only.`}
         </Text>
       }

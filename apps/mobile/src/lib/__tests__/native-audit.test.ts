@@ -191,8 +191,8 @@ describe('wallet falls back to durable AsyncStorage on native', () => {
     const wallet = fresh<typeof import('../wallet')>('../wallet');
     const { address } = await wallet.createWallet('StelixPass123');
     // The encrypted payload reached AsyncStorage, not memory/localStorage.
-    expect(mockAsyncMap().get('stelix_encrypted_wallet_v2')).toMatch(/^.{20,}$/);
-    expect(mockAsyncMap().has('stelix_wallet_meta_v2')).toBe(true);
+    expect(mockAsyncMap().get('stelix_encrypted_wallets_v3')).toMatch(/^.{20,}$/);
+    expect(mockAsyncMap().has('stelix_active_wallet_v3')).toBe(true);
     expect(await wallet.hasWallet()).toBe(true);
 
     // Restart: fresh modules, empty memory — wallet must still be there.

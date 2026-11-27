@@ -11,7 +11,6 @@ import { CHAINS } from '../chains';
 import { mergeAdminChains, type AdminChainRow } from '../adminChains';
 import {
   clearAdminSyncCache,
-  collapseArcPair,
   resolveModeChange,
   fetchAdminSync,
   filterChainsByMode,
@@ -191,6 +190,29 @@ describe('effective fees', () => {
     expect(eff.fees.autoSellFeePct).toBe(0);
     expect(eff.version).toBeNull();
   });
+
+  it('new vault fields ride the sync: cooling-off, guardian delay and max price impact', () => {
+    const data = parseAdminSync(syncBody({
+      fees: {
+        autoSellFeePct: 2, minLockUsd: 25, maxLockUsd: 50000, defaultPenaltyPct: 7,
+        twapMinutes: 30, trailingStopOptions: 'Off, 10%, 20%', defaultSlippagePct: 1,
+        penaltyDestination: 'treasury',
+        breakCoolingOffHours: 12, guardianBreakDelayHours: 72, maxPriceImpactPct: 3,
+      },
+    }));
+    const eff = resolveEffectiveFees(data?.fees ?? null, data?.feeVersion ?? null);
+    expect(eff.fees.breakCoolingOffHours).toBe(12);
+    expect(eff.fees.guardianBreakDelayHours).toBe(72);
+    expect(eff.fees.maxPriceImpactPct).toBe(3);
+  });
+
+  it('an older published fee config without the new fields still parses, with the defaults', () => {
+    const data = parseAdminSync(syncBody());
+    const eff = resolveEffectiveFees(data?.fees ?? null, data?.feeVersion ?? null);
+    expect(eff.fees.breakCoolingOffHours).toBe(24);
+    expect(eff.fees.guardianBreakDelayHours).toBe(48);
+    expect(eff.fees.maxPriceImpactPct).toBe(5);
+  });
 });
 
 describe('announcements and token registry', () => {
@@ -232,52 +254,45 @@ describe('maintenance mode', () => {
 describe('network mode (admin testnet/mainnet switch)', () => {
   // Merged chains as the wallet sees them with the live admin rows:
   // arc (testnet, paired) + arc-mainnet (mainnet, active, paired).
-  // The picker NEVER shows arc-mainnet as a separate entry: Arc is
-  // collapsed to one 'arc' entry whose variant comes from the admin
-  // mode (collapseArcPair, 2026-11-27). The tests below pin that.
+  // Arc Testnet and Arc Mainnet are SEPARATE picker entries (2026-11-27:
+  // individual switching, as before) — each with its own id, chain id
+  // and RPC. The admin network_mode only filters the list. The tests
+  // below pin that.
   const merged = mergeAdminChains(CHAINS, [chainRow(), arcMainnetRow()]);
   const arc = merged.find((c) => c.id === 'arc')!;
   const arcMainnet = merged.find((c) => c.id === 'arc-mainnet')!;
 
-  it('Arc collapses to one entry: testnet variant by default, mainnet variant only in mainnet mode', () => {
-    for (const mode of [null, 'testnet'] as const) {
-      const collapsed = collapseArcPair(merged, mode);
-      expect(collapsed.map((c) => c.id)).not.toContain('arc-mainnet');
-      const a = collapsed.find((c) => c.id === 'arc')!;
-      expect(a.chainId).toBe(5042002);
-      expect(a.testnet).toBe(true);
-    }
-    const main = collapseArcPair(merged, 'mainnet');
-    expect(main.map((c) => c.id)).not.toContain('arc-mainnet');
-    const a = main.find((c) => c.id === 'arc')!;
-    expect(a.chainId).toBe(5042);
-    expect(a.testnet).toBe(false);
-    expect(a.vaultContract).toBeNull(); // mode switch never deploys a vault
+  it('both Arc variants are listed as separate entries with their own chain ids', () => {
+    expect(merged.map((c) => c.id)).toContain('arc');
+    expect(merged.map((c) => c.id)).toContain('arc-mainnet');
+    expect(arc.chainId).toBe(5042002);
+    expect(arc.testnet).toBe(true);
+    expect(arcMainnet.chainId).toBe(5042);
+    expect(arcMainnet.testnet).toBe(false);
   });
 
-  it('testnet mode shows testnet chains only; mainnet mode shows mainnet chains only (Arc once, as mainnet); null shows all with Arc testnet only', () => {
+  it('testnet mode shows testnet chains only; mainnet mode shows mainnet chains only; null shows all with both Arc variants', () => {
     expect(filterChainsByMode(merged, 'testnet').map((c) => c.id)).toEqual([
       'arc', 'bnb-testnet', 'base-sepolia', 'ethereum-sepolia', 'polygon-amoy',
     ]);
     expect(filterChainsByMode(merged, 'mainnet').map((c) => c.id)).toEqual([
-      'arc', 'bnb', 'base', 'ethereum', 'polygon', 'solana',
+      'arc-mainnet', 'bnb', 'base', 'ethereum', 'polygon', 'solana',
     ]);
-    expect(filterChainsByMode(merged, 'mainnet').find((c) => c.id === 'arc')?.chainId).toBe(5042);
     expect(filterChainsByMode(merged, null).map((c) => c.id)).toEqual(
-      merged.map((c) => c.id).filter((id) => id !== 'arc-mainnet'),
+      merged.map((c) => c.id),
     );
   });
 
-  it('admin flips to Mainnet: the wallet switches Arc testnet to the Arc Mainnet variant (same id, chain 5042)', () => {
+  it('admin flips to Mainnet: the wallet switches Arc testnet to Arc Mainnet (its pair)', () => {
     const next = pickChainForMode(merged, arc, 'mainnet');
-    expect(next?.id).toBe('arc');
+    expect(next?.id).toBe('arc-mainnet');
     expect(next?.chainId).toBe(5042);
     const d = resolveModeChange({
       currentMode: 'testnet', nextMode: 'mainnet', transactionActive: false,
       chains: merged, currentChain: arc,
     });
     expect(d.deferred).toBe(false);
-    expect(d.chain?.id).toBe('arc');
+    expect(d.chain?.id).toBe('arc-mainnet');
     expect(d.chain?.chainId).toBe(5042);
     expect(d.notice).toBeNull();
   });
@@ -313,16 +328,15 @@ describe('network mode (admin testnet/mainnet switch)', () => {
     expect(d.notice).toBeNull();
   });
 
-  it('clearing the mode back to null moves Arc Mainnet back to Arc testnet, silently', () => {
+  it('clearing the mode back to null keeps the user on Arc Mainnet (both variants are valid under "all")', () => {
     const d = resolveModeChange({
       currentMode: 'mainnet', nextMode: null, transactionActive: false,
       chains: merged, currentChain: arcMainnet,
     });
     expect(d.deferred).toBe(false);
-    // 'arc-mainnet' is not a picker entry any more: clearing the mode
-    // returns the user to the single Arc entry, testnet variant.
-    expect(d.chain?.id).toBe('arc');
-    expect(d.chain?.chainId).toBe(5042002);
+    // 'arc-mainnet' is a picker entry in its own right: under null
+    // mode ("all networks") it already fits, so no switch is needed.
+    expect(d.chain).toBeNull();
     expect(d.notice).toBeNull();
   });
 

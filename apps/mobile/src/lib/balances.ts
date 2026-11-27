@@ -26,7 +26,7 @@ import { ethers } from 'ethers';
 import { EVM_NATIVE_RPC_DECIMALS, getChain, type ChainConfig } from './chains';
 import { fetchDexScreenerToken, fetchMajorPrices } from './prices';
 import { fetchSolanaBalances } from './solana';
-import { kvGet, kvSet } from './storage';
+import { kvDelete, kvGet, kvSet } from './storage';
 
 export const ERC20_MIN_ABI = [
   'function balanceOf(address owner) view returns (uint256)',
@@ -86,6 +86,117 @@ export function visibleTokens<T extends { isSpam: boolean }>(tokens: T[], showSp
 
 const IMPORTED_TOKENS_KEY = 'stelix_imported_tokens_v2';
 
+/** Imported tokens are per WALLET, not per device: switching wallets
+ *  must show that wallet's imports, not the other wallet's. The key is
+ *  scoped by the wallet's EVM address (lowercase). The unscoped key is
+ *  the legacy single-wallet list — migrateImportedTokensForWallet moves
+ *  it to the active wallet once, then deletes it. */
+function importedTokensKey(ownerAddress?: string): string {
+  return ownerAddress
+    ? `${IMPORTED_TOKENS_KEY}:${ownerAddress.toLowerCase()}`
+    : IMPORTED_TOKENS_KEY;
+}
+
+/** One-time move of the legacy device-wide imported-token list onto the
+ *  given wallet (the wallet that was active when multi-wallet landed).
+ *  No-op when the wallet already has its own list or nothing was saved. */
+export async function migrateImportedTokensForWallet(ownerAddress: string): Promise<void> {
+  const scoped = importedTokensKey(ownerAddress);
+  try {
+    const existing = await kvGet(scoped);
+    if (existing) return;
+    const legacy = await kvGet(IMPORTED_TOKENS_KEY);
+    if (!legacy) return;
+    await kvSet(scoped, legacy);
+    await kvDelete(IMPORTED_TOKENS_KEY);
+  } catch {
+    // Best-effort: the legacy list stays readable under its old key.
+  }
+}
+
+/**
+ * One-time re-attribution of imported tokens saved under the old shared
+ * Arc id 'arc' (2026-11-27): while the picker collapsed Arc Testnet and
+ * Arc Mainnet into one 'arc' entry, every Arc import was saved with
+ * chainId 'arc' — testnet tokens and mainnet tokens alike. Now that the
+ * two networks are separate entries, those rows are re-checked against
+ * both Arc RPCs: a token whose contract exists only on mainnet (e.g.
+ * STX) moves to 'arc-mainnet'; one on both networks is listed on both;
+ * one on testnet only, or on neither, stays 'arc'. Runs once per owner
+ * (flag key); a failed RPC check leaves the flag unset so the next
+ * launch retries instead of locking in a wrong answer.
+ */
+const ARC_IMPORT_MIGRATION_FLAG = 'stelix_arc_import_migration_v1';
+
+export type GetCodeFn = (rpcUrl: string, address: string) => Promise<string>;
+
+async function contractExistsOnChain(
+  chain: ChainConfig,
+  address: string,
+  getCode?: GetCodeFn,
+): Promise<'yes' | 'no' | 'error'> {
+  try {
+    const code = getCode
+      ? await getCode(chain.rpcUrl, address)
+      : await new ethers.JsonRpcProvider(
+          chain.rpcUrl,
+          chain.chainId === null ? undefined : chain.chainId,
+          { staticNetwork: true },
+        ).getCode(address);
+    return typeof code === 'string' && code !== '0x' && code !== '' ? 'yes' : 'no';
+  } catch {
+    return 'error';
+  }
+}
+
+export async function migrateArcImportedTokens(ownerAddress?: string, getCode?: GetCodeFn): Promise<void> {
+  const flagKey = `${ARC_IMPORT_MIGRATION_FLAG}:${ownerAddress ? ownerAddress.toLowerCase() : 'global'}`;
+  try {
+    if (await kvGet(flagKey)) return;
+    const list = await loadImportedTokens(ownerAddress);
+    const legacy = list.filter((t) => t.chainId === 'arc');
+    if (legacy.length === 0) {
+      await kvSet(flagKey, '1');
+      return;
+    }
+    const testnet = getChain('arc');
+    const mainnet = getChain('arc-mainnet');
+    const next = [...list];
+    let allChecked = true;
+    for (const token of legacy) {
+      const [onTestnet, onMainnet] = await Promise.all([
+        contractExistsOnChain(testnet, token.address, getCode),
+        contractExistsOnChain(mainnet, token.address, getCode),
+      ]);
+      if (onTestnet === 'error' || onMainnet === 'error') {
+        allChecked = false;
+        continue;
+      }
+      if (onMainnet === 'yes' && onTestnet === 'no') {
+        // Mainnet-only token (e.g. STX): move it to the mainnet entry.
+        const row = next.find(
+          (t) => t.chainId === 'arc' && t.address.toLowerCase() === token.address.toLowerCase(),
+        );
+        if (row) row.chainId = 'arc-mainnet';
+      } else if (onMainnet === 'yes' && onTestnet === 'yes') {
+        // Same address on both networks: list it on both.
+        if (
+          !next.some(
+            (t) => t.chainId === 'arc-mainnet' && t.address.toLowerCase() === token.address.toLowerCase(),
+          )
+        ) {
+          next.push({ ...token, chainId: 'arc-mainnet' });
+        }
+      }
+      // On testnet only, or on neither: stays 'arc'.
+    }
+    await saveImportedTokens(next, ownerAddress);
+    if (allChecked) await kvSet(flagKey, '1');
+  } catch {
+    // Best-effort: the flag stays unset so the next launch retries.
+  }
+}
+
 /** Ordered RPC URLs for a chain: the (env-overridable) primary first,
  *  then the registry fallbacks, de-duplicated. The env override wins
  *  when EXPO_PUBLIC_<CHAIN>_RPC_URL is set — it is already baked into
@@ -136,9 +247,9 @@ export function getProvider(chain: ChainConfig): ethers.AbstractProvider {
   );
 }
 
-export async function loadImportedTokens(): Promise<ImportedToken[]> {
+export async function loadImportedTokens(ownerAddress?: string): Promise<ImportedToken[]> {
   try {
-    const raw = await kvGet(IMPORTED_TOKENS_KEY);
+    const raw = await kvGet(importedTokensKey(ownerAddress));
     if (!raw) return [];
     const parsed = JSON.parse(raw) as ImportedToken[];
     return Array.isArray(parsed) ? parsed : [];
@@ -147,12 +258,12 @@ export async function loadImportedTokens(): Promise<ImportedToken[]> {
   }
 }
 
-export async function saveImportedTokens(tokens: ImportedToken[]): Promise<void> {
-  await kvSet(IMPORTED_TOKENS_KEY, JSON.stringify(tokens));
+export async function saveImportedTokens(tokens: ImportedToken[], ownerAddress?: string): Promise<void> {
+  await kvSet(importedTokensKey(ownerAddress), JSON.stringify(tokens));
 }
 
-export async function addImportedToken(token: ImportedToken): Promise<ImportedToken[]> {
-  const list = await loadImportedTokens();
+export async function addImportedToken(token: ImportedToken, ownerAddress?: string): Promise<ImportedToken[]> {
+  const list = await loadImportedTokens(ownerAddress);
   if (
     list.some(
       (t) => t.chainId === token.chainId && t.address.toLowerCase() === token.address.toLowerCase(),
@@ -161,16 +272,16 @@ export async function addImportedToken(token: ImportedToken): Promise<ImportedTo
     return list;
   }
   const next = [...list, token];
-  await saveImportedTokens(next);
+  await saveImportedTokens(next, ownerAddress);
   return next;
 }
 
-export async function removeImportedToken(chainId: string, address: string): Promise<ImportedToken[]> {
-  const list = await loadImportedTokens();
+export async function removeImportedToken(chainId: string, address: string, ownerAddress?: string): Promise<ImportedToken[]> {
+  const list = await loadImportedTokens(ownerAddress);
   const next = list.filter(
     (t) => !(t.chainId === chainId && t.address.toLowerCase() === address.toLowerCase()),
   );
-  await saveImportedTokens(next);
+  await saveImportedTokens(next, ownerAddress);
   return next;
 }
 
@@ -353,7 +464,7 @@ export async function fetchBalances(
     return { chain, address, tokens: [], totalUsd: 0, loading: false, error: 'Invalid wallet address.', updatedAt: startedAt };
   }
   const provider = getProvider(chain);
-  const imported = (importedTokens ?? (await loadImportedTokens())).filter((t) => t.chainId === chain.id);
+  const imported = (importedTokens ?? (await loadImportedTokens(address))).filter((t) => t.chainId === chain.id);
   let native: TokenBalance;
   try {
     native = await fetchNativeBalance(chain, provider, address);

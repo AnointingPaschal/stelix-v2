@@ -41,8 +41,7 @@ export type ImportStep =
   | 'deriving-key'
   | 'encrypting'
   | 'saving-wallet'
-  | 'deriving-solana'
-  | 'saving-meta';
+  | 'deriving-solana';
 
 export const IMPORT_STEP_LABELS: Record<ImportStep, string> = {
   'deriving-address': 'Deriving address…',
@@ -50,7 +49,6 @@ export const IMPORT_STEP_LABELS: Record<ImportStep, string> = {
   encrypting: 'Encrypting…',
   'saving-wallet': 'Saving wallet…',
   'deriving-solana': 'Deriving Solana address…',
-  'saving-meta': 'Saving wallet details…',
 };
 
 /** Default overall bound for an import (see importWallet). */
@@ -67,10 +65,26 @@ function isWeb(): boolean {
   return !isNativeApp();
 }
 
-const WALLET_KEY = 'stelix_encrypted_wallet_v2';
-const WALLET_META_KEY = 'stelix_wallet_meta_v2';
+/** Multi-wallet storage (2026-11-27): EVERY created or imported wallet
+ *  is kept, and the user switches between them — creating or importing
+ *  NEVER replaces the wallet already on the device (the old single-
+ *  wallet keys below are migrated once, then deleted).
+ *
+ *  Every wallet's secret is encrypted under the SAME session password
+ *  (the app password): the create/import screens ask for the current
+ *  password when wallets already exist and verify it before adding, so
+ *  all stored wallets always decrypt with the one current password.
+ *  changePassword re-encrypts every wallet, never just one. */
+const WALLETS_KEY = 'stelix_encrypted_wallets_v3';
+const ACTIVE_WALLET_KEY = 'stelix_active_wallet_v3';
+
+/** Legacy single-wallet keys (v2) — read once by the migration, then deleted. */
+const LEGACY_WALLET_KEY = 'stelix_encrypted_wallet_v2';
+const LEGACY_WALLET_META_KEY = 'stelix_wallet_meta_v2';
 
 export interface WalletMeta {
+  /** Stable id: `w_` + lowercase address — dedupes by address. */
+  id: string;
   address: string;
   createdAt: number;
   hasBiometrics: boolean;
@@ -79,6 +93,28 @@ export interface WalletMeta {
   /** Solana address derived from the same mnemonic (m/44'/501'/0'/0').
    *  Null when the wallet was imported from a raw private key. */
   solanaAddress?: string | null;
+}
+
+/** A stored wallet: its meta plus the encrypted secret. The secret is
+ *  never exposed outside this module except through decrypt-on-demand
+ *  (unlockWallet / exportSecret). */
+interface StoredWallet extends WalletMeta {
+  encryptedSecret: string;
+}
+
+export function walletIdFor(address: string): string {
+  return `w_${address.toLowerCase()}`;
+}
+
+function toMeta(w: StoredWallet): WalletMeta {
+  return {
+    id: w.id,
+    address: w.address,
+    createdAt: w.createdAt,
+    hasBiometrics: w.hasBiometrics,
+    name: w.name,
+    solanaAddress: w.solanaAddress ?? null,
+  };
 }
 
 /** Best-effort Solana derivation: never fails wallet creation/import.
@@ -219,6 +255,160 @@ async function storeDelete(key: string): Promise<void> {
   await kvDelete(key);
 }
 
+/** One-time migration from the old single-wallet keys: the v2 encrypted
+ *  payload is already encrypted under the session password, so it moves
+ *  across as-is — no re-encryption, no password needed. The v2 keys are
+ *  deleted after the v3 write succeeds, so a later wipe can never
+ *  resurrect the wallet through them. Stateless on purpose (no
+ *  module-level "done" flag): readWallets runs it on every call, so a
+ *  failed attempt retries and tests can seed legacy keys at any time. */
+async function migrateLegacyWallet(): Promise<void> {
+  try {
+    const existing = await storeGet(WALLETS_KEY);
+    if (existing !== null) return; // already migrated (or already multi-wallet)
+    const encrypted = await storeGet(LEGACY_WALLET_KEY);
+    const rawMeta = await storeGet(LEGACY_WALLET_META_KEY);
+    if (!encrypted || !rawMeta) return; // nothing to migrate
+    let meta: { address: string; createdAt: number; hasBiometrics: boolean; name?: string; solanaAddress?: string | null };
+    try {
+      meta = JSON.parse(rawMeta) as typeof meta;
+    } catch {
+      return;
+    }
+    if (!meta || typeof meta.address !== 'string') return;
+    const wallet: StoredWallet = {
+      id: walletIdFor(meta.address),
+      address: meta.address,
+      createdAt: typeof meta.createdAt === 'number' ? meta.createdAt : Date.now(),
+      hasBiometrics: meta.hasBiometrics === true,
+      name: meta.name,
+      solanaAddress: meta.solanaAddress ?? null,
+      encryptedSecret: encrypted,
+    };
+    await storeSet(WALLETS_KEY, JSON.stringify([wallet]));
+    await storeSet(ACTIVE_WALLET_KEY, wallet.id);
+    await storeDelete(LEGACY_WALLET_KEY);
+    await storeDelete(LEGACY_WALLET_META_KEY);
+  } catch {
+    // Migration is best-effort: a failure leaves the v2 keys in place
+    // (the next listWallets call retries) and never deletes anything.
+  }
+}
+
+async function readWallets(): Promise<StoredWallet[]> {
+  await migrateLegacyWallet();
+  const raw = await storeGet(WALLETS_KEY);
+  if (!raw) return [];
+  try {
+    const parsed = JSON.parse(raw) as StoredWallet[];
+    if (!Array.isArray(parsed)) return [];
+    return parsed.filter(
+      (w) => w && typeof w.address === 'string' && typeof w.encryptedSecret === 'string',
+    );
+  } catch {
+    return [];
+  }
+}
+
+async function writeWallets(wallets: StoredWallet[]): Promise<void> {
+  await storeSet(WALLETS_KEY, JSON.stringify(wallets));
+}
+
+function sortByCreated(wallets: StoredWallet[]): StoredWallet[] {
+  return wallets.slice().sort((a, b) => a.createdAt - b.createdAt);
+}
+
+/** All saved wallets, oldest first (so "Wallet 1" is the first wallet
+ *  ever created/imported on the device). Runs the v2 migration first. */
+export async function listWallets(): Promise<WalletMeta[]> {
+  return sortByCreated(await readWallets()).map(toMeta);
+}
+
+/** Id of the active wallet, or null when none is saved. A stale stored
+ *  id (wallet removed) falls back to the oldest wallet. */
+export async function getActiveWalletId(): Promise<string | null> {
+  const wallets = await readWallets();
+  if (wallets.length === 0) return null;
+  const activeId = await storeGet(ACTIVE_WALLET_KEY);
+  if (activeId && wallets.some((w) => w.id === activeId)) return activeId;
+  return sortByCreated(wallets)[0].id;
+}
+
+export async function getActiveWalletMeta(): Promise<WalletMeta | null> {
+  const wallets = await readWallets();
+  if (wallets.length === 0) return null;
+  const activeId = await getActiveWalletId();
+  const active = wallets.find((w) => w.id === activeId) ?? sortByCreated(wallets)[0];
+  return toMeta(active);
+}
+
+/** Kept for existing callers: the active wallet's meta. */
+export async function getWalletMeta(): Promise<WalletMeta | null> {
+  return getActiveWalletMeta();
+}
+
+/** Make a saved wallet the active one (balances, locks, history and
+ *  signing all follow the active wallet). Throws on an unknown id. */
+export async function setActiveWalletId(id: string): Promise<WalletMeta> {
+  const wallets = await readWallets();
+  const wallet = wallets.find((w) => w.id === id);
+  if (!wallet) throw new Error('That wallet is not saved on this device.');
+  await storeSet(ACTIVE_WALLET_KEY, id);
+  return toMeta(wallet);
+}
+
+export async function hasWallet(): Promise<boolean> {
+  return (await readWallets()).length > 0;
+}
+
+/** True when the password decrypts the active wallet (i.e. it is the
+ *  current app password). Never throws — the create/import screens use
+ *  this to prove the typed password is the current one before adding
+ *  another wallet under it. */
+export async function verifySessionPassword(password: string): Promise<boolean> {
+  try {
+    const wallets = await readWallets();
+    if (wallets.length === 0) return false;
+    const activeId = await getActiveWalletId();
+    const wallet = wallets.find((w) => w.id === activeId) ?? sortByCreated(wallets)[0];
+    await decryptSecret(wallet.encryptedSecret, password);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/** Remove one wallet from this device. Returns the remaining wallets
+ *  and the new active wallet (null when none remain). The caller must
+ *  warn the user to back up the seed phrase first — removal is final
+ *  on this device; the funds stay on-chain and return only by re-import. */
+export async function removeWallet(
+  id: string,
+): Promise<{ wallets: WalletMeta[]; active: WalletMeta | null }> {
+  const wallets = await readWallets();
+  const next = wallets.filter((w) => w.id !== id);
+  if (next.length === wallets.length) throw new Error('That wallet is not saved on this device.');
+  await writeWallets(next);
+  if (next.length === 0) {
+    await storeDelete(ACTIVE_WALLET_KEY);
+    await clearBiometricSessionPassword();
+    return { wallets: [], active: null };
+  }
+  const activeId = await getActiveWalletId();
+  const active = next.find((w) => w.id === activeId) ?? sortByCreated(next)[0];
+  await storeSet(ACTIVE_WALLET_KEY, active.id);
+  return { wallets: sortByCreated(next).map(toMeta), active: toMeta(active) };
+}
+
+export async function renameWallet(id: string, name: string): Promise<WalletMeta> {
+  const wallets = await readWallets();
+  const wallet = wallets.find((w) => w.id === id);
+  if (!wallet) throw new Error('That wallet is not saved on this device.');
+  wallet.name = name.trim() || undefined;
+  await writeWallets(wallets);
+  return toMeta(wallet);
+}
+
 /**
  * ethers' mnemonic generation (`Wallet.createRandom`) draws entropy from
  * `ethers.randomBytes`, which on the ESM build reads
@@ -258,20 +448,25 @@ export function generateMnemonic(): string {
   return phrase;
 }
 
+/** Create a fresh wallet and ADD it alongside any wallets already saved
+ *  — it never replaces them. The new wallet becomes the active one. */
 export async function createWallet(password: string, name?: string): Promise<{ mnemonic: string; address: string }> {
   assertStrongPassword(password);
   const phrase = generateMnemonic();
   const wallet = ethers.Wallet.fromPhrase(phrase);
   const encrypted = await encryptSecret(phrase, password);
-  await storeSet(WALLET_KEY, encrypted);
-  const meta: WalletMeta = {
+  const record: StoredWallet = {
+    id: walletIdFor(wallet.address),
     address: wallet.address,
     createdAt: Date.now(),
     hasBiometrics: false,
     name: name?.trim() || undefined,
     solanaAddress: tryDeriveSolanaAddress(phrase),
+    encryptedSecret: encrypted,
   };
-  await storeSet(WALLET_META_KEY, JSON.stringify(meta));
+  const wallets = await readWallets();
+  await writeWallets([...wallets, record]);
+  await storeSet(ACTIVE_WALLET_KEY, record.id);
   return { mnemonic: phrase, address: wallet.address };
 }
 
@@ -307,6 +502,10 @@ export interface ImportWalletOptions {
 }
 
 /** Import from a seed phrase or private key. Throws on invalid input.
+ *  APPENDS the wallet alongside any already saved — it never replaces
+ *  them — and makes it the active wallet. Importing an address that is
+ *  already saved updates that wallet in place (same secret, new name)
+ *  instead of duplicating it.
  *  KDF: native subtle 600,000 when available, pure JS 10,000 in
  *  Expo Go / Hermes (see lib/crypto.ts) — 600,000 in pure JS on a
  *  phone is >90s and Import timed out. */
@@ -337,10 +536,6 @@ export async function importWallet(
       report(s === 'deriveKey' ? 'deriving-key' : s === 'gcm' ? 'encrypting' : 'deriving-key');
     };
     const encrypted = await encryptSecret(canonical, password, onEncryptStep);
-    report('saving-wallet');
-    const tSave = Date.now();
-    await storeSet(WALLET_KEY, encrypted);
-    devLogStep('storeSet:wallet', tSave);
     report('deriving-solana');
     const tSol = Date.now();
     // Best-effort: a Solana derivation failure must never block import.
@@ -348,17 +543,31 @@ export async function importWallet(
       (wallet as ethers.HDNodeWallet).mnemonic?.phrase ?? null,
     );
     devLogStep('solana', tSol);
-    const meta: WalletMeta = {
+    report('saving-wallet');
+    const tSave = Date.now();
+    const record: StoredWallet = {
+      id: walletIdFor(wallet.address),
       address: wallet.address,
       createdAt: Date.now(),
       hasBiometrics: false,
       name: name?.trim() || undefined,
       solanaAddress,
+      encryptedSecret: encrypted,
     };
-    report('saving-meta');
-    const tMeta = Date.now();
-    await storeSet(WALLET_META_KEY, JSON.stringify(meta));
-    devLogStep('storeSet:meta', tMeta);
+    const wallets = await readWallets();
+    const existing = wallets.find((w) => w.id === record.id);
+    if (existing) {
+      // Re-import of a saved wallet: refresh the secret + name in place,
+      // keep its original createdAt (so its "Wallet N" position is stable).
+      existing.encryptedSecret = encrypted;
+      existing.name = record.name;
+      existing.solanaAddress = solanaAddress;
+      await writeWallets(wallets);
+    } else {
+      await writeWallets([...wallets, record]);
+    }
+    await storeSet(ACTIVE_WALLET_KEY, record.id);
+    devLogStep('storeSet:wallet', tSave);
     return wallet.address;
   };
   // Overall timeout: the timer's rejection reads currentStep LIVE, so
@@ -383,38 +592,67 @@ export async function importWallet(
 }
 
 /**
- * Unlock the stored wallet with the session password.
- * Returns null when no wallet is stored. THROWS on a wrong password.
+ * Unlock a stored wallet with the session password — the ACTIVE wallet
+ * by default, or the wallet id given. Returns null when no wallet is
+ * stored. THROWS on a wrong password.
  */
-export async function unlockWallet(password: string): Promise<ethers.Wallet | ethers.HDNodeWallet | null> {
-  const encrypted = await storeGet(WALLET_KEY);
-  if (!encrypted) return null;
-  const secret = await decryptSecret(encrypted, password); // throws on wrong password
+export async function unlockWallet(
+  password: string,
+  walletId?: string,
+): Promise<ethers.Wallet | ethers.HDNodeWallet | null> {
+  const wallets = await readWallets();
+  if (wallets.length === 0) return null;
+  let wallet: StoredWallet | undefined;
+  if (walletId) {
+    wallet = wallets.find((w) => w.id === walletId);
+    if (!wallet) throw new Error('That wallet is not saved on this device.');
+  } else {
+    const activeId = await getActiveWalletId();
+    wallet = wallets.find((w) => w.id === activeId) ?? sortByCreated(wallets)[0];
+  }
+  const secret = await decryptSecret(wallet.encryptedSecret, password); // throws on wrong password
   return walletFromSecret(secret);
 }
 
 /**
- * Export the stored secret (mnemonic or private key) — ONLY after the
+ * Export a wallet's secret (mnemonic or private key) — ONLY after the
  * caller re-enters the password, which is verified by decryption.
  * THROWS on a wrong password. The caller must never log the result.
+ * Defaults to the active wallet.
  */
-export async function exportSecret(password: string): Promise<string> {
-  const encrypted = await storeGet(WALLET_KEY);
-  if (!encrypted) throw new Error('No wallet stored on this device.');
-  return decryptSecret(encrypted, password); // throws on wrong password
+export async function exportSecret(password: string, walletId?: string): Promise<string> {
+  const wallets = await readWallets();
+  if (wallets.length === 0) throw new Error('No wallet stored on this device.');
+  let wallet: StoredWallet | undefined;
+  if (walletId) {
+    wallet = wallets.find((w) => w.id === walletId);
+    if (!wallet) throw new Error('That wallet is not saved on this device.');
+  } else {
+    const activeId = await getActiveWalletId();
+    wallet = wallets.find((w) => w.id === activeId) ?? sortByCreated(wallets)[0];
+  }
+  return decryptSecret(wallet.encryptedSecret, password); // throws on wrong password
 }
 
 /**
- * Change the session password: decrypts the stored secret with the old
- * password (THROWS on a wrong old password) and re-encrypts it under the
- * new password. The plaintext secret is never written to storage.
+ * Change the session password: decrypts EVERY stored wallet's secret
+ * with the old password (THROWS on a wrong old password) and re-encrypts
+ * them all under the new password. All secrets are decrypted BEFORE
+ * anything is written, so a failed change can never leave half the
+ * wallets on the old password and half on the new one. The plaintext
+ * secrets are never written to storage.
  */
 export async function changePassword(oldPassword: string, newPassword: string): Promise<void> {
   assertStrongPassword(newPassword);
-  const encrypted = await storeGet(WALLET_KEY);
-  if (!encrypted) throw new Error('No wallet stored on this device.');
-  const secret = await decryptSecret(encrypted, oldPassword); // throws on wrong password
-  await storeSet(WALLET_KEY, await encryptSecret(secret, newPassword));
+  const wallets = await readWallets();
+  if (wallets.length === 0) throw new Error('No wallet stored on this device.');
+  const secrets = await Promise.all(
+    wallets.map((w) => decryptSecret(w.encryptedSecret, oldPassword)), // throws on wrong password
+  );
+  const next = await Promise.all(
+    wallets.map(async (w, i) => ({ ...w, encryptedSecret: await encryptSecret(secrets[i], newPassword) })),
+  );
+  await writeWallets(next);
   // The biometric-gated copy holds the OLD password — it can no longer
   // decrypt anything, so wipe it; the next password sign re-saves it.
   await clearBiometricSessionPassword();
@@ -510,23 +748,15 @@ export async function clearBiometricSessionPassword(): Promise<void> {
   }
 }
 
-export async function getWalletMeta(): Promise<WalletMeta | null> {
-  const raw = await storeGet(WALLET_META_KEY);
-  if (!raw) return null;
-  try {
-    return JSON.parse(raw) as WalletMeta;
-  } catch {
-    return null;
-  }
-}
-
-export async function hasWallet(): Promise<boolean> {
-  return (await storeGet(WALLET_KEY)) !== null;
-}
-
+/** Wipe EVERY wallet from this device (the Settings / unlock "erase
+ *  everything" path). The legacy v2 keys are deleted too — otherwise
+ *  the next listWallets() would resurrect the wiped wallet through the
+ *  migration. */
 export async function wipeWallet(): Promise<void> {
-  await storeDelete(WALLET_KEY);
-  await storeDelete(WALLET_META_KEY);
+  await storeDelete(WALLETS_KEY);
+  await storeDelete(ACTIVE_WALLET_KEY);
+  await storeDelete(LEGACY_WALLET_KEY);
+  await storeDelete(LEGACY_WALLET_META_KEY);
   await clearBiometricSessionPassword();
 }
 
