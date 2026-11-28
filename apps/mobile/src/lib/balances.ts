@@ -10,9 +10,7 @@
  *   env-overridable via EXPO_PUBLIC_<CHAIN>_RPC_URL — see chains.ts).
  *   Reads go through getProvider(), an ethers FallbackProvider over ALL
  *   registry RPCs for the chain (quorum 1), so one dead RPC hostname
- *   can no longer break balances / Import Token / send / swap — Arc
- *   testnet's old rpc.testnet.arc.network hostname stopped resolving
- *   on device (2026-11-27) and the wallet had no fallback.
+ *   can no longer break balances / Import Token / send / swap.
  * - ERC-20 balanceOf via a minimal ABI (balanceOf / decimals / symbol / name).
  * - Prices come from prices.ts (DexScreener/CoinGecko) and are labelled
  *   with source + timestamp; a token with no live price has priceUsd null
@@ -88,8 +86,12 @@ export interface TokenBalance {
   coingeckoId?: string;
   /** Verified logo URL (imported tokens) — null = no logo found anywhere. */
   logoUrl?: string | null;
-  /** True when the admin registry marked this token verified — My Assets
-   *  shows the verified badge next to the symbol. */
+  /** True when this row shows the verified badge in My Assets.
+   *  Native assets and default stablecoins (USDT/USDC/USDT0) are
+   *  verified BY DEFAULT — unless the admin registry explicitly
+   *  unverifies that address (verified = 0), which overrides the
+   *  default. Every other token is verified only when the admin
+   *  registry marked it verified. */
   verified?: boolean;
   /** Admin-set display order (registry rows only). */
   sortOrder?: number;
@@ -141,6 +143,53 @@ export function mergeRegistryTokens(
     if (!byAddress.has(key)) byAddress.set(key, t);
   }
   return [...byAddress.values()];
+}
+
+/** The admin registry's verified value for one address on one chain,
+ *  or undefined when the registry has no row for that address.
+ *  Address match is case-insensitive; other chains never match. */
+export function registryVerifiedOverride(
+  registry: RegistryTokenInput[],
+  chainId: string,
+  address: string,
+): boolean | undefined {
+  const key = address.toLowerCase();
+  const row = registry.find((r) => r.chainId === chainId && r.address.toLowerCase() === key);
+  return row?.verified;
+}
+
+/** Verified-by-default rule for the native asset and the default
+ *  stablecoins (USDT / USDC / USDT0): verified UNLESS the admin
+ *  registry has a row for this address with verified = false, which
+ *  overrides the default and hides the badge. A registry row with
+ *  verified = true (or no row at all) keeps the badge. Pure,
+ *  unit-tested. */
+export function verifiedByDefault(
+  registry: RegistryTokenInput[],
+  chainId: string,
+  address: string,
+): boolean {
+  return registryVerifiedOverride(registry, chainId, address) !== false;
+}
+
+/** Verified-by-default rule for the chain's native asset: verified
+ *  unless the admin registry explicitly unverifies the native asset.
+ *  The native row has no contract address of its own, so the lookup
+ *  also checks the token address the native asset IS on chains where
+ *  it has one — Arc's native asset is the USDC token contract
+ *  (chain.stablecoins.USDC), so an admin unverifying that USDC row
+ *  unverifies the Arc native row too. Every other chain's native
+ *  asset has no registry address and is verified by default. Pure,
+ *  unit-tested. */
+export function nativeAssetVerified(registry: RegistryTokenInput[], chain: ChainConfig): boolean {
+  const candidates = [''];
+  if (chain.nativeSymbol === 'USDC' && chain.stablecoins?.USDC) {
+    candidates.push(chain.stablecoins.USDC);
+  }
+  for (const address of candidates) {
+    if (registryVerifiedOverride(registry, chain.id, address) === false) return false;
+  }
+  return true;
 }
 
 /** P&L on a holding's current value from its 24h change.
@@ -337,7 +386,7 @@ export interface DiscoveryDeps {
 }
 
 /** Discover on-chain ERC-20 holdings the user never imported.
- *  Blockscout v2 (keyless) for Arc testnet/mainnet; Etherscan-family
+ *  Blockscout v2 (keyless) for Arc; Etherscan-family
  *  `tokenlist` (fallback: `tokentx` → unique contracts → balanceOf)
  *  for other EVM chains, using the explorer key from
  *  getExplorerApiKeyAsync(). Only balance > 0. Returns [] on any
@@ -350,7 +399,7 @@ export async function discoverTokens(
   if (chain.kind !== 'evm' || chain.chainId === null || !ethers.isAddress(address)) return [];
   const fetchFn = deps.fetchFn ?? fetchWithTimeout;
   try {
-    if (chain.id === 'arc' || chain.id === 'arc-mainnet') {
+    if (chain.id === 'arc-mainnet') {
       const res = await fetchFn(
         `${chain.explorerUrl.replace(/\/$/, '')}/api/v2/addresses/${address}/tokens?type=ERC-20`,
       );
@@ -411,19 +460,28 @@ export async function discoverTokens(
  *  so a wrong registry entry can never invent a row. Skipped when the
  *  token is already listed, when its metadata cannot be read, or when
  *  it IS the native asset (Arc: the native row already is USDC).
- *  Rows are marked verified (the address was verified). */
+ *  Rows are verified BY DEFAULT — unless the admin registry has a row
+ *  for that stablecoin address with verified = false, which overrides
+ *  the default and hides the badge (see verifiedByDefault). A stable
+ *  already listed via the registry keeps the registry's verified
+ *  value exactly (mergeRegistryTokens) — this function never sees it.
+ *  `deps.resolveMetadata` is an injectable seam for tests; production
+ *  resolves on-chain. */
 export async function resolveDefaultStables(
   chain: ChainConfig,
   already: ImportedToken[],
+  registry: RegistryTokenInput[] = [],
+  deps: { resolveMetadata?: (chain: ChainConfig, address: string) => Promise<{ symbol: string; name: string; decimals: number }> } = {},
 ): Promise<ImportedToken[]> {
   const stables = chain.stablecoins;
   if (!stables) return [];
+  const resolve = deps.resolveMetadata ?? resolveTokenMetadata;
   const out: ImportedToken[] = [];
   for (const addr of [stables.USDT, stables.USDC]) {
     if (!addr) continue;
     if (already.some((t) => t.address.toLowerCase() === addr.toLowerCase())) continue;
     try {
-      const meta = await resolveTokenMetadata(chain, addr);
+      const meta = await resolve(chain, addr);
       if (meta.symbol === chain.nativeSymbol) continue;
       out.push({
         chainId: chain.id,
@@ -431,7 +489,7 @@ export async function resolveDefaultStables(
         symbol: meta.symbol,
         name: meta.name,
         decimals: meta.decimals,
-        verified: true,
+        verified: verifiedByDefault(registry, chain.id, addr),
       });
     } catch {
       continue; // unreadable stable: skipped, never zero-filled with guessed metadata
@@ -527,88 +585,13 @@ export async function migrateImportedTokensForWallet(ownerAddress: string): Prom
   }
 }
 
-/**
- * One-time re-attribution of imported tokens saved under the old shared
- * Arc id 'arc' (2026-11-27): while the picker collapsed Arc Testnet and
- * Arc Mainnet into one 'arc' entry, every Arc import was saved with
- * chainId 'arc' — testnet tokens and mainnet tokens alike. Now that the
- * two networks are separate entries, those rows are re-checked against
- * both Arc RPCs: a token whose contract exists only on mainnet (e.g.
- * STX) moves to 'arc-mainnet'; one on both networks is listed on both;
- * one on testnet only, or on neither, stays 'arc'. Runs once per owner
- * (flag key); a failed RPC check leaves the flag unset so the next
- * launch retries instead of locking in a wrong answer.
- */
-const ARC_IMPORT_MIGRATION_FLAG = 'stelix_arc_import_migration_v1';
-
-export type GetCodeFn = (rpcUrl: string, address: string) => Promise<string>;
-
-async function contractExistsOnChain(
-  chain: ChainConfig,
-  address: string,
-  getCode?: GetCodeFn,
-): Promise<'yes' | 'no' | 'error'> {
-  try {
-    const code = getCode
-      ? await getCode(chain.rpcUrl, address)
-      : await new ethers.JsonRpcProvider(
-          chain.rpcUrl,
-          chain.chainId === null ? undefined : chain.chainId,
-          { staticNetwork: true },
-        ).getCode(address);
-    return typeof code === 'string' && code !== '0x' && code !== '' ? 'yes' : 'no';
-  } catch {
-    return 'error';
-  }
-}
-
-export async function migrateArcImportedTokens(ownerAddress?: string, getCode?: GetCodeFn): Promise<void> {
-  const flagKey = `${ARC_IMPORT_MIGRATION_FLAG}:${ownerAddress ? ownerAddress.toLowerCase() : 'global'}`;
-  try {
-    if (await kvGet(flagKey)) return;
-    const list = await loadImportedTokens(ownerAddress);
-    const legacy = list.filter((t) => t.chainId === 'arc');
-    if (legacy.length === 0) {
-      await kvSet(flagKey, '1');
-      return;
-    }
-    const testnet = getChain('arc');
-    const mainnet = getChain('arc-mainnet');
-    const next = [...list];
-    let allChecked = true;
-    for (const token of legacy) {
-      const [onTestnet, onMainnet] = await Promise.all([
-        contractExistsOnChain(testnet, token.address, getCode),
-        contractExistsOnChain(mainnet, token.address, getCode),
-      ]);
-      if (onTestnet === 'error' || onMainnet === 'error') {
-        allChecked = false;
-        continue;
-      }
-      if (onMainnet === 'yes' && onTestnet === 'no') {
-        // Mainnet-only token (e.g. STX): move it to the mainnet entry.
-        const row = next.find(
-          (t) => t.chainId === 'arc' && t.address.toLowerCase() === token.address.toLowerCase(),
-        );
-        if (row) row.chainId = 'arc-mainnet';
-      } else if (onMainnet === 'yes' && onTestnet === 'yes') {
-        // Same address on both networks: list it on both.
-        if (
-          !next.some(
-            (t) => t.chainId === 'arc-mainnet' && t.address.toLowerCase() === token.address.toLowerCase(),
-          )
-        ) {
-          next.push({ ...token, chainId: 'arc-mainnet' });
-        }
-      }
-      // On testnet only, or on neither: stays 'arc'.
-    }
-    await saveImportedTokens(next, ownerAddress);
-    if (allChecked) await kvSet(flagKey, '1');
-  } catch {
-    // Best-effort: the flag stays unset so the next launch retries.
-  }
-}
+/** NOTE (2026-11-28): the old one-time Arc import migration is
+ *  removed. It re-checked legacy 'arc' rows against a hardcoded Arc
+ *  testnet RPC, and there is no hardcoded testnet in the app any
+ *  more. A legacy row saved with chainId 'arc' simply stays 'arc':
+ *  it reappears only if the admin serves an 'arc' chain through the
+ *  sync, matched by id to that synced chain — it is never silently
+ *  re-attributed to mainnet. */
 
 /** Ordered RPC URLs for a chain: the (env-overridable) primary first,
  *  then the registry fallbacks, de-duplicated. The env override wins
@@ -622,9 +605,8 @@ export function getRpcUrls(chain: ChainConfig): string[] {
 /**
  * Provider for an EVM chain, with RPC fallback.
  *
- * The old code used only chain.rpcUrl: when that one hostname died
- * (Arc testnet rpc.testnet.arc.network stopped resolving — see
- * chains.ts), every balance / import-token / send / swap read broke.
+ * The old code used only chain.rpcUrl: when that one hostname died,
+ *  every balance / import-token / send / swap read broke.
  * This builds an ethers FallbackProvider over ALL registry RPCs in
  * order (primary first), quorum 1 so a single live RPC is enough, and
  * the default 400 ms stall timeout so a dead primary fails over fast.
@@ -726,6 +708,7 @@ async function fetchNativeBalance(
   chain: ChainConfig,
   provider: ethers.AbstractProvider,
   address: string,
+  verified = true,
 ): Promise<TokenBalance> {
   const raw = await provider.getBalance(address);
   // eth_getBalance is ALWAYS wei — 10^18 per native unit — on every EVM
@@ -752,6 +735,10 @@ async function fetchNativeBalance(
     change24h: null,
     priceSource: 'unavailable',
     priceUpdatedAt: null,
+    // Native asset: verified by default (see nativeAssetVerified) —
+    // the row previously carried no verified flag, so My Assets never
+    // showed the badge on the native asset.
+    verified,
     isSpam: false,
   };
 }
@@ -798,7 +785,10 @@ const MAJOR_COINGECKO_IDS: Record<string, string> = {
 /** Fetch live balances for the native asset + the user's imported tokens.
  *  `registryTokens` are the admin registry entries for this chain: every
  *  one appears in My Assets, in the admin's order, verified badge when
- *  the admin marked it verified. */
+ *  the admin marked it verified — except the native asset and the
+ *  default stablecoins, which are verified BY DEFAULT unless the admin
+ *  explicitly unverified that address (see verifiedByDefault /
+ *  nativeAssetVerified). */
 export async function fetchBalances(
   chainId: string,
   address: string,
@@ -845,6 +835,9 @@ export async function fetchBalances(
         change24h: solCg?.change24h ?? null,
         priceSource: solPrice !== null ? 'coingecko' : 'unavailable',
         priceUpdatedAt: solPrice !== null ? Date.now() : null,
+        // Native asset: verified by default (no registry address can
+        // unverify SOL — see nativeAssetVerified).
+        verified: nativeAssetVerified(registryTokens ?? [], chain),
         isSpam: false,
       });
       // Prices for every SPL token in parallel: a sequential loop made
@@ -899,7 +892,7 @@ export async function fetchBalances(
   // Default stablecoins (USDT + USDC, verified addresses only) and
   // auto-discovery run BEFORE balances are read, so the new rows get
   // balances and prices in the same pass. Both are silent on failure.
-  const stables = await resolveDefaultStables(chain, imported);
+  const stables = await resolveDefaultStables(chain, imported, registryTokens ?? []);
   const withStables = [...imported, ...stables];
   // Hidden-set hook (the ONLY discovery-path change): a token the user
   // toggled off in the import screen is skipped here, so it cannot
@@ -931,7 +924,7 @@ export async function fetchBalances(
   const importedList = allImported;
   let native: TokenBalance;
   try {
-    native = await fetchNativeBalance(chain, provider, address);
+    native = await fetchNativeBalance(chain, provider, address, nativeAssetVerified(registryTokens ?? [], chain));
   } catch (e) {
     return {
       chain,

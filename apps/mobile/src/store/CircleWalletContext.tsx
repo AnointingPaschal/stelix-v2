@@ -9,7 +9,7 @@
  *   token + key are SESSION secrets: in-memory state ONLY, never
  *   persisted to kv / SecureStore / logs. The backend issues a fresh
  *   userToken per session (POST /api/circle/users).
- * - wallets: the user's Circle wallets (EOA, Arc testnet first).
+ * - wallets: the user's Circle wallets (EOA, Arc Mainnet).
  *   Only the wallet id + address are persisted (non-secret, so the
  *   screen can show the last-known address); balances are always
  *   read live from the Arc RPC, never stored.
@@ -28,7 +28,7 @@ import { ethers } from 'ethers';
 import { getChain } from '../lib/chains';
 import { recordBroadcastTx } from '../lib/localHistory';
 import {
-  CIRCLE_ARC_TESTNET,
+  CIRCLE_ARC_MAINNET,
   buildContractExecutionChallengeRequest,
   buildCreateWalletChallengeRequest,
   buildSetPinChallengeRequest,
@@ -68,7 +68,7 @@ export interface CircleState {
   /** True once the Circle PIN has been set in this session. */
   pinSet: boolean;
   wallets: CircleWallet[];
-  /** The Arc Circle wallet in use (first ARC-TESTNET EOA wallet). */
+  /** The Arc Circle wallet in use (first ARC EOA wallet). */
   activeWallet: CircleWallet | null;
   busy: boolean;
   error: string | null;
@@ -77,7 +77,7 @@ export interface CircleState {
   ensureUser: () => Promise<CircleUserSession>;
   /** Set the Circle PIN (first run) via a SET_PIN challenge. */
   setupPin: () => Promise<void>;
-  /** Create an EOA Circle wallet on Arc testnet via a challenge. */
+  /** Create an EOA Circle wallet on Arc Mainnet via a challenge. */
   createWallet: () => Promise<CircleWallet | null>;
   refreshWallets: () => Promise<void>;
   /** Send USDC on Arc from the Circle wallet (transfer challenge). */
@@ -161,8 +161,8 @@ export function CircleWalletProvider({ children }: { children: React.ReactNode }
 
   const activeWallet = useMemo(
     () =>
-      wallets.find((w) => w.blockchain === CIRCLE_ARC_TESTNET && w.accountType === 'EOA') ??
-      wallets.find((w) => w.blockchain === CIRCLE_ARC_TESTNET) ??
+      wallets.find((w) => w.blockchain === CIRCLE_ARC_MAINNET && w.accountType === 'EOA') ??
+      wallets.find((w) => w.blockchain === CIRCLE_ARC_MAINNET) ??
       wallets[0] ??
       null,
     [wallets],
@@ -275,14 +275,14 @@ export function CircleWalletProvider({ children }: { children: React.ReactNode }
     try {
       const session = await ensureUser();
       const challenge = await createCircleChallenge(
-        buildCreateWalletChallengeRequest(session.userId, CIRCLE_ARC_TESTNET),
+        buildCreateWalletChallengeRequest(session.userId, CIRCLE_ARC_MAINNET),
       );
       await executeChallenge(challenge);
       const list = await listCircleWallets(session.userId);
       setWallets(list);
       await persistWallets(list);
       const created =
-        list.find((w) => w.blockchain === CIRCLE_ARC_TESTNET && w.accountType === 'EOA') ??
+        list.find((w) => w.blockchain === CIRCLE_ARC_MAINNET && w.accountType === 'EOA') ??
         list[0] ??
         null;
       if (!created) {
@@ -313,20 +313,20 @@ export function CircleWalletProvider({ children }: { children: React.ReactNode }
             to,
             amount,
             tokenSymbol: 'USDC',
-            blockchain: CIRCLE_ARC_TESTNET,
+            blockchain: CIRCLE_ARC_MAINNET,
           }),
         );
         const txHash = await executeChallenge(challenge);
         if (!txHash) throw new Error('Circle transfer completed but returned no transaction hash.');
-        // The USDC transfer was broadcast on Arc testnet — record it.
+        // The USDC transfer was broadcast on Arc — record it.
         // Never throws into the send flow.
         await recordBroadcastTx({
           hash: txHash,
-          chain: 'arc',
+          chain: 'arc-mainnet',
           wallet: activeWallet.address,
           type: 'send',
           tokenSymbol: 'USDC',
-          tokenAddress: getChain('arc').stablecoins?.USDC ?? null,
+          tokenAddress: getChain('arc-mainnet').stablecoins?.USDC ?? null,
           amount: amount.toString(),
           amountRaw: ethers.parseUnits(amount.toString(), 6).toString(),
           from: activeWallet.address,
@@ -367,7 +367,7 @@ export function CircleWalletProvider({ children }: { children: React.ReactNode }
               abiFunctionSignature: step.abiFunctionSignature,
               abiParameters: step.abiParameters,
               callData: step.callData,
-              blockchain: CIRCLE_ARC_TESTNET,
+              blockchain: CIRCLE_ARC_MAINNET,
             }),
           );
           const stepHash = await executeChallenge(challenge);

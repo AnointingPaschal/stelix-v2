@@ -374,12 +374,13 @@ export function OptionSheet({
 
 /** Network picker — ACTIVE chains from the merged admin registry that
  *  match the admin's network mode (Testnet / Mainnet / all when the admin
- *  has never set a mode), Arc first (default). Arc Testnet and Arc
- *  Mainnet are separate entries the user picks freely (2026-11-27: the
- *  user asked for individual switching). The picker can never override
+ *  has never set a mode), Arc Mainnet first (default). Arc Mainnet and
+ *  any Arc testnet the admin serves are separate entries the user picks
+ *  freely (2026-11-27: the user asked for individual switching). The
+ *  picker can never override
  *  the admin mode: it only lists chains the mode allows, and says so.
  *  A chain added in admin appears here after a refresh. Coming-soon
- *  chains (Plasma testnet, Pi — 2026-11-28) are SHOWN with a "Coming
+ *  chains (Pi — 2026-11-28) are SHOWN with a "Coming
  *  soon" badge but visibly disabled and never selectable (see
  *  lib/networkPicker.ts). */
 export function NetworkSheet({ visible, onClose }: { visible: boolean; onClose: () => void }) {

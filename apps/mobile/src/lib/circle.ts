@@ -35,7 +35,7 @@
  *
  * Wallet model: EOA first (cheaper, broad, gas is USDC on Arc). SCA /
  * Gas Station is NOT built — labelled "not yet built" in the UI and
- * docs. Gas Station supports Arc Mainnet + Testnet when it lands.
+ * docs. Gas Station supports Arc Mainnet when it lands.
  *
  * App ID: the user's Circle App ID, d15deb9f-8d3c-5c06-be01-de05897d30ea
  * (supplied 2026-11-27), is the default in DEFAULT_CIRCLE_APP_ID and
@@ -404,7 +404,7 @@ export interface CircleUserSession {
 export interface CircleWallet {
   id: string;
   address: string;
-  /** Circle blockchain id, e.g. 'ARC-TESTNET' (Arc testnet first). */
+  /** Circle blockchain id, e.g. 'ARC' (Arc Mainnet). */
   blockchain: string;
   state: string;
   /** 'EOA' first — SCA is not built yet (see CIRCLE.md). */
@@ -427,7 +427,7 @@ export interface CircleConfigResponse {
   configured: boolean;
   /** True when the backend has a Circle App ID + API key. */
   appIdConfigured?: boolean;
-  /** Blockchains the backend allows Circle wallets on, e.g. ['ARC-TESTNET']. */
+  /** Blockchains the backend allows Circle wallets on, e.g. ['ARC']. */
   blockchains?: string[];
 }
 
@@ -467,7 +467,7 @@ export function parseCircleWallets(body: unknown): CircleWallet[] {
     out.push({
       id,
       address,
-      blockchain: typeof item.blockchain === 'string' ? item.blockchain : 'ARC-TESTNET',
+      blockchain: typeof item.blockchain === 'string' ? item.blockchain : 'ARC',
       state: typeof item.state === 'string' ? item.state : 'LIVE',
       accountType: typeof item.accountType === 'string' ? item.accountType : 'EOA',
     });
@@ -545,11 +545,11 @@ export async function getCircleConfig(): Promise<CircleConfigResponse | null> {
 // Circle server-API challenge. Pure functions, unit-tested.
 // ---------------------------------------------------------------------------
 
-/** Arc testnet first — the only Circle blockchain Stelix offers until
- *  the admin enables Arc mainnet. EOA only (SCA not built). */
-export const CIRCLE_ARC_TESTNET = 'ARC-TESTNET';
+/** Arc Mainnet — the only Circle blockchain Stelix offers. A testnet
+ *  Circle wallet appears only if the backend serves it; the app never
+ *  hardcodes one. EOA only (SCA not built). */
 export const CIRCLE_ARC_MAINNET = 'ARC';
-export const CIRCLE_SUPPORTED_BLOCKCHAINS = [CIRCLE_ARC_TESTNET] as const;
+export const CIRCLE_SUPPORTED_BLOCKCHAINS = [CIRCLE_ARC_MAINNET] as const;
 
 /** POST /api/circle/challenges body for a SET_PIN challenge (first
  *  run: the user sets the Circle PIN in the SDK UI). */
@@ -558,10 +558,10 @@ export function buildSetPinChallengeRequest(userId: string): Record<string, unkn
 }
 
 /** POST /api/circle/challenges body for a CREATE_WALLET challenge.
- *  EOA on Arc testnet first. */
+ *  EOA on Arc Mainnet. */
 export function buildCreateWalletChallengeRequest(
   userId: string,
-  blockchain: string = CIRCLE_ARC_TESTNET,
+  blockchain: string = CIRCLE_ARC_MAINNET,
 ): Record<string, unknown> {
   return { type: 'CREATE_WALLET', userId, blockchain, accountType: 'EOA' };
 }
@@ -589,7 +589,7 @@ export function buildTransferChallengeRequest(args: {
     type: 'TRANSFER',
     userId: args.userId,
     walletId: args.walletId,
-    blockchain: args.blockchain ?? CIRCLE_ARC_TESTNET,
+    blockchain: args.blockchain ?? CIRCLE_ARC_MAINNET,
     tokenSymbol: args.tokenSymbol ?? 'USDC',
     destinationAddress: args.to.trim(),
     amount: String(args.amount),
@@ -625,7 +625,7 @@ export function buildContractExecutionChallengeRequest(args: {
     type: 'CONTRACT_EXECUTION',
     userId: args.userId,
     walletId: args.walletId,
-    blockchain: args.blockchain ?? CIRCLE_ARC_TESTNET,
+    blockchain: args.blockchain ?? CIRCLE_ARC_MAINNET,
     contractAddress: args.contractAddress.trim(),
     abiFunctionSignature: args.abiFunctionSignature.trim(),
     abiParameters: args.abiParameters,

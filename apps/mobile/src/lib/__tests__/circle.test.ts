@@ -8,7 +8,7 @@
  * Run: npm test
  */
 import {
-  CIRCLE_ARC_TESTNET,
+  CIRCLE_ARC_MAINNET,
   CIRCLE_BACKEND_NOT_READY_MESSAGE,
   buildContractExecutionChallengeRequest,
   buildCreateWalletChallengeRequest,
@@ -175,11 +175,11 @@ describe('challenge payload shapes', () => {
     expect(buildSetPinChallengeRequest('user-1')).toEqual({ type: 'SET_PIN', userId: 'user-1' });
   });
 
-  it('CREATE_WALLET is EOA on ARC-TESTNET first', () => {
+  it('CREATE_WALLET is EOA on ARC (Arc Mainnet)', () => {
     expect(buildCreateWalletChallengeRequest('user-1')).toEqual({
       type: 'CREATE_WALLET',
       userId: 'user-1',
-      blockchain: CIRCLE_ARC_TESTNET,
+      blockchain: CIRCLE_ARC_MAINNET,
       accountType: 'EOA',
     });
   });
@@ -195,7 +195,7 @@ describe('challenge payload shapes', () => {
       type: 'TRANSFER',
       userId: 'user-1',
       walletId: 'wallet-1',
-      blockchain: CIRCLE_ARC_TESTNET,
+      blockchain: CIRCLE_ARC_MAINNET,
       tokenSymbol: 'USDC',
       destinationAddress: '0x1111111111111111111111111111111111111111',
       amount: '12.5',
@@ -266,12 +266,12 @@ describe('response parsing', () => {
     expect(parseCircleWallets({ wallets: [] })).toEqual([]);
     expect(
       parseCircleWallets([
-        { id: 'w1', address: '0xabc', blockchain: 'ARC-TESTNET', state: 'LIVE', accountType: 'EOA' },
+        { id: 'w1', address: '0xabc', blockchain: 'ARC', state: 'LIVE', accountType: 'EOA' },
         { id: 'w2' },
         'junk',
       ]),
     ).toEqual([
-      { id: 'w1', address: '0xabc', blockchain: 'ARC-TESTNET', state: 'LIVE', accountType: 'EOA' },
+      { id: 'w1', address: '0xabc', blockchain: 'ARC', state: 'LIVE', accountType: 'EOA' },
     ]);
   });
 });

@@ -27,6 +27,9 @@
 // keeper run key, explorer key and the Circle API key are Pages/Worker
 // secrets (see wrangler.toml). The Circle App ID is public and is stored
 // in D1 circle_config (POST /api/admin/circle-config), never as a secret.
+// A key named `circle` saved on the API Keys page (migration 0021,
+// AES-GCM encrypted with a key derived from CONFIG_SIGNING_SECRET)
+// takes precedence over the CIRCLE_API_KEY Pages secret for Circle calls.
 //
 // CIRCLE (User-Controlled Wallets, Arc only, EOA first): the Worker is a
 // proxy for api.circle.com under /v1/w3s/. POST /api/circle/users creates
@@ -68,7 +71,9 @@
 // gate checks, but on-chain code verification still runs and every
 // bypassed deploy is audit-logged.
 import { runStaticAudit, sha256Hex, type AuditFinding } from '../lib/auditCheck'
+import { API_KEY_CIRCLE_NAME, decryptApiKeyValue, deriveApiKeyEncryptionKey, encryptApiKeyValue, maskApiKeyHint, validateApiKeyName } from '../lib/apiKeys'
 import { validateFeePayload, type FeeConfig } from '../lib/fees'
+import { decodePoolAddress, decodeSlot0, decodeUint128, getPoolCalldata, poolPrices, STX_USDC_FEE_TIER, UNISWAP_V3_FACTORY_ARC_MAINNET } from '../lib/pool'
 import { buildCircleChallengeRequest, CIRCLE_API_BASE, isValidCircleAppId, maskAppId, parseCircleError, validateCircleChallengeInput } from '../lib/circle'
 import { isAddress, isTxHash, mainnetConfirmPhrase, testnetChainIdFor, validateDeployParams } from '../lib/deployParams'
 import { validateDeployPreset } from '../lib/deployPresets'
@@ -400,6 +405,15 @@ async function getLatestFees(env: Env): Promise<{ fees: FeeConfig | null; versio
   if (!row) return { fees: null, version: null, publishedBy: null, publishedAt: null }
   let payload: FeeConfig | null = null
   try { payload = JSON.parse(row.payload_json) as FeeConfig } catch { payload = null }
+  // The global fee recipient is also kept in admin_settings (written
+  // by POST /api/admin/fees alongside the versioned config): it is the
+  // value /api/sync serves as fees.feeRecipient, and it covers
+  // published configs that predate the field (they carry no recipient).
+  if (payload) {
+    const recipient = await getSetting(env, 'fee_recipient')
+    if (recipient) payload.feeRecipient = recipient
+    else if (payload.feeRecipient === undefined) payload.feeRecipient = null
+  }
   return { fees: payload, version: row.version, publishedBy: row.published_by, publishedAt: row.created_at }
 }
 
@@ -497,9 +511,13 @@ async function circleCall(
   path: string,
   init: { method: string; userToken?: string; body?: Record<string, unknown> },
 ): Promise<CircleResult> {
+  // The Circle key comes from the admin-managed key named `circle`
+  // (API Keys page, migration 0021) when one is stored, else the
+  // CIRCLE_API_KEY Pages secret — the existing secret flow is untouched.
+  const apiKey = await getEffectiveCircleApiKey(env)
   const headers: Record<string, string> = {
     'content-type': 'application/json',
-    authorization: `Bearer ${env.CIRCLE_API_KEY ?? ''}`,
+    authorization: `Bearer ${apiKey ?? ''}`,
   }
   if (init.userToken) headers['x-user-token'] = init.userToken
   let r: Response
@@ -549,6 +567,32 @@ async function getCircleAppId(env: Env): Promise<string | null> {
   } catch {
     return null
   }
+}
+
+// ---- Admin-managed API keys (migration 0021) ----
+// A stored key is decrypted server-side only, with a key derived from
+// CONFIG_SIGNING_SECRET. It is never logged and never returned in any
+// response. A missing table, a missing secret, or an undecryptable
+// value (e.g. the signing secret was rotated) all read as "no stored
+// key" — callers fall back to the Pages secret.
+/** Decrypted value of a stored named key, or null when there is none. */
+async function getStoredApiKey(env: Env, name: string): Promise<string | null> {
+  if (!env.CONFIG_SIGNING_SECRET) return null
+  try {
+    const row = await env.DB.prepare('SELECT value FROM api_keys WHERE name = ?').bind(name).first<{ value: string }>()
+    if (!row?.value) return null
+    const key = await deriveApiKeyEncryptionKey(env.CONFIG_SIGNING_SECRET)
+    return await decryptApiKeyValue(key, row.value)
+  } catch {
+    return null
+  }
+}
+
+/** The Circle API key the Worker actually uses: a stored key named
+ *  `circle` (API Keys page) takes precedence over the CIRCLE_API_KEY
+ *  Pages secret; without a stored key the secret flow is unchanged. */
+async function getEffectiveCircleApiKey(env: Env): Promise<string | null> {
+  return (await getStoredApiKey(env, API_KEY_CIRCLE_NAME)) ?? env.CIRCLE_API_KEY ?? null
 }
 
 async function rpcCall(rpcUrl: string, method: string, params: unknown[]): Promise<unknown> {
@@ -1056,8 +1100,8 @@ export default {
       if (existing) {
         return json({ ok: true, userId, circleUserId: existing.circle_user_id, email: existing.email, existing: true })
       }
-      if (!env.CIRCLE_API_KEY) {
-        return json({ error: 'CIRCLE_API_KEY is not set. Set it with: wrangler pages secret put CIRCLE_API_KEY --project-name stelix-admin. No Circle user was created.', code: 'circle_api_key_missing' }, 503)
+      if (!(await getEffectiveCircleApiKey(env))) {
+        return json({ error: 'CIRCLE_API_KEY is not set — save a key named `circle` on the API Keys page, or set it with: wrangler pages secret put CIRCLE_API_KEY --project-name stelix-admin. No Circle user was created.', code: 'circle_api_key_missing' }, 503)
       }
       const res = await circleCall(env, '/v1/w3s/users', { method: 'POST', body: { userId } })
       if (!res.ok) return json({ error: res.message, code: res.code, circleStatus: res.status }, circleStatusToHttp(res.status))
@@ -1090,8 +1134,8 @@ export default {
       if (!mapping) {
         return json({ error: `No Circle user is registered for userId "${value.userId}" — create one first with POST /api/circle/users.`, code: 'circle_user_not_found' }, 404)
       }
-      if (!env.CIRCLE_API_KEY) {
-        return json({ error: 'CIRCLE_API_KEY is not set. Set it with: wrangler pages secret put CIRCLE_API_KEY --project-name stelix-admin. No challenge was created.', code: 'circle_api_key_missing' }, 503)
+      if (!(await getEffectiveCircleApiKey(env))) {
+        return json({ error: 'CIRCLE_API_KEY is not set — save a key named `circle` on the API Keys page, or set it with: wrangler pages secret put CIRCLE_API_KEY --project-name stelix-admin. No challenge was created.', code: 'circle_api_key_missing' }, 503)
       }
       const tokenRes = await circleUserToken(env, value.userId)
       if (!tokenRes.ok) return json({ error: tokenRes.message, code: tokenRes.code, circleStatus: tokenRes.status }, circleStatusToHttp(tokenRes.status))
@@ -1120,8 +1164,8 @@ export default {
       if (!mapping) {
         return json({ error: `No Circle user is registered for userId "${userId}" — create one first with POST /api/circle/users.`, code: 'circle_user_not_found' }, 404)
       }
-      if (!env.CIRCLE_API_KEY) {
-        return json({ error: 'CIRCLE_API_KEY is not set. Set it with: wrangler pages secret put CIRCLE_API_KEY --project-name stelix-admin.', code: 'circle_api_key_missing' }, 503)
+      if (!(await getEffectiveCircleApiKey(env))) {
+        return json({ error: 'CIRCLE_API_KEY is not set — save a key named `circle` on the API Keys page, or set it with: wrangler pages secret put CIRCLE_API_KEY --project-name stelix-admin.', code: 'circle_api_key_missing' }, 503)
       }
       const res = await circleCall(env, `/v1/w3s/wallets?userId=${encodeURIComponent(mapping.circle_user_id)}`, { method: 'GET' })
       if (!res.ok) return json({ error: res.message, code: res.code, circleStatus: res.status }, circleStatusToHttp(res.status))
@@ -1130,8 +1174,8 @@ export default {
     }
     const circleTxMatch = /^\/api\/circle\/transactions\/([A-Za-z0-9-]+)$/.exec(path)
     if (circleTxMatch && req.method === 'GET') {
-      if (!env.CIRCLE_API_KEY) {
-        return json({ error: 'CIRCLE_API_KEY is not set. Set it with: wrangler pages secret put CIRCLE_API_KEY --project-name stelix-admin.', code: 'circle_api_key_missing' }, 503)
+      if (!(await getEffectiveCircleApiKey(env))) {
+        return json({ error: 'CIRCLE_API_KEY is not set — save a key named `circle` on the API Keys page, or set it with: wrangler pages secret put CIRCLE_API_KEY --project-name stelix-admin.', code: 'circle_api_key_missing' }, 503)
       }
       const res = await circleCall(env, `/v1/w3s/transactions/${encodeURIComponent(circleTxMatch[1])}`, { method: 'GET' })
       if (!res.ok) return json({ error: res.message, code: res.code, circleStatus: res.status }, circleStatusToHttp(res.status))
@@ -1139,7 +1183,10 @@ export default {
       return json({ transaction })
     }
     if (path === '/api/circle/config' && req.method === 'GET') {
-      const apiKeyConfigured = Boolean(env.CIRCLE_API_KEY)
+      // Stored `circle` key (API Keys page) wins; otherwise the Pages secret.
+      const storedCircleKey = await getStoredApiKey(env, API_KEY_CIRCLE_NAME)
+      const apiKeyConfigured = Boolean(storedCircleKey ?? env.CIRCLE_API_KEY)
+      const apiKeySource: 'stored' | 'secret' | null = storedCircleKey ? 'stored' : env.CIRCLE_API_KEY ? 'secret' : null
       const appId = await getCircleAppId(env)
       const appIdConfigured = appId !== null
       let circleReachable: boolean | null = null
@@ -1165,7 +1212,7 @@ export default {
       const chains = await getChains(env)
       const vaultDeployed = chains.some((c) => Boolean(c.vault_address))
       const note = !apiKeyConfigured
-        ? 'CIRCLE_API_KEY is not set. Set it with: wrangler pages secret put CIRCLE_API_KEY --project-name stelix-admin.'
+        ? 'CIRCLE_API_KEY is not set — save a key named `circle` on the API Keys page, or set it with: wrangler pages secret put CIRCLE_API_KEY --project-name stelix-admin.'
         : !appIdConfigured
           ? 'API key is set. Save your Circle App ID below (Circle Console → Web3 Services) so the mobile SDK can initialise.'
           : !vaultDeployed
@@ -1176,6 +1223,7 @@ export default {
         configured: apiKeyConfigured && appIdConfigured,
         appIdConfigured,
         apiKeyConfigured,
+        apiKeySource,
         arcTestnet: true,
         appIdMasked: maskAppId(appId),
         circleReachable,
@@ -1686,6 +1734,11 @@ export default {
       const maxRow = await env.DB.prepare('SELECT COALESCE(MAX(version), 0) AS v FROM fee_versions').first<{ v: number }>()
       const version = (maxRow?.v ?? 0) + 1
       await env.DB.prepare('INSERT INTO fee_versions (version, payload_json, published_by) VALUES (?, ?, ?)').bind(version, JSON.stringify(config), authed).run()
+      // The global fee recipient is also kept in admin_settings so it is
+      // served in /api/sync as fees.feeRecipient (and so new Deploy
+      // Presets can default to it) even for configs published before
+      // the field existed. Blank clears it.
+      await setSetting(env, 'fee_recipient', config.feeRecipient ?? '')
       await bumpSync(env)
       await audit(env, authed, 'fees.publish', `fee config v${version} published (auto-sell fee ${config.autoSellFeePct}%)`)
       return json({ ok: true, version, fees: config }, 201)
@@ -1693,6 +1746,185 @@ export default {
     if (path === '/api/admin/fees/history' && req.method === 'GET') {
       const { results } = await env.DB.prepare('SELECT id, version, payload_json, published_by, created_at FROM fee_versions ORDER BY version DESC LIMIT 20').all()
       return json({ history: results ?? [] })
+    }
+
+    // ---- API Keys (migration 0021) ----
+    // Named secrets the Worker uses server-side (e.g. the Circle API
+    // key). Values are AES-GCM encrypted with a key derived from
+    // CONFIG_SIGNING_SECRET and are NEVER returned: list responses
+    // carry only the name + masked hint. A key named `circle` takes
+    // precedence over the CIRCLE_API_KEY Pages secret for Circle calls.
+    if (path === '/api/admin/api-keys' && req.method === 'GET') {
+      let keys: unknown[] = []
+      try {
+        const { results } = await env.DB.prepare('SELECT id, name, hint, updated_at, updated_by FROM api_keys ORDER BY name').all()
+        keys = results ?? []
+      } catch {
+        keys = [] // Table missing (migration not applied yet) reads as empty.
+      }
+      return json({ keys })
+    }
+    if (path === '/api/admin/api-keys' && req.method === 'POST') {
+      const body = await readJson(req)
+      const name = String(body.name ?? '').trim()
+      const value = String(body.value ?? '')
+      const nameError = validateApiKeyName(name)
+      if (nameError) return json({ error: nameError }, 400)
+      if (!value || value.length > 2000) return json({ error: 'value is required (max 2000 characters)' }, 400)
+      if (!env.CONFIG_SIGNING_SECRET) {
+        return json({ error: 'CONFIG_SIGNING_SECRET is not set. Set it with: wrangler pages secret put CONFIG_SIGNING_SECRET --project-name stelix-admin. API keys are never stored unencrypted, so nothing was saved.' }, 503)
+      }
+      const key = await deriveApiKeyEncryptionKey(env.CONFIG_SIGNING_SECRET)
+      const encrypted = await encryptApiKeyValue(key, value)
+      const hint = maskApiKeyHint(value)
+      await env.DB.prepare(
+        `INSERT INTO api_keys (name, hint, value, updated_by, updated_at) VALUES (?, ?, ?, ?, datetime('now'))
+         ON CONFLICT(name) DO UPDATE SET hint = excluded.hint, value = excluded.value, updated_by = excluded.updated_by, updated_at = datetime('now')`,
+      ).bind(name, hint, encrypted, authed).run()
+      await audit(env, authed, 'api_key.save', `API key "${name}" saved (encrypted at rest; the value is never logged or returned)`)
+      return json({ ok: true, name, hint }, 201)
+    }
+    if (path === '/api/admin/api-keys' && req.method === 'DELETE') {
+      const id = url.searchParams.get('id')
+      if (!id) return json({ error: 'id required' }, 400)
+      const row = await env.DB.prepare('SELECT name FROM api_keys WHERE id = ?').bind(Number(id)).first<{ name: string }>()
+      await env.DB.prepare('DELETE FROM api_keys WHERE id = ?').bind(Number(id)).run()
+      await audit(env, authed, 'api_key.delete', `API key "${row?.name ?? id}" deleted`)
+      return json({ ok: true })
+    }
+
+    // ---- Stelix Pool (STX/USDC on Arc Mainnet) ----
+    // Derives the pool address from the Uniswap V3 factory
+    // (Factory.getPool, fee tier 3000 = 0.3%) on the Arc Mainnet RPC
+    // from Chain Manager, then reads slot0 (price), liquidity and
+    // token0/token1 from the pool. The factory address is verified
+    // with eth_getCode before any read is trusted; when getPool
+    // returns the zero address the pool simply does not exist yet.
+    if (path === '/api/admin/pool' && req.method === 'GET') {
+      const chain = await env.DB.prepare('SELECT * FROM chains WHERE id = ?').bind('arc-mainnet').first<ChainRow>()
+      if (!chain) return json({ error: 'Arc Mainnet is not in Chain Manager — add it before checking the pool.' }, 404)
+      const rpcUrl = (chain.rpc_urls.split(',')[0] ?? '').trim()
+      if (!rpcUrl) return json({ error: 'Arc Mainnet has no RPC URL configured in Chain Manager.' }, 400)
+      const usdcAddress = (chain.stablecoin_address ?? '').toLowerCase()
+      const usdcDecimals = typeof chain.stablecoin_decimals === 'number' ? chain.stablecoin_decimals : 6
+      // STX is resolved at runtime from the admin's own records — the
+      // address is NEVER hardcoded here. The old STX (fixed 1,000,000
+      // supply, no mint) cannot grow, so a NEW STX token is being
+      // deployed from the Launchpad; until it exists and is registered,
+      // the pool view says so plainly instead of reading a dead
+      // address. Registry first, then the latest STX launch record.
+      let stx: { address: string; decimals: number; source: 'registry' | 'launchpad' } | null = null
+      try {
+        const stxRow = await env.DB.prepare('SELECT address, decimals FROM tokens WHERE chain_id = ? AND symbol = ?').bind('arc-mainnet', 'STX').first<{ address: string; decimals: number }>()
+        if (stxRow?.address) {
+          stx = { address: stxRow.address.toLowerCase(), decimals: stxRow.decimals, source: 'registry' }
+        }
+      } catch { /* registry read failed — try the launch record */ }
+      if (!stx) {
+        try {
+          const launchRow = await env.DB.prepare("SELECT token_address, token_decimals FROM launches WHERE chain_id = ? AND token_symbol = ? AND token_address IS NOT NULL AND token_address != '' ORDER BY id DESC LIMIT 1").bind('arc-mainnet', 'STX').first<{ token_address: string; token_decimals: number }>()
+          if (launchRow?.token_address) {
+            stx = { address: launchRow.token_address.toLowerCase(), decimals: launchRow.token_decimals, source: 'launchpad' }
+          }
+        } catch { /* no launch record — no STX configured yet */ }
+      }
+      const checkedAt = new Date().toISOString()
+      const explorerBase = chain.explorer_url.replace(/\/$/, '')
+      const base = {
+        ok: true, chain: 'arc-mainnet',
+        stx: { address: stx?.address ?? null, decimals: stx?.decimals ?? null, source: stx?.source ?? null },
+        usdc: { address: usdcAddress, decimals: usdcDecimals },
+        factory: UNISWAP_V3_FACTORY_ARC_MAINNET,
+        factoryVerified: false,
+        poolAddress: null as string | null,
+        exists: false,
+        token0: null as string | null,
+        token1: null as string | null,
+        tick: null as number | null,
+        priceUsdcPerStx: null as string | null,
+        priceStxPerUsdc: null as string | null,
+        liquidityRaw: null as string | null,
+        explorerUrl: null as string | null,
+        checkedAt,
+        note: '',
+      }
+      if (!stx) {
+        return json({
+          ...base,
+          note: 'No STX token is configured yet — the new STX token has not been deployed and registered. Deploy it from the Launchpad and register it in the Token Registry, and the pool view will pick it up with no code change.',
+        })
+      }
+      const stxAddress = stx.address
+      const stxDecimals = stx.decimals
+      let factoryHasCode = false
+      try {
+        const code = await rpcCall(rpcUrl, 'eth_getCode', [UNISWAP_V3_FACTORY_ARC_MAINNET, 'latest'])
+        factoryHasCode = typeof code === 'string' && code !== '0x' && code.length > 2
+      } catch { factoryHasCode = false }
+      if (!factoryHasCode) {
+        return json({ ...base, note: 'The Uniswap V3 factory address holds no code on Arc Mainnet (or the Arc RPC was unreachable) — the pool address could not be verified. Check the factory address and the Arc RPC, then refresh.' })
+      }
+      let poolAddress: string
+      try {
+        const raw = await ethCall(rpcUrl, UNISWAP_V3_FACTORY_ARC_MAINNET, getPoolCalldata(stxAddress, usdcAddress, STX_USDC_FEE_TIER))
+        poolAddress = decodePoolAddress(raw)
+      } catch {
+        return json({ error: 'Arc RPC unreachable — could not read the pool address from the factory.' }, 502)
+      }
+      if (poolAddress === '0x0000000000000000000000000000000000000000') {
+        return json({
+          ...base,
+          factoryVerified: true,
+          note: 'No STX/USDC pool exists on Arc Mainnet yet — Factory.getPool returned the zero address for fee tier 0.3%. STX has no DEX pool today; it lives only in the token registry until liquidity is added.',
+        })
+      }
+      let poolHasCode = false
+      try {
+        const code = await rpcCall(rpcUrl, 'eth_getCode', [poolAddress, 'latest'])
+        poolHasCode = typeof code === 'string' && code !== '0x' && code.length > 2
+      } catch { poolHasCode = false }
+      if (!poolHasCode) {
+        return json({ ...base, factoryVerified: true, poolAddress, note: 'The factory returned a pool address, but no contract code exists there — the address is not trusted. The factory or the RPC may be returning stale data.' })
+      }
+      let slot0Raw: string
+      let liquidityRaw: string
+      let token0Raw: string
+      let token1Raw: string
+      try {
+        ;[slot0Raw, liquidityRaw, token0Raw, token1Raw] = await Promise.all([
+          ethCall(rpcUrl, poolAddress, '0x3850c7bd'),
+          ethCall(rpcUrl, poolAddress, '0x1a686502'),
+          ethCall(rpcUrl, poolAddress, '0x0dfe1681'),
+          ethCall(rpcUrl, poolAddress, '0xd21220a7'),
+        ])
+      } catch {
+        return json({ error: 'Arc RPC unreachable — the pool address was found but its price and liquidity could not be read.' }, 502)
+      }
+      const slot0 = decodeSlot0(slot0Raw)
+      const liquidity = decodeUint128(liquidityRaw)
+      const token0 = decodePoolAddress(token0Raw)
+      const token1 = decodePoolAddress(token1Raw)
+      if (!slot0 || liquidity === null) {
+        return json({ ...base, factoryVerified: true, poolAddress, note: 'The pool contract did not return readable slot0 / liquidity data — the price is unavailable right now.' })
+      }
+      const token0IsUsdc = token0.toLowerCase() === usdcAddress
+      const dec0 = token0IsUsdc ? usdcDecimals : stxDecimals
+      const dec1 = token0IsUsdc ? stxDecimals : usdcDecimals
+      const prices = poolPrices(slot0.sqrtPriceX96, dec0, dec1, token0IsUsdc)
+      return json({
+        ...base,
+        factoryVerified: true,
+        poolAddress,
+        exists: true,
+        token0,
+        token1,
+        tick: slot0.tick,
+        priceUsdcPerStx: prices.priceUsdcPerStx,
+        priceStxPerUsdc: prices.priceStxPerUsdc,
+        liquidityRaw: liquidity.toString(),
+        explorerUrl: `${explorerBase}/address/${poolAddress}`,
+        note: 'Live on-chain read from the Uniswap V3 pool on Arc Mainnet. Liquidity is the pool’s active V3 liquidity value, not token balances.',
+      })
     }
 
     // ---- Announcements ----
@@ -2428,6 +2660,19 @@ export default {
       const body = await readJson(req)
       const { preset, errors } = validateDeployPreset(body)
       if (!preset) return json({ error: 'invalid deploy preset', details: errors }, 400)
+      // A blank fee recipient takes the global default from Fees and
+      // Limits (admin_settings `fee_recipient`) when one is set — so
+      // future vaults route fees there without re-typing it. Existing
+      // presets are untouched, and a vault already deployed keeps the
+      // recipient in its constructor: no on-chain value changes here.
+      let defaultedFeeRecipient = false
+      if (!preset.feeRecipient) {
+        const globalRecipient = await getSetting(env, 'fee_recipient')
+        if (globalRecipient && isAddress(globalRecipient)) {
+          preset.feeRecipient = globalRecipient
+          defaultedFeeRecipient = true
+        }
+      }
       await env.DB.prepare(
         `INSERT INTO deploy_presets (chain_id, env, label, owner, keeper, router, price_feed, penalty_recipient, fee_recipient, auto_sell_fee_bps, updated_by, updated_at)
          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
@@ -2438,7 +2683,7 @@ export default {
            auto_sell_fee_bps = excluded.auto_sell_fee_bps, updated_by = excluded.updated_by,
            updated_at = datetime('now')`,
       ).bind(preset.chainId, preset.env, preset.label, preset.owner, preset.keeper, preset.router, preset.priceFeed, preset.penaltyRecipient, preset.feeRecipient, preset.autoSellFeeBps, authed).run()
-      await audit(env, authed, 'studio.preset_save', `Deploy preset saved for ${preset.chainId} (${preset.env})`)
+      await audit(env, authed, 'studio.preset_save', `Deploy preset saved for ${preset.chainId} (${preset.env})${defaultedFeeRecipient ? ' — fee recipient defaulted from the global Fees setting' : ''}`)
       return json({ ok: true, preset }, 201)
     }
     if (path === '/api/admin/deploy-presets' && req.method === 'DELETE') {

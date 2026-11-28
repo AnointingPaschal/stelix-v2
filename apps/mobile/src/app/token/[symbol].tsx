@@ -53,6 +53,12 @@ import { resolveTokenRef } from '../../lib/tokenResolve';
 import { getChain, VAULT_NOT_DEPLOYED_MESSAGE } from '../../lib/chains';
 import { getSignerForChain } from '../../lib/signer';
 import {
+  getPoolPrice,
+  getPoolProvider,
+  getPoolQuoteToken,
+  resolvePoolToken,
+} from '../../lib/pool';
+import {
   createLockOnChain,
   lockSummarySentence,
   minReceivePerStageUsd,
@@ -69,7 +75,7 @@ import {
   type SignTxResult,
 } from '../../components/SignTransactionModal';
 import { fmtDate, fmtNum, fmtPct, fmtPrice, fmtUsd } from '../../lib/format';
-import { Btn, BottomSheet, Card, Chip, SectionTitle } from '../../components/ui';
+import { Btn, BottomSheet, Card, Chip, SectionTitle, Skeleton } from '../../components/ui';
 import { BottomNav } from '../../components/AppShell';
 import { PriceChart, type ChartType } from '../../components/PriceChart';
 import { SafetyScoreCard } from '../../components/SafetyScoreCard';
@@ -97,7 +103,7 @@ export default function TokenDetail() {
     address?: string;
     chainId?: string;
   }>();
-  const { tokens, locks, chain: activeChain, address: walletAddress, settings, addLock, addTx, refreshLocks, adminFees, appConfig } = useApp();
+  const { tokens, locks, chain: activeChain, address: walletAddress, settings, addLock, addTx, refreshLocks, adminFees, appConfig, adminTokens } = useApp();
   const { width } = useWindowDimensions();
   const insets = useSafeAreaInsets();
   // 320–430px phones keep the compact v1 layout; 768px+ centres the
@@ -126,6 +132,26 @@ export default function TokenDetail() {
   // from the wrapped twin (WBNB for BNB, …) — same price, real pair.
   const marketAddress = address || wrappedNativeAddress(chainId) || '';
   const coingeckoId = storeToken?.coingeckoId ?? COINGECKO_IDS_BY_SYMBOL[sym];
+
+  // The pool token, resolved from the synced registry at runtime —
+  // the token detail only offers Add Liquidity / pool pricing when
+  // the viewed token IS that registered token on Arc Mainnet. Until
+  // the new STX token is registered there is no pool token, and this
+  // stays null (no hardcoded address anywhere). Declared up here
+  // because the live-price poll below already uses it.
+  const poolToken = useMemo(() => resolvePoolToken(adminTokens), [adminTokens]);
+  const poolQuoteToken = useMemo(() => {
+    try {
+      return getPoolQuoteToken();
+    } catch {
+      return null;
+    }
+  }, []);
+  const isPoolToken =
+    chainId === 'arc-mainnet' &&
+    poolToken !== null &&
+    !!address &&
+    address.toLowerCase() === poolToken.address.toLowerCase();
 
   // --- Live price tick (8s poll) -------------------------------------------
   const [tick, setTick] = useState<{ price: number | null; change24h: number | null; source: PriceSource; updatedAt: number } | null>(null);
@@ -320,6 +346,23 @@ export default function TokenDetail() {
           source = 'coingecko';
         }
       }
+      // Pool price fallback — only for the registry pool token (STX)
+      // on Arc Mainnet: once its Uniswap V3 pool exists, the pool's
+      // own price is the market price, even before DexScreener /
+      // GeckoTerminal index the pair. No pool yet = no price here
+      // either; the honest "no market price" state stays.
+      if (price === null && isPoolToken && poolToken && poolQuoteToken) {
+        try {
+          const poolPrice = await getPoolPrice(getPoolProvider(), poolToken, poolQuoteToken);
+          if (poolPrice !== null) {
+            price = poolPrice;
+            change24h = null;
+            source = 'pool';
+          }
+        } catch {
+          // Pool read failed — price stays null, no invented value.
+        }
+      }
       if (cancelled) return;
       if (price !== null) {
         setTick({ price, change24h, source, updatedAt: Date.now() });
@@ -373,7 +416,7 @@ export default function TokenDetail() {
       clearInterval(t);
       clearInterval(refresh);
     };
-  }, [marketAddress, chainId, coingeckoId, pairAddress, tf, refreshNonce]);
+  }, [marketAddress, chainId, coingeckoId, pairAddress, tf, refreshNonce, isPoolToken, poolToken, poolQuoteToken]);
 
   const closes = useMemo(() => candles.map((c) => c.close), [candles]);
   const indicators = useMemo(() => indicatorsFromCandles(candles), [candles]);
@@ -501,7 +544,7 @@ export default function TokenDetail() {
   const useCircleLock =
     circle?.ready === true &&
     circle.activeWallet !== null &&
-    (activeChain.id === 'arc' || activeChain.id === 'arc-mainnet');
+    activeChain.id === 'arc-mainnet';
   // Live fee config and feature flags (same source the wizard used).
   const fees = adminFees.fees;
   const slippageBps = Math.round(fees.defaultSlippagePct * 100);
@@ -820,7 +863,9 @@ export default function TokenDetail() {
   const liveDotColor = liveState === 'live' ? COLORS.mint : liveState === 'stale' ? COLORS.amber : COLORS.red;
   const liveLabel =
     liveState === 'live'
-      ? `Live · updated ${tick ? new Date(tick.updatedAt).toLocaleTimeString('en-GB') : '—'}`
+      ? tick?.source === 'pool'
+        ? `Pool price · updated ${tick ? new Date(tick.updatedAt).toLocaleTimeString('en-GB') : '—'}`
+        : `Live · updated ${tick ? new Date(tick.updatedAt).toLocaleTimeString('en-GB') : '—'}`
       : liveState === 'stale'
         ? 'Live data delayed — showing last known price'
         : 'Live data unavailable — showing last known price';
@@ -915,15 +960,23 @@ export default function TokenDetail() {
             <TogglePill label="Vol" on={showVol} onPress={() => setShowVol((v) => !v)} color={COLORS.textMuted} />
             <TogglePill label="RSI" on={showRsi} onPress={() => setShowRsi((v) => !v)} color={COLORS.mint} />
           </View>
-          <View style={styles.indValues}>
-            <Text style={styles.indValue}>EMA7 {candlesLoading && candles.length === 0 ? 'Loading…' : indicators.ema7 === null ? '—' : fmtPrice(indicators.ema7)}</Text>
-            <Text style={styles.indValue}>EMA25 {candlesLoading && candles.length === 0 ? 'Loading…' : indicators.ema25 === null ? '—' : fmtPrice(indicators.ema25)}</Text>
-            {showMacd ? (
-              <Text style={styles.indValue}>
-                MACD {candlesLoading && candles.length === 0 ? 'Loading…' : macd.macd === null ? '—' : fmtPrice(macd.macd)} · Sig {candlesLoading && candles.length === 0 ? 'Loading…' : macd.signal === null ? '—' : fmtPrice(macd.signal)}
-              </Text>
-            ) : null}
-          </View>
+          {candlesLoading && candles.length === 0 ? (
+            <View style={styles.indValues} accessibilityLabel="Loading indicators">
+              <Skeleton height={11} width={110} />
+              <Skeleton height={11} width={120} />
+              {showMacd ? <Skeleton height={11} width={190} /> : null}
+            </View>
+          ) : (
+            <View style={styles.indValues}>
+              <Text style={styles.indValue}>EMA7 {indicators.ema7 === null ? '—' : fmtPrice(indicators.ema7)}</Text>
+              <Text style={styles.indValue}>EMA25 {indicators.ema25 === null ? '—' : fmtPrice(indicators.ema25)}</Text>
+              {showMacd ? (
+                <Text style={styles.indValue}>
+                  MACD {macd.macd === null ? '—' : fmtPrice(macd.macd)} · Sig {macd.signal === null ? '—' : fmtPrice(macd.signal)}
+                </Text>
+              ) : null}
+            </View>
+          )}
 
           {chartScaleMismatch ? (
             <View style={styles.mismatch}>
@@ -958,13 +1011,13 @@ export default function TokenDetail() {
           {showRsi ? (
             <View style={styles.rsiRow}>
               <Text style={styles.rsiLabel}>RSI(14)</Text>
-              <Text style={styles.rsiValue}>
-                {candlesLoading && candles.length === 0
-                  ? 'Loading…'
-                  : rsi === null
-                    ? '—'
-                    : `${rsi.toFixed(0)} — ${rsi > 70 ? 'Overbought' : rsi < 30 ? 'Oversold' : 'Neutral'}`}
-              </Text>
+              {candlesLoading && candles.length === 0 ? (
+                <Skeleton height={12} width={64} />
+              ) : (
+                <Text style={styles.rsiValue}>
+                  {rsi === null ? '—' : `${rsi.toFixed(0)} — ${rsi > 70 ? 'Overbought' : rsi < 30 ? 'Oversold' : 'Neutral'}`}
+                </Text>
+              )}
             </View>
           ) : null}
           <View style={styles.chartFoot}>
@@ -989,7 +1042,7 @@ export default function TokenDetail() {
               <View style={styles.safetySkelLines}>
                 <View style={[styles.skelBar, { width: '60%' }]} />
                 <View style={[styles.skelBar, { width: '85%' }]} />
-                <Text style={styles.safetySkelText}>Loading safety score…</Text>
+                <View style={[styles.skelBar, { width: '45%' }]} />
               </View>
             </View>
           ) : (
@@ -1156,7 +1209,7 @@ export default function TokenDetail() {
           <Text style={styles.discHint}>No penalty is ever charged when a price target or the maturity date triggers the exit. Penalty default is {fees.defaultPenaltyPct}%.</Text>
           {!vaultStatus.deployed ? (
             <Text style={styles.vaultWarn}>
-              Not deployed on this chain yet — testnet deploy required ({tokenChain.name}). No on-chain lock can be created yet, and no
+              Not deployed on this chain yet — deploy required ({tokenChain.name}). No on-chain lock can be created yet, and no
               local-only lock is recorded — a lock that was never submitted is not a lock.
             </Text>
           ) : null}
@@ -1179,7 +1232,14 @@ export default function TokenDetail() {
               <DataRow label="Liquidity" value={market?.liquidityUsd === null || market?.liquidityUsd === undefined ? '—' : fmtUsd(market.liquidityUsd, 0)} />
               <DataRow label="Volume 24h" value={market?.volume24h === null || market?.volume24h === undefined ? '—' : fmtUsd(market.volume24h, 0)} />
               <DataRow label="Volume 1h" value="—" />
-              <DataRow label="RSI (14)" value={candlesLoading && candles.length === 0 ? 'Loading…' : rsi === null ? '—' : `${rsi.toFixed(0)}`} />
+              {candlesLoading && candles.length === 0 ? (
+                <View style={styles.dataRow}>
+                  <Text style={styles.dataLabel}>RSI (14)</Text>
+                  <Skeleton height={12} width={56} />
+                </View>
+              ) : (
+                <DataRow label="RSI (14)" value={rsi === null ? '—' : `${rsi.toFixed(0)}`} />
+              )}
             </Card>
 
             <SectionTitle title="Trading Activity (24h)" />
@@ -1226,6 +1286,13 @@ export default function TokenDetail() {
           <Btn label="Send" onPress={() => router.push('/send')} style={styles.actionBtn} />
           <Btn label="Swap" variant="ghost" onPress={() => router.push({ pathname: '/(tabs)/swap', params: { from: sym } })} style={styles.actionBtn} />
         </View>
+        {/* Add Liquidity — only for the registry pool token (STX) on
+            Arc Mainnet. The screen resolves the token from the
+            registry itself; until the new token is registered it
+            explains there is no pool to seed yet. */}
+        {isPoolToken ? (
+          <Btn label="Add Liquidity" variant="ghost" onPress={() => router.push('/add-liquidity')} style={styles.liquidityBtn} />
+        ) : null}
         <View style={styles.iconRow}>
           <Pressable style={styles.iconBtn} onPress={() => void toggleWatch()}>
             <Star size={16} color={watched ? COLORS.navy : COLORS.textMuted} />
@@ -1247,7 +1314,7 @@ export default function TokenDetail() {
                   : `Self-custody · ${walletAddress.slice(0, 6)}…${walletAddress.slice(-4)}`
               }
             />
-            <ReviewRow label="Vault contract" value={vaultStatus.deployed ? vaultStatus.address : 'Not deployed yet — testnet deploy required'} />
+            <ReviewRow label="Vault contract" value={vaultStatus.deployed ? vaultStatus.address : 'Not deployed yet — deploy required'} />
             <ReviewRow label="Unlock date" value={new Date(unlockTime).toLocaleDateString('en-GB', { day: 'numeric', month: 'long', year: 'numeric' })} />
             <ReviewRow label="Target" value={targetPrice ? `${targetMultiple}x · ${fmtPrice(targetPrice)}` : 'None — date lock'} />
             <ReviewRow label="Exit" value={targetPrice ? (autoSell ? exitLabel : 'Unlock to wallet') : 'Unlock to wallet'} />
@@ -1405,6 +1472,7 @@ const styles = StyleSheet.create({
   indValues: { flexDirection: 'row', flexWrap: 'wrap', gap: 10, marginTop: 8 },
   inner: { padding: 12 },
   liveDot: { borderRadius: 999, height: 8, width: 8 },
+  liquidityBtn: { marginTop: 8 },
   liveNote: { color: COLORS.textMuted, fontSize: 11, marginTop: 8 },
   liveNoteWarn: { color: COLORS.amber },
   missing: { backgroundColor: COLORS.bg, flex: 1, padding: 16 },
@@ -1451,7 +1519,6 @@ const styles = StyleSheet.create({
   rsiRow: { alignItems: 'center', borderTopColor: COLORS.border, borderTopWidth: 1, flexDirection: 'row', justifyContent: 'space-between', marginTop: 8, paddingTop: 8 },
   rsiValue: { color: COLORS.text, fontSize: 12, fontWeight: '700' },
   safetySkelLines: { flex: 1, gap: 8 },
-  safetySkelText: { color: COLORS.textMuted, fontSize: 11 },
   safetySkeleton: { alignItems: 'center', flexDirection: 'row', gap: 14 },
   segBtn: { borderRadius: 999, paddingHorizontal: 10, paddingVertical: 5 },
   segBtnOn: { backgroundColor: COLORS.navy },

@@ -12,9 +12,9 @@
  * be swapped once the user imports it by address — importing adds it to
  * the owned list, which is merged over the catalogue below.
  *
- * Arc testnet lists only USDC (its native gas asset): no other Arc
- * testnet token address is verified, and swaps on Arc refuse honestly
- * anyway (no DEX router confirmed on Arc testnet — see lib/swap.ts).
+ * Arc lists only USDC (its native gas asset): no other Arc token
+ * address is verified, and swaps on Arc refuse honestly anyway
+ * (no DEX router confirmed on Arc — see lib/swap.ts).
  */
 import type { TokenBalance } from './balances';
 import { COINGECKO_IDS_BY_SYMBOL } from './prices';
@@ -44,8 +44,8 @@ export interface SwapToken extends SwapTokenEntry {
 
 /** Well-known swap tokens per Stelix chain id (all chains, restored 2026-11-27). */
 export const SWAP_CATALOGUE: Record<string, SwapTokenEntry[]> = {
-  arc: [
-    { symbol: 'USDC', name: 'USD Coin (Arc gas asset)', chainId: 'arc', address: '', decimals: 6, coingeckoId: 'usd-coin' },
+  'arc-mainnet': [
+    { symbol: 'USDC', name: 'USD Coin (Arc gas asset)', chainId: 'arc-mainnet', address: '', decimals: 6, coingeckoId: 'usd-coin' },
   ],
   bnb: [
     { symbol: 'BNB', name: 'BNB', chainId: 'bnb', address: '', decimals: 18, coingeckoId: 'binancecoin' },

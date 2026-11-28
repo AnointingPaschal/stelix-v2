@@ -23,6 +23,7 @@ const EMPTY = {
 export default function DeployPresets() {
   const [presets, setPresets] = useState<DeployPresetRow[]>([])
   const [form, setForm] = useState(EMPTY)
+  const [globalFeeRecipient, setGlobalFeeRecipient] = useState('')
   const [error, setError] = useState('')
   const [notice, setNotice] = useState('')
   const [confirmRemove, setConfirmRemove] = useState<DeployPresetRow | null>(null)
@@ -30,6 +31,7 @@ export default function DeployPresets() {
 
   const load = () => {
     api.getDeployPresets().then(setPresets).catch((e: Error) => setError(e.message))
+    api.getFees().then((d) => setGlobalFeeRecipient(d.fees?.feeRecipient ?? '')).catch(() => undefined)
   }
   useEffect(load, [])
 
@@ -118,6 +120,12 @@ export default function DeployPresets() {
           <input value={form.penaltyRecipient} onChange={(e) => setForm({ ...form, penaltyRecipient: e.target.value })} placeholder="0x…" />
           <label>Fee recipient address</label>
           <input value={form.feeRecipient} onChange={(e) => setForm({ ...form, feeRecipient: e.target.value })} placeholder="0x…" />
+          <p className="field-hint">
+            {globalFeeRecipient
+              ? `Blank = the global fee recipient from Fees and Limits (${globalFeeRecipient}) — applied when you save.`
+              : 'Blank = the global fee recipient from Fees and Limits, if one is set — otherwise the deployer address.'}
+            {' '}Existing presets and deployed vaults keep their own recipient.
+          </p>
           <label>Auto-sell fee bps (0–1000, max 10%)</label>
           <input value={form.autoSellFeeBps} inputMode="numeric" onChange={(e) => setForm({ ...form, autoSellFeeBps: e.target.value })} placeholder="0" />
           <button className="btn mint block" style={{ marginTop: 14 }} onClick={save} disabled={busy}><Save />{busy ? 'Saving…' : 'Save preset'}</button>

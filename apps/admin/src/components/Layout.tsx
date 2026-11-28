@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react'
 import { NavLink, Outlet, useLocation, useNavigate } from 'react-router-dom'
 import {
-  Activity, ChevronsLeft, ChevronsRight, Coins, KeyRound, LayoutDashboard, Link2, LogOut,
+  Activity, ChevronsLeft, ChevronsRight, Coins, Droplets, KeyRound, LayoutDashboard, Link2, LogOut,
   Megaphone, Menu, Package, Percent, Code2, Radar, Rocket, ScrollText, Search, Settings, Settings2, ShieldCheck, Users, Wallet, Wrench, X,
 } from 'lucide-react'
 import type { LucideIcon } from 'lucide-react'
@@ -16,8 +16,10 @@ const links: { to: string; label: string; icon: LucideIcon }[] = [
   { to: '/chains', label: 'Chain Manager', icon: Link2 },
   { to: '/circle', label: 'Circle Wallets', icon: Wallet },
   { to: '/tokens', label: 'Token / DEX Registry', icon: Coins },
+  { to: '/pool', label: 'Stelix Pool', icon: Droplets },
   { to: '/keeper', label: 'Keeper Monitor', icon: Activity },
   { to: '/fees', label: 'Fees and Limits', icon: Percent },
+  { to: '/api-keys', label: 'API Keys', icon: KeyRound },
   { to: '/announcements', label: 'Announcements', icon: Megaphone },
   { to: '/releases', label: 'Releases', icon: Package },
   { to: '/config', label: 'App Config and Releases', icon: Settings },

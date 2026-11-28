@@ -1,23 +1,29 @@
 /** Screen 11 — Discover: a full DEX browser (DexScreener-style).
  *
- * Tabs: Trending / Gainers / New Pairs / Binance Alpha, plus a chain
- * filter (All, Arc, BNB, Base, Ethereum, Polygon, Solana). Data is LIVE:
- * GeckoTerminal trending pools (Trending/Gainers — same feed, ranked
- * differently) and new pools per network (New Pairs), DexScreener search
- * for symbol/name/address, DexScreener batch lookup enriching each row
- * with its real logo, full name and market cap. DexScreener boosts /
- * profiles are the fallbacks when a primary feed fails. Binance Alpha
- * reads CoinMarketCap's public listing API filtered to the binance-alpha
- * tag (see lib/discover.ts fetchAlphaPage) — live prices, 24h change,
- * market cap and volume, paged 100 at a time. The Alpha feed carries no
- * chain or contract address, so its rows show the CoinMarketCap icon,
- * ignore the chain filter, and do not open a token detail page; the
- * search box filters the loaded Alpha pages client-side.
+ * Tabs: Trending / Gainers / New Pairs / BSC Alpha, plus a chain
+ * filter (All, Arc, BNB, Base, Ethereum, Polygon, Solana, Plasma —
+ * derived from USABLE_CHAINS, so coming-soon chains never appear).
+ * Data is LIVE: GeckoTerminal trending pools PER NETWORK
+ * (Trending/Gainers — same feed, ranked differently) and new pools
+ * per network (New Pairs), DexScreener search for symbol/name/address,
+ * DexScreener batch lookup enriching each row with its real logo, full
+ * name and market cap. DexScreener boosts / profiles are the fallbacks
+ * when a primary feed fails. BSC Alpha reads CoinMarketCap's public
+ * listing API filtered to the binance-alpha tag (see lib/discover.ts
+ * fetchAlphaPage) — live prices, 24h change, market cap and volume,
+ * paged 100 at a time. The Alpha feed carries no chain or contract
+ * address, so its rows show the CoinMarketCap icon, ignore the chain
+ * filter, and do not open a token detail page; the search box filters
+ * the loaded Alpha pages client-side.
  *
  * Infinite scroll: page 1 loads on tab / chain / search change, then
- * the next GeckoTerminal page is fetched as the user scrolls near the
+ * the next per-network page is fetched as the user scrolls near the
  * bottom, appending and deduping, until a page comes back empty or
- * short. Search is not paged (DexScreener search path).
+ * short, or page 10 is reached (GeckoTerminal free-tier cap — at most
+ * ~200 pools per network). A chain with genuinely no pools shows an
+ * honest empty state, never a loading failure; a feed failure keeps
+ * its error text. While loading, skeleton rows stand in for the list
+ * (shared Skeleton from components/ui) — no loading text is shown.
  *
  * One row per token (deduplicated on the highest-liquidity pair, DEX
  * noted in the row). Every row shows the real logo (letter circle only
@@ -49,7 +55,7 @@ import {
   type DiscoverToken,
 } from '../../lib/discover';
 import { tokenDetailRoute } from '../../lib/tokenResolve';
-import { EmptyState } from '../../components/ui';
+import { EmptyState, Skeleton } from '../../components/ui';
 import { TokenLogo } from '../../components/TokenLogo';
 import { AppHeader } from '../../components/AppShell';
 
@@ -57,7 +63,7 @@ const TABS: { key: DiscoverTab; label: string; icon: React.ReactNode }[] = [
   { key: 'trending', label: 'Trending', icon: <Flame size={14} color={COLORS.amber} /> },
   { key: 'gainers', label: 'Gainers', icon: <TrendingUp size={14} color={COLORS.textMuted} /> },
   { key: 'new', label: 'New Pairs', icon: <Sparkles size={14} color={COLORS.textMuted} /> },
-  { key: 'alpha', label: 'Binance Alpha', icon: <Star size={14} color={COLORS.textMuted} /> },
+  { key: 'alpha', label: 'BSC Alpha', icon: <Star size={14} color={COLORS.textMuted} /> },
 ];
 
 const TAB_DEFAULT_SORT: Record<DiscoverTab, DiscoverSort> = {
@@ -96,6 +102,33 @@ function parseMin(s: string): number | null {
   return s.trim() !== '' && Number.isFinite(n) && n > 0 ? n : null;
 }
 
+/** Loading placeholder rows in the shape of a token row (rank,
+ *  logo, symbol/price, name/change, stats) using the shared
+ *  Skeleton — no loading text. */
+function DiscoverSkeletonRows({ count = 8 }: { count?: number }) {
+  return (
+    <View accessibilityLabel="Loading tokens">
+      {Array.from({ length: count }, (_, i) => (
+        <View key={i} style={styles.skelRow}>
+          <Skeleton height={12} width={16} />
+          <Skeleton height={38} width={38} />
+          <View style={styles.skelMid}>
+            <View style={styles.skelLine}>
+              <Skeleton height={13} width="45%" />
+              <Skeleton height={13} width={64} />
+            </View>
+            <View style={styles.skelLine}>
+              <Skeleton height={11} width="70%" />
+              <Skeleton height={11} width={44} />
+            </View>
+            <Skeleton height={11} width="85%" />
+          </View>
+        </View>
+      ))}
+    </View>
+  );
+}
+
 export default function Discover() {
   const [tab, setTab] = useState<DiscoverTab>('trending');
   const [chainFilter, setChainFilter] = useState<string>('all');
@@ -105,7 +138,6 @@ export default function Discover() {
   const [tokens, setTokens] = useState<DiscoverToken[]>([]);
   const [loading, setLoading] = useState(false);
   const [loadingMore, setLoadingMore] = useState(false);
-  const [hasMore, setHasMore] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [source, setSource] = useState<string | null>(null);
   const [updatedAt, setUpdatedAt] = useState<number | null>(null);
@@ -144,7 +176,6 @@ export default function Discover() {
         setUpdatedAt(res.updatedAt);
         pageRef.current = 1;
         hasMoreRef.current = false; // search results are a single page
-        setHasMore(false);
       } else {
         const res = await fetchDiscoverPage(tabV, chainV === 'all' ? 'all' : chainV, 1);
         if (id !== reqId.current) return; // a newer load superseded this one
@@ -154,7 +185,6 @@ export default function Discover() {
         setUpdatedAt(res.updatedAt);
         pageRef.current = 1;
         hasMoreRef.current = res.hasMore;
-        setHasMore(res.hasMore);
       }
     } catch (e) {
       if (id !== reqId.current) return;
@@ -162,7 +192,6 @@ export default function Discover() {
       setSource(null);
       setError(e instanceof Error ? e.message : String(e));
       hasMoreRef.current = false;
-      setHasMore(false);
     } finally {
       if (id === reqId.current) setLoading(false);
     }
@@ -182,7 +211,6 @@ export default function Discover() {
       setTokens((prev) => dedupeDiscoverTokens([...prev, ...res.tokens]));
       pageRef.current = nextPage;
       hasMoreRef.current = res.hasMore;
-      setHasMore(res.hasMore);
       setSource(res.source);
       setUpdatedAt(res.updatedAt);
     } catch {
@@ -195,7 +223,9 @@ export default function Discover() {
 
   // onScroll reads the latest loadMore without re-binding the handler.
   const loadMoreRef = useRef(loadMore);
-  loadMoreRef.current = loadMore;
+  useEffect(() => {
+    loadMoreRef.current = loadMore;
+  });
 
   const handleScroll = useCallback((e: NativeSyntheticEvent<NativeScrollEvent>) => {
     const { layoutMeasurement, contentOffset, contentSize } = e.nativeEvent;
@@ -261,14 +291,14 @@ export default function Discover() {
   const showsFdvMc = useMemo(() => visible.some((t) => t.marketCapSource === 'fdv'), [visible]);
 
   const tabTitle =
-    tab === 'trending' ? 'Trending' : tab === 'gainers' ? 'Gainers' : tab === 'alpha' ? 'Binance Alpha' : 'New Pairs';
+    tab === 'trending' ? 'Trending' : tab === 'gainers' ? 'Gainers' : tab === 'alpha' ? 'BSC Alpha' : 'New Pairs';
   const tabSub =
     tab === 'trending'
       ? 'Most active DEX pools right now'
       : tab === 'gainers'
         ? 'Biggest 24h movers'
         : tab === 'alpha'
-          ? 'Tokens listed on Binance Alpha'
+          ? 'Tokens listed on BSC Alpha'
           : 'Newest pairs listed on DEXes';
 
   const changeTab = (next: DiscoverTab) => {
@@ -285,6 +315,35 @@ export default function Discover() {
     setNewOnly(false);
     setDexFilter(null);
   };
+
+  /** Honest empty state. A feed failure (error set) keeps the generic
+   *  text — the red error line above already says what failed. A feed
+   *  that succeeded but returned nothing is a genuinely quiet chain,
+   *  and says so: never presented as a loading failure. */
+  const chainLabel =
+    chainFilter === 'all'
+      ? null
+      : DISCOVER_CHAINS.find((c) => c.id === chainFilter)?.label ?? chainFilter;
+  const emptyTitle = debouncedQuery
+    ? 'No tokens match that search'
+    : activeFilterCount > 0 || error
+      ? 'No tokens found'
+      : tab === 'new'
+        ? 'No new pairs here yet'
+        : 'No trending tokens here';
+  const emptyBody = debouncedQuery
+    ? 'Try a different symbol, name or contract address.'
+    : activeFilterCount > 0
+      ? 'Try loosening the filters — nothing in this list passes them.'
+      : error
+        ? 'Tokens will appear here once the live feed returns data.'
+        : tab === 'new'
+          ? chainLabel
+            ? `No new pairs on ${chainLabel} yet — nothing has launched here recently.`
+            : 'No new pairs yet — nothing has launched here recently.'
+          : chainLabel
+            ? `No trending tokens on ${chainLabel} right now — trading here is still quiet. Try All chains, or check New Pairs.`
+            : 'No trending tokens right now — trading is still quiet. Try New Pairs.';
 
   return (
     <KeyboardAvoidingView style={styles.root} behavior={Platform.OS === 'ios' ? 'padding' : 'height'} keyboardVerticalOffset={insets.top}>
@@ -509,18 +568,9 @@ export default function Discover() {
         ) : null}
 
         {loading ? (
-          <Text style={styles.loading}>Loading tokens…</Text>
+          <DiscoverSkeletonRows />
         ) : visible.length === 0 ? (
-          <EmptyState
-            title={debouncedQuery ? 'No tokens match that search' : 'No tokens found'}
-            body={
-              debouncedQuery
-                ? 'Try a different symbol, name or contract address.'
-                : activeFilterCount > 0
-                  ? 'Try loosening the filters — nothing in this list passes them.'
-                  : 'Tokens will appear here once the live feed returns data.'
-            }
-          />
+          <EmptyState title={emptyTitle} body={emptyBody} />
         ) : (
           visible.map((t, i) => (
             <Pressable
@@ -569,7 +619,7 @@ export default function Discover() {
             </Pressable>
           ))
         )}
-        {loadingMore ? <Text style={styles.loading}>Loading more…</Text> : null}
+        {loadingMore ? <DiscoverSkeletonRows count={4} /> : null}
         {showsFdvMc ? (
           <Text style={styles.footnote}>* MC shows FDV where the feed does not report a market cap yet.</Text>
         ) : null}
@@ -640,7 +690,6 @@ const styles = StyleSheet.create({
   headSide: { alignItems: 'center', width: 32 },
   inner: { padding: 12 },
   line: { alignItems: 'center', flexDirection: 'row', justifyContent: 'space-between', gap: 8 },
-  loading: { color: COLORS.textMuted, fontSize: 12, marginTop: 20, textAlign: 'center' },
   mid: { flex: 1, gap: 2, minWidth: 0 },
   name: { color: COLORS.text, flex: 1, fontSize: 14, fontWeight: '700' },
   rank: { color: COLORS.textMuted, fontSize: 12, width: 16 },
@@ -654,6 +703,16 @@ const styles = StyleSheet.create({
     paddingVertical: 10,
   },
   search: { flex: 1, fontSize: 14, paddingVertical: 8 },
+  skelLine: { alignItems: 'center', flexDirection: 'row', justifyContent: 'space-between', gap: 8 },
+  skelMid: { flex: 1, gap: 6, minWidth: 0 },
+  skelRow: {
+    alignItems: 'center',
+    borderBottomColor: COLORS.border,
+    borderBottomWidth: 1,
+    flexDirection: 'row',
+    gap: 8,
+    paddingVertical: 10,
+  },
   searchWrap: {
     alignItems: 'center',
     backgroundColor: COLORS.bgMuted,

@@ -16,12 +16,13 @@ import * as Clipboard from 'expo-clipboard';
 import { ArrowDown, ArrowUp, Check, ChevronLeft, Copy, ExternalLink } from 'lucide-react-native';
 import { COLORS } from '../../theme';
 import { BottomNav } from '../../components/AppShell';
+import { Skeleton } from '../../components/ui';
 import { useApp } from '../../store/AppContext';
 import { EVM_NATIVE_RPC_DECIMALS, getChain } from '../../lib/chains';
 import { fmtDateTime, fmtNum, fmtUsd, shortAddress } from '../../lib/format';
 import type { TxRecord } from '../../lib/history';
 
-const BLOCKSCOUT_CHAIN_IDS = new Set(['arc', 'arc-mainnet']);
+const BLOCKSCOUT_CHAIN_IDS = new Set(['arc-mainnet']);
 
 function kindLabel(kind: TxRecord['kind']): string {
   switch (kind) {
@@ -67,9 +68,9 @@ export default function TransactionDetail() {
   );
   const chain = useMemo(() => {
     try {
-      return getChain(tx?.chainId ?? chainId ?? 'arc');
+      return getChain(tx?.chainId ?? chainId ?? 'arc-mainnet');
     } catch {
-      return getChain('arc');
+      return getChain('arc-mainnet');
     }
   }, [tx?.chainId, chainId]);
 
@@ -242,9 +243,11 @@ export default function TransactionDetail() {
               <Text style={styles.value}>{tx.blockNumber !== null ? String(tx.blockNumber) : '—'}</Text>
             </Row>
             <Row label="Network fee">
-              <Text style={styles.value}>
-                {feeLoading ? 'Loading…' : feeNative !== null ? `${feeNative} ${chain.nativeSymbol}` : '—'}
-              </Text>
+              {feeLoading ? (
+                <Skeleton height={12} width={80} />
+              ) : (
+                <Text style={styles.value}>{feeNative !== null ? `${feeNative} ${chain.nativeSymbol}` : '—'}</Text>
+              )}
             </Row>
             <Row label="Transaction hash">
               <Copyable label="hash" value={tx.hash} display={shortAddress(tx.hash, 8)} />

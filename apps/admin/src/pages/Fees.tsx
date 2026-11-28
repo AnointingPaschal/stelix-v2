@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react'
-import { CheckCircle2, Percent, Save, ShieldCheck, SlidersHorizontal } from 'lucide-react'
+import { CheckCircle2, Percent, Save, ShieldCheck, SlidersHorizontal, Wallet } from 'lucide-react'
 import { api } from '../lib/api'
 import { DEFAULT_FEES, validateFeePayload, type FeeConfig } from '../lib/fees'
 import { LiveNote, PageHeader, SectionTitle } from '../components/ui'
@@ -23,6 +23,7 @@ export default function Fees() {
     breakCoolingOffHours: String(DEFAULT_FEES.breakCoolingOffHours),
     guardianBreakDelayHours: String(DEFAULT_FEES.guardianBreakDelayHours),
     maxPriceImpactPct: String(DEFAULT_FEES.maxPriceImpactPct),
+    feeRecipient: DEFAULT_FEES.feeRecipient ?? '',
   })
   const [destination, setDestination] = useState<FeeConfig['penaltyDestination']>(DEFAULT_FEES.penaltyDestination)
   const [version, setVersion] = useState<number | null>(null)
@@ -51,6 +52,7 @@ export default function Fees() {
           breakCoolingOffHours: String(fees.breakCoolingOffHours),
           guardianBreakDelayHours: String(fees.guardianBreakDelayHours),
           maxPriceImpactPct: String(fees.maxPriceImpactPct),
+          feeRecipient: fees.feeRecipient ?? '',
         })
         setDestination(fees.penaltyDestination)
         setVersion(d.version ?? null)
@@ -77,6 +79,7 @@ export default function Fees() {
       breakCoolingOffHours: Number(draft.breakCoolingOffHours),
       guardianBreakDelayHours: Number(draft.guardianBreakDelayHours),
       maxPriceImpactPct: Number(draft.maxPriceImpactPct),
+      feeRecipient: draft.feeRecipient.trim() || null,
     }
     const { config, errors } = validateFeePayload(payload)
     if (errors.length > 0) { setError(errors.join(' ')); return }
@@ -151,6 +154,21 @@ export default function Fees() {
           <button className="btn" style={{ marginTop: 14 }} onClick={save} disabled={busy}>
             <Save />{busy ? 'Saving…' : `Save versioned change${version !== null ? ` (becomes v${version + 1})` : ' (v1)'}`}
           </button>
+        </div>
+        <div className="card">
+          <SectionTitle icon={<Wallet />}>Fee recipient (global default)</SectionTitle>
+          <label>Where auto-sell fees go by default — a 0x address, or blank for not set</label>
+          <input
+            value={draft.feeRecipient}
+            onChange={(e) => set('feeRecipient', e.target.value)}
+            placeholder="0x… — blank = not set"
+            autoComplete="off"
+          />
+          <p className="field-hint">
+            This is the default for FUTURE vaults: a Deploy Preset saved with a blank fee recipient takes this
+            address, and it is served to the app in /api/sync as fees.feeRecipient. Vaults already deployed keep
+            the recipient set in their constructor — an on-chain recipient cannot be changed from here.
+          </p>
         </div>
       </div>
       <div className="card">

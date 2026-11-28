@@ -16,6 +16,7 @@ import {
   filterChainsByMode,
   findRegistryToken,
   isVersionBelow,
+  loadLastGoodSync,
   maintenanceBlocksApp,
   maintenanceBlocksSigning,
   parseAdminSync,
@@ -181,6 +182,23 @@ describe('fetchAdminSync', () => {
     expect(data?.version).toBe(7);
     expect(data?.fees?.autoSellFeePct).toBe(2);
   });
+
+  it('persists the full last-good sync payload; loadLastGoodSync returns it for the API-down path', async () => {
+    global.fetch = jest.fn(async () => new Response(JSON.stringify(syncBody()), { status: 200 }));
+    const data: AdminSyncData | null = await fetchAdminSync();
+    expect(data?.version).toBe(7);
+    const lastGood = await loadLastGoodSync();
+    expect(lastGood?.version).toBe(7);
+    expect(lastGood?.chains).toHaveLength(2);
+    expect(lastGood?.fees?.autoSellFeePct).toBe(2);
+    expect(lastGood?.tokens).toHaveLength(1);
+    expect(lastGood?.announcements).toHaveLength(2);
+    // The persisted payload is the parsed (camelCase) shape — the
+    // re-parse must keep tokens AND the signed config, not drop them.
+    expect(lastGood?.config?.version).toBe('v2');
+    expect(lastGood?.config?.flags.trailingStop).toBe(false);
+    expect(lastGood?.networkMode).toBeNull();
+  });
 });
 
 describe('effective fees', () => {
@@ -264,12 +282,46 @@ describe('maintenance mode', () => {
 
 describe('network mode (admin testnet/mainnet switch)', () => {
   // Merged chains as the wallet sees them with the live admin rows:
-  // arc (testnet, paired) + arc-mainnet (mainnet, active, paired).
-  // Arc Testnet and Arc Mainnet are SEPARATE picker entries (2026-11-27:
-  // individual switching, as before) — each with its own id, chain id
-  // and RPC. The admin network_mode only filters the list. The tests
-  // below pin that.
-  const merged = mergeAdminChains(CHAINS, [chainRow(), arcMainnetRow()]);
+  // the admin serves BOTH Arc variants (arc testnet + arc-mainnet)
+  // plus the other testnets — the built-in registry is mainnet-only,
+  // so every testnet here arrives as a remote row, exactly as in
+  // production. Arc Testnet and Arc Mainnet are SEPARATE picker
+  // entries (2026-11-27: individual switching, as before) — each
+  // with its own id, chain id and RPC. The admin network_mode only
+  // filters the list. The tests below pin that.
+  function testnetRow(over: Partial<AdminChainRow>): AdminChainRow {
+    return chainRow({
+      id: 'bnb-testnet',
+      name: 'BNB Testnet',
+      chain_id: 97,
+      rpc_urls: 'https://bsc-testnet-dataseed.bnbchain.org',
+      explorer_url: 'https://testnet.bscscan.com',
+      native_token: 'tBNB',
+      native_decimals: 18,
+      stablecoin: 'BUSD',
+      stablecoin_address: '0x78867BbEeF44f2326bF8DDd1941a4439382EF2A7',
+      stablecoin_decimals: 18,
+      gas_token: 'tBNB',
+      dex_router: null,
+      vault_address: null,
+      status: 'testnet',
+      is_default: 0,
+      is_testnet: 1,
+      active: 1,
+      paired_chain_id: 'bnb',
+      ...over,
+    });
+  }
+  const merged = mergeAdminChains(CHAINS, [
+    chainRow(),
+    arcMainnetRow(),
+    testnetRow({}),
+    testnetRow({ id: 'base-sepolia', name: 'Base Sepolia', chain_id: 84532, rpc_urls: 'https://sepolia.base.org', explorer_url: 'https://sepolia.basescan.org', native_token: 'ETH', stablecoin: 'USDC', stablecoin_address: '0x036CbD53842c5426634e7929541eC2318f3dCF7e', stablecoin_decimals: 6, gas_token: 'ETH', paired_chain_id: 'base' }),
+    testnetRow({ id: 'ethereum-sepolia', name: 'Ethereum Sepolia', chain_id: 11155111, rpc_urls: 'https://rpc.sepolia.org', explorer_url: 'https://sepolia.etherscan.io', native_token: 'ETH', stablecoin: 'USDC', stablecoin_address: '0x1c7D4B196Cb0C7B01d743Fbc6116a902379C7238', stablecoin_decimals: 6, gas_token: 'ETH', paired_chain_id: 'ethereum' }),
+    testnetRow({ id: 'polygon-amoy', name: 'Polygon Amoy', chain_id: 80002, rpc_urls: 'https://rpc-amoy.polygon.technology', explorer_url: 'https://amoy.polygonscan.com', native_token: 'POL', stablecoin: 'USDC', stablecoin_address: '0x41E94Eb019C0762f9Bfcf9Fb1E58725BfB0e7582', stablecoin_decimals: 6, gas_token: 'POL', paired_chain_id: 'polygon' }),
+    testnetRow({ id: 'plasma-testnet', name: 'Plasma Testnet', chain_id: 9746, rpc_urls: 'https://testnet-rpc.plasma.to', explorer_url: 'https://testnet.plasmascan.to', native_token: 'XPL', stablecoin: 'USDT', stablecoin_address: '', stablecoin_decimals: 6, gas_token: 'XPL', paired_chain_id: 'plasma', coming_soon: 1 }),
+    testnetRow({ id: 'pi-testnet', name: 'Pi Testnet', chain_id: null, rpc_urls: 'https://api.testnet.minepi.com', explorer_url: 'https://blockexplorer.minepi.com', native_token: 'PI', native_decimals: 7, stablecoin: 'USDT', stablecoin_address: '', stablecoin_decimals: 7, gas_token: 'PI', paired_chain_id: 'pi', coming_soon: 1 }),
+  ]);
   const arc = merged.find((c) => c.id === 'arc')!;
   const arcMainnet = merged.find((c) => c.id === 'arc-mainnet')!;
 

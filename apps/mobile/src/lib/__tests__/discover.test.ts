@@ -15,6 +15,7 @@ import {
   mapCmcAlphaListing,
   mapDexScreenerPair,
   mapGeckoPool,
+  resolveUpstreamChainId,
   searchTokens,
   sortDiscoverTokens,
   type DiscoverToken,
@@ -67,6 +68,19 @@ function geckoPool(over: Record<string, unknown> = {}): Record<string, unknown> 
     ...over,
   };
 }
+
+describe('resolveUpstreamChainId', () => {
+  it('maps upstream slugs to Stelix ids — arc (Gecko/DexScreener) is arc-mainnet', () => {
+    expect(resolveUpstreamChainId('arc')).toBe('arc-mainnet');
+    expect(resolveUpstreamChainId('arc-mainnet')).toBe('arc-mainnet');
+    expect(resolveUpstreamChainId('bsc')).toBe('bnb');
+    expect(resolveUpstreamChainId('bnb')).toBe('bnb');
+    expect(resolveUpstreamChainId('eth')).toBe('ethereum');
+    expect(resolveUpstreamChainId('polygon_pos')).toBe('polygon');
+    expect(resolveUpstreamChainId('solana')).toBe('solana');
+    expect(resolveUpstreamChainId('plasma')).toBe('plasma');
+  });
+});
 
 describe('mapGeckoPool', () => {
   it('populates chainId, 24h change and pair age (no blank chain / "—" 24h)', () => {
@@ -168,7 +182,7 @@ describe('applyDiscoverFilters', () => {
       token({ symbol: 'AAA', chainId: 'bnb' }),
       token({ symbol: 'BBB', chainId: 'base' }),
       token({ symbol: 'CCC', chainId: 'solana', address: 'So11111111111111111111111111111111111111112' }),
-      token({ symbol: 'DDD', chainId: 'arc' }),
+      token({ symbol: 'DDD', chainId: 'arc-mainnet' }),
       token({ symbol: 'EEE', chainId: 'ethereum' }),
       token({ symbol: 'FFF', chainId: 'polygon' }),
     ];
@@ -279,13 +293,97 @@ describe('fetchDiscoverPage (mocked network, infinite scroll)', () => {
     expect(res.hasMore).toBe(false);
   });
 
-  it('trending: an empty page is unavailable with hasMore false', async () => {
+  it('trending: an empty page is a genuinely quiet chain, not a failure', async () => {
     const fetchImpl = mockFetch([['trending_pools?page=3', { data: [] }]]);
     const res = await fetchDiscoverPage('trending', 'all', 3, fetchImpl as never);
     expect(res.tokens).toHaveLength(0);
     expect(res.hasMore).toBe(false);
+    // The feed answered — the chain is quiet, not broken.
+    expect(res.source).toBe('geckoterminal');
+    expect(res.error).toBeNull();
+  });
+
+  it('trending: every network failing is unavailable (feed failure, not empty)', async () => {
+    const fetchImpl = mockFetch([]);
+    const res = await fetchDiscoverPage('trending', 'all', 1, fetchImpl as never);
+    expect(res.tokens).toHaveLength(0);
+    expect(res.hasMore).toBe(false);
     expect(res.source).toBe('unavailable');
     expect(res.error).toMatch(/unavailable|failed/i);
+  });
+
+  it('trending: a single chain only queries its own network (Arc fix)', async () => {
+    const seen: string[] = [];
+    const arcPool = geckoPool({
+      id: 'arc_0xarcpool',
+      attributes: {
+        ...(geckoPool().attributes as Record<string, unknown>),
+        name: 'ARCTOK / USDC',
+        address: '0xarcpool',
+      },
+      relationships: {
+        base_token: { data: { id: 'arc_0xarctok' } },
+        network: { data: { id: 'arc' } },
+        dex: { data: { id: 'uniswap-v3-arc' } },
+      },
+    });
+    const fetchImpl = async (url: string) => {
+      seen.push(url);
+      if (url.includes('networks/arc/trending_pools')) {
+        return { ok: true, status: 200, json: async () => ({ data: [arcPool] }) } as Response;
+      }
+      return { ok: false, status: 404, json: async () => ({}) } as Response;
+    };
+    const res = await fetchDiscoverPage('trending', 'arc-mainnet', 1, fetchImpl as never);
+    expect(res.source).toBe('geckoterminal');
+    expect(res.tokens).toHaveLength(1);
+    expect(res.tokens[0].symbol).toBe('ARCTOK');
+    expect(res.tokens[0].chainId).toBe('arc-mainnet');
+    const geckoUrls = seen.filter((u) => u.includes('geckoterminal'));
+    expect(geckoUrls).toHaveLength(1);
+    expect(geckoUrls[0]).toContain('networks/arc/trending_pools?page=1');
+  });
+
+  it('trending: a full page 10 stops paging (free-tier cap, ~200 pools/network)', async () => {
+    const pool = geckoPool();
+    const full = Array.from({ length: 20 }, (_, i) => geckoPool({
+      id: `bsc_0xpool${i}`,
+      attributes: { ...(pool.attributes as Record<string, unknown>), name: `TOK${i} / WBNB`, address: `0xpool${i}` },
+      relationships: {
+        base_token: { data: { id: `bsc_0xtok${i}` } },
+        network: { data: { id: 'bsc' } },
+        dex: { data: { id: 'pancakeswap_v2' } },
+      },
+    }));
+    const fetchImpl = mockFetch([
+      ['trending_pools?page=10', { data: full }],
+      ['/latest/dex/tokens/', { pairs: [] }],
+    ]);
+    const res = await fetchDiscoverPage('trending', 'bnb', 10, fetchImpl as never);
+    expect(res.tokens).toHaveLength(20);
+    expect(res.hasMore).toBe(false);
+  });
+
+  it('trending: page 11 is never requested (free tier returns 401 there)', async () => {
+    const seen: string[] = [];
+    const fetchImpl = async (url: string) => {
+      seen.push(url);
+      return { ok: false, status: 404, json: async () => ({}) } as Response;
+    };
+    const res = await fetchDiscoverPage('trending', 'bnb', 11, fetchImpl as never);
+    expect(res.tokens).toHaveLength(0);
+    expect(res.hasMore).toBe(false);
+    expect(res.error).toBeNull();
+    expect(seen.filter((u) => u.includes('geckoterminal'))).toHaveLength(0);
+  });
+
+  it('new: an empty page on every network is a genuinely quiet chain, not a failure', async () => {
+    const fetchImpl = mockFetch([['new_pools?page=1', { data: [] }]]);
+    const res = await fetchDiscoverPage('new', 'arc-mainnet', 1, fetchImpl as never);
+    expect(res.tokens).toHaveLength(0);
+    expect(res.hasMore).toBe(false);
+    expect(res.source).toBe('geckoterminal');
+    expect(res.error).toBeNull();
   });
 
   it('new: pages new_pools per network and dedupes across pages', async () => {
@@ -401,6 +499,22 @@ describe('fetchDiscoverTab (mocked network)', () => {
     expect(res.tokens[0].chainId).toBe('solana');
   });
 
+  it('trending: a genuinely quiet chain returns empty with no error and no boosts fallback', async () => {
+    const seen: string[] = [];
+    const fetchImpl = async (url: string) => {
+      seen.push(url);
+      if (url.includes('trending_pools')) {
+        return { ok: true, status: 200, json: async () => ({ data: [] }) } as Response;
+      }
+      return { ok: false, status: 404, json: async () => ({}) } as Response;
+    };
+    const res = await fetchDiscoverTab('trending', 'arc-mainnet', 30, fetchImpl as never);
+    expect(res.tokens).toHaveLength(0);
+    expect(res.source).toBe('geckoterminal');
+    expect(res.error).toBeNull();
+    expect(seen.some((u) => u.includes('token-boosts'))).toBe(false);
+  });
+
   it('returns an honest unavailable result when every feed fails', async () => {
     const fetchImpl = mockFetch([]);
     const res = await fetchDiscoverTab('trending', 'all', 30, fetchImpl as never);
@@ -446,7 +560,7 @@ describe('searchTokens (mocked network)', () => {
   });
 });
 
-describe('Binance Alpha (CoinMarketCap listing, mocked network)', () => {
+describe('BSC Alpha (CoinMarketCap listing, mocked network)', () => {
   function cmcListing(id: number, symbol: string, marketCap: number): Record<string, unknown> {
     return {
       id,
@@ -517,6 +631,7 @@ describe('Binance Alpha (CoinMarketCap listing, mocked network)', () => {
     expect(res.tokens).toHaveLength(0);
     expect(res.hasMore).toBe(false);
     expect(res.source).toBe('unavailable');
+    expect(res.error).toMatch(/BSC Alpha/);
     expect(res.error).toMatch(/unavailable|failed/i);
   });
 

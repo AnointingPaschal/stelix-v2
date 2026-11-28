@@ -2,6 +2,8 @@
 // validation) and the Fees page (client-side validation), so the rules cannot
 // drift between the form and the API. Fees are snapshotted per lock at
 // creation — changing them never affects existing locks.
+import { isAddress } from './deployParams'
+
 export interface FeeConfig {
   autoSellFeePct: number // % charged on a successful auto-sell only; 0–10
   minLockUsd: number
@@ -14,6 +16,12 @@ export interface FeeConfig {
   breakCoolingOffHours: number // hours after locking before a penalty break is allowed; 0–72
   guardianBreakDelayHours: number // hours a guardian break waits for approval; 0–168
   maxPriceImpactPct: number // swaps above this price impact are split or blocked; 0–50
+  /** Global default fee recipient for FUTURE vaults: new Deploy Presets
+   *  saved with a blank fee recipient take this address. null = not set
+   *  (presets then fall back to the deployer address, as before).
+   *  Existing vaults keep the recipient set in their constructor — an
+   *  on-chain recipient cannot be changed by the admin alone. */
+  feeRecipient: string | null
 }
 
 export const DEFAULT_FEES: FeeConfig = {
@@ -28,6 +36,7 @@ export const DEFAULT_FEES: FeeConfig = {
   breakCoolingOffHours: 24,
   guardianBreakDelayHours: 48,
   maxPriceImpactPct: 5,
+  feeRecipient: null,
 }
 
 export function validateFeePayload(input: unknown): { config: FeeConfig | null; errors: string[] } {
@@ -63,6 +72,17 @@ export function validateFeePayload(input: unknown): { config: FeeConfig | null; 
   if (p.penaltyDestination !== 'burn' && p.penaltyDestination !== 'treasury' && p.penaltyDestination !== 'relock') {
     errors.push('penaltyDestination must be burn, treasury or relock')
   }
+  // Global fee recipient: blank / missing / null = not set; otherwise it
+  // must be a well-formed 0x address. Older published configs omit it.
+  const feeRecipientRaw = p.feeRecipient
+  let feeRecipient: string | null = null
+  if (feeRecipientRaw === null || feeRecipientRaw === undefined || feeRecipientRaw === '') {
+    feeRecipient = null
+  } else if (typeof feeRecipientRaw === 'string' && isAddress(feeRecipientRaw.trim())) {
+    feeRecipient = feeRecipientRaw.trim()
+  } else {
+    errors.push('feeRecipient must be a valid 0x address, or blank')
+  }
   if (errors.length > 0) return { config: null, errors }
   return {
     config: {
@@ -79,6 +99,7 @@ export function validateFeePayload(input: unknown): { config: FeeConfig | null; 
       breakCoolingOffHours: coolingOff ?? DEFAULT_FEES.breakCoolingOffHours,
       guardianBreakDelayHours: guardianDelay ?? DEFAULT_FEES.guardianBreakDelayHours,
       maxPriceImpactPct: maxImpact ?? DEFAULT_FEES.maxPriceImpactPct,
+      feeRecipient,
     },
     errors,
   }

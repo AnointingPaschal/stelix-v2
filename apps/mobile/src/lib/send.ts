@@ -13,8 +13,6 @@
  *   the estimate and the user signs once. Nothing is recorded in History
  *   until the transaction is mined — the returned receipt hash is the
  *   only proof a send happened.
- * - Testnet only for live testing. Never send mainnet funds from a test
- *   build; the UI labels the chain (testnet) at review time.
  */
 import { ethers } from 'ethers';
 import { EVM_NATIVE_RPC_DECIMALS, getChain } from './chains';

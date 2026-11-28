@@ -1,60 +1,35 @@
 /**
  * Multichain registry — live data, no placeholder values.
  *
- * RESTORED (2026-11-27): all six chains are active again at the user's
- * instruction ("work with all chains from beginning"). The scope-down
- * of 2026-11-27 (Arc + BNB only) is reversed. ACTIVE_CHAINS is the
- * only list the UI and fetchers may use; CHAINS is the full registry.
- * The `active` flag stays so a chain can be disabled again later
- * (e.g. from the admin Chain Manager — see apps/mobile/SCOPE.md).
+ * MAINNET-FIRST (2026-11-28): the built-in registry lists mainnet
+ * chains ONLY. There are no hardcoded testnet entries in this file:
+ * a testnet appears in the app only when the admin serves it through
+ * GET /api/sync (see lib/adminChains.ts / lib/adminSync.ts) and the
+ * admin's network mode allows it. Chains therefore come from the
+ * admin sync; the built-ins below are the offline fallback for
+ * mainnet chains.
+ *
+ * Arc is the DEFAULT chain: Arc Mainnet (chain id 5042, live
+ * 2026-09-16), verified against Arc docs (docs.arc.io, 2026-11-27):
+ * RPC https://rpc.mainnet.arc.io, explorer https://explorer.arc.io.
+ * Native gas asset: USDC, 6 decimals as a *token* — but the EVM
+ * native unit (eth_getBalance, tx value, gas) is always wei (18).
+ * Do not format a native balance with 6; see
+ * EVM_NATIVE_RPC_DECIMALS below.
  *
  * ADDED (2026-11-28): Plasma (EVM, Uniswap V3) and Pi Network
  * (Stellar-based, NOT EVM). Plasma mainnet is live with verified
- * addresses (see the `plasma` entry); Plasma testnet and both Pi
- * chains are `comingSoon` — shown in the picker, disabled, never
- * selectable — until their routers / stablecoins are verified. A
- * coming-soon chain must never become the active chain: see
- * isChainUsable / USABLE_CHAINS below and the setChain guard in
+ * addresses (see the `plasma` entry); Pi is `comingSoon` — shown in
+ * the picker, disabled, never selectable — until its execution path
+ * exists. A coming-soon chain must never become the active chain:
+ * see isChainUsable / USABLE_CHAINS below and the setChain guard in
  * store/AppContext.tsx. Pi is modelled like Solana (kind 'pi'): no
  * EVM RPC, balance, swap or lock call may ever target it — every
  * EVM guard in the codebase keys off `kind !== 'evm'`.
  *
- * Arc is the DEFAULT chain and is TESTNET-FIRST (chain id 5042002).
- * Verified against Arc docs (docs.arc.io, 2026-11-27):
- *   - Arc Testnet chain id: 5042002 (0x4cef52)
- *   - Arc Testnet RPC (primary): https://rpc.testnet.arc.io
- *     (the old hostname https://rpc.testnet.arc.network no longer
- *     resolves — UnknownHostException on device — and is absent from
- *     current Arc docs; do not restore it)
- *   - Arc Testnet fallbacks (docs.arc.io):
- *     https://rpc.blockdaemon.testnet.arc.io,
- *     https://rpc.drpc.testnet.arc.io,
- *     https://rpc.quicknode.testnet.arc.io
- *   - Arc Testnet explorer: https://explorer.testnet.arc.io
- *   - Native gas asset: USDC, 6 decimals as a *token* — but the EVM
- *     native unit (eth_getBalance, tx value, gas) is always wei (18).
- *     Do not format a native balance with 6; see
- *     EVM_NATIVE_RPC_DECIMALS below.
- * Arc MAINNET (chain id 5042, live 2026-09-16) is registered below as
- * `arc-mainnet` — a separate picker entry from Arc Testnet (`arc`),
- * each with its own id, chain id and RPC (2026-11-27: the user asked
- * for individual switching). The admin network_mode only filters the
- * list (testnet-only / mainnet-only); it never merges the two.
- * against docs.arc.io ("Connect to Arc" and "RPC endpoints", checked
- * 2026-11-27: mainnet 5042 / testnet 5042002, RPC
- * https://rpc.mainnet.arc.io, explorer https://explorer.arc.io) and
- * matches the admin registry (apps/admin/src/lib/arcNetworks.ts) —
- * 5042001 is not an Arc chain id. The wallet stays
- * testnet-first for Arc and the picker shows only active chains, so
- * mainnet is not selectable until that decision. Its RPC, explorer,
- * USDC and Uniswap router addresses are recorded here so Contract
- * Studio / admin can read them from the registry without re-verifying.
- * The old values `https://rpc.arc.network` / `https://explorer.arc.network`
- * were unverified and did not resolve; they have been removed.
- *
  * The exit stablecoin is registry-driven per chain: USDT where listed,
  * otherwise the named stablecoin (Arc: USDC) — never vague.
- * StelixVault addresses are null until deployed per chain (testnet-first);
+ * StelixVault addresses are null until deployed per chain;
  * see VAULT_ADDRESSES / getVaultAddress().
  */
 
@@ -134,9 +109,10 @@ export interface ChainConfig {
    *  Chain Manager after a wallet-signed deploy. null = not deployed
    *  yet — launches cannot go live on the chain without it. */
   launchpadAddress?: string | null;
-  /** Slug of the paired chain (testnet ↔ mainnet pair, e.g. arc ↔
-   *  arc-mainnet), from the admin registry. Used when the admin flips the
-   *  global network mode: the wallet moves to the pair when it exists. */
+  /** Slug of the paired chain (e.g. a testnet served by the admin ↔
+   *  its mainnet), from the admin registry. Used when the admin flips
+   *  the global network mode: the wallet moves to the pair when it
+   *  exists. A pair is data from the admin sync, never hardcoded. */
   pairedChainId?: string | null;
   vaultContract: string | null; // null = not deployed yet
   status: 'live' | 'testnet' | 'paused' | 'coming-soon';
@@ -178,45 +154,6 @@ function rpcFromEnv(chainId: string, fallback: string, envId?: string): string {
 
 export const CHAINS: ChainConfig[] = [
   {
-    id: 'arc',
-    name: 'Arc',
-    chainId: 5042002,
-    kind: 'evm',
-    nativeSymbol: 'USDC',
-    nativeName: 'USD Coin (Arc gas asset)',
-    nativeDecimals: 6,
-    exitStablecoin: 'USDC',
-    exitStablecoinLabel: 'auto-sell to USDC',
-    // Arc testnet USDC as native gas asset. Address is the well-known
-    // native-USDC precompile address reported in Arc testnet guides;
-    // TO-CONFIRM on explorer.testnet.arc.io before any mainnet use.
-    exitStablecoinAddress: '0x3600000000000000000000000000000000000000',
-    // No verified USDT on Arc testnet; USDC is the native gas asset
-    // (same 0x3600… precompile as the exit stablecoin).
-    stablecoins: { USDT: null, USDC: '0x3600000000000000000000000000000000000000' },
-    rpcUrl: rpcFromEnv('arc', 'https://rpc.testnet.arc.io'),
-    rpcUrls: [
-      'https://rpc.testnet.arc.io',
-      'https://rpc.blockdaemon.testnet.arc.io',
-      'https://rpc.drpc.testnet.arc.io',
-      'https://rpc.quicknode.testnet.arc.io',
-    ],
-    explorerUrl: 'https://explorer.testnet.arc.io',
-    explorerApiUrl: 'https://explorer.testnet.arc.io/api',
-    dexScreenerChainId: 'arc',
-    geckoTerminalNetwork: 'arc',
-    dex: 'Arc DEX / aggregator (admin registry)',
-    vaultContract: null,
-    status: 'testnet',
-    isDefault: true,
-    testnet: true,
-    active: true,
-    // Testnet ↔ mainnet pair (Arc testnet 5042002 ↔ Arc mainnet 5042).
-    // The admin row wins when it sets paired_chain_id; this is the
-    // fallback so a mode flip works even before the admin fills it in.
-    pairedChainId: 'arc-mainnet',
-  },
-  {
     id: 'arc-mainnet',
     name: 'Arc Mainnet',
     chainId: 5042,
@@ -226,8 +163,8 @@ export const CHAINS: ChainConfig[] = [
     nativeDecimals: 6,
     exitStablecoin: 'USDC',
     exitStablecoinLabel: 'auto-sell to USDC',
-    // Arc mainnet USDC — same well-known native-USDC precompile address
-    // as testnet (0x3600...0000).
+    // Arc mainnet USDC — the well-known native-USDC precompile
+    // address (0x3600...0000).
     exitStablecoinAddress: '0x3600000000000000000000000000000000000000',
     // No verified USDT on Arc mainnet; USDC is the native gas asset.
     stablecoins: { USDT: null, USDC: '0x3600000000000000000000000000000000000000' },
@@ -238,20 +175,14 @@ export const CHAINS: ChainConfig[] = [
     dexScreenerChainId: 'arc',
     geckoTerminalNetwork: 'arc',
     dex: 'Uniswap V3 (SwapRouter02) / V2 (Router02)',
-    // Uniswap routers published for Arc MAINNET (5042) only — verified
-    // via Uniswap contracts PR 144 / docs.arc.io. NEVER use these on
-    // Arc testnet (5042002); testnet has no verified router yet.
+    // Uniswap routers published for Arc MAINNET (5042) — verified
+    // via Uniswap contracts PR 144 / docs.arc.io.
     uniswapV3Router: '0x53BF6B0684Ec7eF91e1387Da3D1a1769bC5A6F77',
     uniswapV2Router: '0x1f7d7550B1b028f7571E69A784071F0205FD2EfA',
     vaultContract: null,
     status: 'live',
-    // Built-in active is false (Arc stays TESTNET-FIRST by default);
-    // the admin registry overrides it — when the admin enables Arc
-    // Mainnet, it appears as its own picker entry. The entry exists
-    // so Contract Studio / admin can read mainnet RPC, explorer,
-    // USDC and Uniswap router addresses from the registry.
-    active: false,
-    pairedChainId: 'arc',
+    isDefault: true,
+    active: true,
   },
   {
     id: 'bnb',
@@ -283,37 +214,6 @@ export const CHAINS: ChainConfig[] = [
     active: true,
   },
   {
-    id: 'bnb-testnet',
-    name: 'BNB Testnet',
-    chainId: 97,
-    kind: 'evm',
-    nativeSymbol: 'tBNB',
-    nativeName: 'BNB (testnet)',
-    nativeDecimals: 18,
-    exitStablecoin: 'BUSD',
-    exitStablecoinLabel: 'auto-sell to BUSD (testnet)',
-    // BUSD test token on BNB Testnet — verified on testnet BscScan
-    // 2026-11-27, 18 decimals. A test token, not issuer-backed BUSD.
-    exitStablecoinAddress: '0x78867BbEeF44f2326bF8DDd1941a4439382EF2A7',
-    // No official USDT/USDC on BNB Testnet (exit is the BUSD test token).
-    stablecoins: { USDT: null, USDC: null },
-    rpcUrl: 'https://bsc-testnet-dataseed.bnbchain.org',
-    rpcUrls: ['https://bsc-testnet-dataseed.bnbchain.org', 'https://bsc-testnet.bnbchain.org'],
-    explorerUrl: 'https://testnet.bscscan.com',
-    explorerApiUrl: 'https://api-testnet.bscscan.com/api',
-    dexScreenerChainId: 'bsc',
-    geckoTerminalNetwork: 'bsc',
-    dex: 'PancakeSwap V2 (testnet)',
-    // PancakeRouter on BNB Testnet — verified on testnet BscScan
-    // 2026-11-27, 153,719 txs, swaps hours ago.
-    uniswapV2Router: '0x9Ac64Cc6e4415144C455BD8E4837Fea55603e5c3',
-    vaultContract: null,
-    status: 'testnet',
-    testnet: true,
-    active: true,
-    pairedChainId: 'bnb',
-  },
-  {
     id: 'base',
     name: 'Base',
     chainId: 8453,
@@ -343,33 +243,6 @@ export const CHAINS: ChainConfig[] = [
     active: true,
   },
   {
-    id: 'base-sepolia',
-    name: 'Base Sepolia',
-    chainId: 84532,
-    kind: 'evm',
-    nativeSymbol: 'ETH',
-    nativeName: 'Ether (testnet)',
-    nativeDecimals: 18,
-    exitStablecoin: 'USDC',
-    exitStablecoinLabel: 'auto-sell to USDC',
-    exitStablecoinAddress: '0x036CbD53842c5426634e7929541eC2318f3dCF7e',
-    // Base Sepolia USDC — verified 2026-11-27 on sepolia.basescan.org (6 dec).
-    stablecoins: { USDT: null, USDC: '0x036CbD53842c5426634e7929541eC2318f3dCF7e' },
-    rpcUrl: 'https://sepolia.base.org',
-    rpcUrls: ['https://sepolia.base.org', 'https://base-sepolia-rpc.publicnode.com'],
-    explorerUrl: 'https://sepolia.basescan.org',
-    explorerApiUrl: 'https://api-sepolia.basescan.org/api',
-    dexScreenerChainId: 'base',
-    geckoTerminalNetwork: 'base',
-    dex: 'Uniswap V3 (Sepolia)',
-    uniswapV3Router: '0x94cC0AaC535CCDB3C01d6787D6413C739ae12bc4',
-    vaultContract: null,
-    status: 'testnet',
-    testnet: true,
-    active: true,
-    pairedChainId: 'base',
-  },
-  {
     id: 'ethereum',
     name: 'Ethereum',
     chainId: 1,
@@ -394,36 +267,6 @@ export const CHAINS: ChainConfig[] = [
     active: true,
   },
   {
-    id: 'ethereum-sepolia',
-    name: 'Ethereum Sepolia',
-    chainId: 11155111,
-    kind: 'evm',
-    nativeSymbol: 'ETH',
-    nativeName: 'Ether (testnet)',
-    nativeDecimals: 18,
-    exitStablecoin: 'USDC',
-    exitStablecoinLabel: 'auto-sell to USDC',
-    exitStablecoinAddress: '0x1c7D4B196Cb0C7B01d743Fbc6116a902379C7238',
-    // Ethereum Sepolia USDC — verified 2026-11-27 (6 dec). No USDT on Sepolia.
-    stablecoins: { USDT: null, USDC: '0x1c7D4B196Cb0C7B01d743Fbc6116a902379C7238' },
-    rpcUrl: 'https://rpc.sepolia.org',
-    rpcUrls: ['https://rpc.sepolia.org', 'https://ethereum-sepolia-rpc.publicnode.com'],
-    explorerUrl: 'https://sepolia.etherscan.io',
-    explorerApiUrl: 'https://api-sepolia.etherscan.io/api',
-    dexScreenerChainId: 'ethereum',
-    geckoTerminalNetwork: 'eth',
-    dex: 'Uniswap V2 (Sepolia)',
-    // Corrected Sepolia V2 Router02 (Uniswap official deployments).
-    // 0x7a250d… is mainnet/Goerli only — never use it on Sepolia.
-    uniswapV2Router: '0xeE567Fe1712Faf6149d80dA1E6934E354124CfE3',
-    uniswapV3Router: '0x3bFA4769FB09eefC5a80d6E87c3B9C650f7Ae48E',
-    vaultContract: null,
-    status: 'testnet',
-    testnet: true,
-    active: true,
-    pairedChainId: 'ethereum',
-  },
-  {
     id: 'polygon',
     name: 'Polygon',
     chainId: 137,
@@ -446,32 +289,6 @@ export const CHAINS: ChainConfig[] = [
     vaultContract: null,
     status: 'live',
     active: true,
-  },
-  {
-    id: 'polygon-amoy',
-    name: 'Polygon Amoy',
-    chainId: 80002,
-    kind: 'evm',
-    nativeSymbol: 'POL',
-    nativeName: 'Polygon (testnet)',
-    nativeDecimals: 18,
-    exitStablecoin: 'USDC',
-    exitStablecoinLabel: 'auto-sell to USDC',
-    exitStablecoinAddress: '0x41E94Eb019C0762f9Bfcf9Fb1E58725BfB0e7582',
-    // Polygon Amoy USDC — verified 2026-11-27 (6 dec). No USDT on Amoy.
-    stablecoins: { USDT: null, USDC: '0x41E94Eb019C0762f9Bfcf9Fb1E58725BfB0e7582' },
-    rpcUrl: 'https://rpc-amoy.polygon.technology',
-    rpcUrls: ['https://rpc-amoy.polygon.technology', 'https://polygon-amoy.drpc.org'],
-    explorerUrl: 'https://amoy.polygonscan.com',
-    explorerApiUrl: 'https://api-amoy.polygonscan.com/api',
-    dexScreenerChainId: 'polygon',
-    geckoTerminalNetwork: 'polygon_pos',
-    dex: 'No verified router on Amoy yet — vault deploys refused',
-    vaultContract: null,
-    status: 'testnet',
-    testnet: true,
-    active: true,
-    pairedChainId: 'polygon',
   },
   {
     id: 'solana',
@@ -531,38 +348,6 @@ export const CHAINS: ChainConfig[] = [
     status: 'live',
     active: true,
     comingSoon: false,
-    pairedChainId: 'plasma-testnet',
-  },
-  {
-    id: 'plasma-testnet',
-    name: 'Plasma Testnet',
-    chainId: 9746,
-    kind: 'evm',
-    nativeSymbol: 'XPL',
-    nativeName: 'Plasma (testnet)',
-    nativeDecimals: 18,
-    exitStablecoin: 'USDT',
-    exitStablecoinLabel: 'auto-sell to USDT',
-    // No verified stablecoin on Plasma testnet yet (testnet USDT0 was
-    // still in development 2026-11-28) — null until one is confirmed
-    // on testnet.plasmascan.to. Same for the router: no verified
-    // Uniswap router on testnet yet.
-    exitStablecoinAddress: null,
-    // No verified stablecoin on Plasma testnet yet.
-    stablecoins: { USDT: null, USDC: null },
-    rpcUrl: 'https://testnet-rpc.plasma.to',
-    rpcUrls: ['https://testnet-rpc.plasma.to'],
-    explorerUrl: 'https://testnet.plasmascan.to',
-    explorerApiUrl: null,
-    dexScreenerChainId: 'plasma',
-    geckoTerminalNetwork: 'plasma',
-    dex: 'No verified router on Plasma testnet yet',
-    vaultContract: null,
-    status: 'testnet',
-    testnet: true,
-    active: true,
-    comingSoon: true,
-    pairedChainId: 'plasma',
   },
   {
     id: 'pi',
@@ -593,45 +378,19 @@ export const CHAINS: ChainConfig[] = [
     status: 'coming-soon',
     active: true,
     comingSoon: true,
-    pairedChainId: 'pi-testnet',
-  },
-  {
-    id: 'pi-testnet',
-    name: 'Pi Testnet',
-    chainId: null, // NOT EVM — Stellar-based, no EVM chain id.
-    kind: 'pi',
-    nativeSymbol: 'PI',
-    nativeName: 'Pi (testnet)',
-    nativeDecimals: 7,
-    exitStablecoin: 'USDT',
-    exitStablecoinLabel: 'auto-sell to USDT',
-    exitStablecoinAddress: null, // no stablecoin / router / vault on Pi testnet either
-    rpcUrl: 'https://api.testnet.minepi.com', // Horizon API (Stellar), not EVM JSON-RPC
-    rpcUrls: ['https://api.testnet.minepi.com'],
-    explorerUrl: 'https://blockexplorer.minepi.com',
-    explorerApiUrl: null,
-    dexScreenerChainId: 'pi',
-    geckoTerminalNetwork: 'pi',
-    dex: 'No DEX on Pi yet — contracts internal-only',
-    vaultContract: null,
-    status: 'coming-soon',
-    testnet: true,
-    active: true,
-    comingSoon: true,
-    pairedChainId: 'pi',
   },
 ];
 
 export const DEFAULT_CHAIN = CHAINS.find((c) => c.isDefault) ?? CHAINS[0];
 
 /**
- * The chains the wallet may use: every chain with active: true
- * (all six, as restored 2026-11-27). Every picker, token list,
- * fetcher and Discover filter must read this list (or isChainActive),
- * never CHAINS directly — CHAINS includes disabled entries kept only
- * so they can be re-enabled later. Coming-soon chains ARE in this
- * list (they are shown in the picker, disabled) — use USABLE_CHAINS
- * for anything that actually does work on a chain.
+ * The chains the wallet may use: every chain with active: true.
+ *  Every picker, token list, fetcher and Discover filter must read
+ *  this list (or isChainActive), never CHAINS directly — CHAINS
+ *  includes disabled entries kept only so they can be re-enabled
+ *  later. Coming-soon chains ARE in this list (they are shown in the
+ *  picker, disabled) — use USABLE_CHAINS for anything that actually
+ *  does work on a chain.
  */
 export const ACTIVE_CHAINS: ChainConfig[] = CHAINS.filter((c) => c.active);
 
@@ -644,8 +403,9 @@ export function isChainUsable(c: ChainConfig): boolean {
 }
 
 /** Chains the wallet may do work on (balances, swaps, locks, Discover).
- *  Plasma mainnet is usable; Plasma testnet and both Pi chains are
- *  coming-soon and excluded until the admin marks them live. */
+ *  Plasma mainnet is usable; Pi is coming-soon and excluded until
+ *  the admin marks it live. Testnets are never in this list: they
+ *  arrive only from the admin sync. */
 export const USABLE_CHAINS: ChainConfig[] = CHAINS.filter(isChainUsable);
 
 /** True when the chain id is active. */
@@ -672,30 +432,23 @@ export const VAULT_DEFAULTS = {
 } as const;
 
 // ---------------------------------------------------------------------------
-// StelixVault contract registry — all null until deployed (testnet-first).
-// Fill an address ONLY after a verified testnet/mainnet deploy, and record
+// StelixVault contract registry — all null until deployed.
+// Fill an address ONLY after a verified mainnet deploy, and record
 // chain + address + tx hash + compiler version in contracts/README.md.
 // ---------------------------------------------------------------------------
 
 export const VAULT_NOT_DEPLOYED_MESSAGE =
-  'Not deployed on this chain yet — testnet deploy required';
+  'Not deployed on this chain yet — deploy required';
 
 export const VAULT_ADDRESSES: Record<string, string | null> = {
-  arc: null,
   'arc-mainnet': null,
   bnb: null,
-  'bnb-testnet': null,
   base: null,
-  'base-sepolia': null,
   ethereum: null,
-  'ethereum-sepolia': null,
   polygon: null,
-  'polygon-amoy': null,
   solana: null, // Anchor program ID, not an EVM address
   plasma: null,
-  'plasma-testnet': null,
   pi: null, // Soroban program, not an EVM address — separate build
-  'pi-testnet': null,
 };
 
 export function getVaultAddress(chainId: string): string | null {
@@ -729,17 +482,16 @@ export function requireVaultAddress(chainId: string): string {
 
 // ---------------------------------------------------------------------------
 // Launchpad contract registry — StelixTokenFactory + StelixLaunchpad
-// (contracts/src/launchpad/). Both null until deployed on Arc testnet and
+// (contracts/src/launchpad/). Both null until deployed on Arc and
 // registered here AND in the admin D1 `deployments` table. Fill an address
-// ONLY after a verified testnet deploy; see contracts/DEPLOY_ARC_TESTNET.md.
+// ONLY after a verified deploy.
 // The launchpad is FREE: no Stelix launch fee, gas only (Arc USDC gas).
 // ---------------------------------------------------------------------------
 
 export const LAUNCHPAD_NOT_DEPLOYED_MESSAGE =
-  'Launchpad contracts are not deployed on Arc testnet yet';
+  'Launchpad contracts are not deployed on Arc yet';
 
 export const TOKEN_FACTORY_ADDRESSES: Record<string, string | null> = {
-  arc: null,
   'arc-mainnet': null,
   bnb: null,
   base: null,
@@ -747,13 +499,10 @@ export const TOKEN_FACTORY_ADDRESSES: Record<string, string | null> = {
   polygon: null,
   solana: null,
   plasma: null,
-  'plasma-testnet': null,
   pi: null, // no EVM factory on Pi
-  'pi-testnet': null,
 };
 
 export const LAUNCHPAD_ADDRESSES: Record<string, string | null> = {
-  arc: null,
   'arc-mainnet': null,
   bnb: null,
   base: null,
@@ -761,9 +510,7 @@ export const LAUNCHPAD_ADDRESSES: Record<string, string | null> = {
   polygon: null,
   solana: null,
   plasma: null,
-  'plasma-testnet': null,
   pi: null, // no EVM launchpad on Pi
-  'pi-testnet': null,
 };
 
 export type LaunchpadDeploymentStatus =
@@ -784,7 +531,7 @@ export function requireLaunchpadAddress(chainId: string): string {
   if (!status.deployed) {
     throw new Error(
       `${LAUNCHPAD_NOT_DEPLOYED_MESSAGE} (${getChain(chainId).name}). ` +
-        'Launches go live once the launchpad contracts are deployed on Arc testnet.',
+        'Launches go live once the launchpad contracts are deployed on Arc.',
     );
   }
   return status.launchpad;
@@ -795,7 +542,7 @@ export function requireTokenFactoryAddress(chainId: string): string {
   if (!status.deployed) {
     throw new Error(
       `${LAUNCHPAD_NOT_DEPLOYED_MESSAGE} (${getChain(chainId).name}). ` +
-        'Token creation goes live once the launchpad contracts are deployed on Arc testnet.',
+        'Token creation goes live once the launchpad contracts are deployed on Arc.',
     );
   }
   return status.factory;

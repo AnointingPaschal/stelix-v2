@@ -2,13 +2,16 @@
  * LIVE Discover — a full DEX browser (DexScreener-style), no static list.
  *
  * Sources (all verified live from this VM on 2026-11-26):
- *   - GeckoTerminal trending pools:
- *       GET https://api.geckoterminal.com/api/v2/networks/trending_pools?page=N
- *     Global feed, one pool per row, with network id, price, FDV /
- *     market_cap_usd, h24 change, h24 volume, reserve (liquidity),
- *     pool_created_at and dex id. Drives Trending / Gainers (same live
- *     feed, different ranking — see sortDiscoverTokens) and is paged
- *     through fetchDiscoverPage for infinite scroll.
+ *   - GeckoTerminal trending pools (PER NETWORK):
+ *       GET https://api.geckoterminal.com/api/v2/networks/<network>/trending_pools?page=N
+ *     One call per usable network (see discoverNetworks) — the old
+ *     global feed (networks/trending_pools) never surfaces Arc pools:
+ *     Arc never cracks the global top 40, so Arc showed "0 tokens".
+ *     Per-network trending fixes that. Drives Trending / Gainers (same
+ *     live feed, different ranking — see sortDiscoverTokens) and is
+ *     paged through fetchDiscoverPage for infinite scroll. FREE-TIER
+ *     CAP: pages 1–10 only (page 11+ returns HTTP 401), 20 pools per
+ *     page, so at most ~200 pools per network — never claim thousands.
  *   - GeckoTerminal new pools (per network):
  *       GET https://api.geckoterminal.com/api/v2/networks/<network>/new_pools?page=N
  *     Verified for bsc, eth, base, polygon_pos, solana AND arc (Arc uses
@@ -27,7 +30,7 @@
  *   - DexScreener token boosts (fallback for Trending):
  *       GET https://api.dexscreener.com/token-boosts/top/v1
  *     Most-boosted tokens; enriched with the batch lookup.
- *   - CoinMarketCap public listing API (Binance Alpha tab only):
+ *   - CoinMarketCap public listing API (BSC Alpha tab only):
  *       GET https://api.coinmarketcap.com/data-api/v3/cryptocurrency/listing?tagSlugs=binance-alpha
  *     Verified live from this VM on 2026-11-28 (387 Alpha-tagged coins,
  *     page 2 returns a full 100 rows). No key needed. Binance's own
@@ -36,6 +39,8 @@
  *     contract address — Alpha rows use a stable `cmc:<id>` address, a
  *     CoinMarketCap icon URL, and do not navigate to a token detail page.
  *     Prices, 24h change, market cap and volume are live from CMC.
+ *     The tab is labelled "BSC Alpha" in the app; the CMC query tag
+ *     stays `binance-alpha` — only the label changed.
  *
  * One row per TOKEN, never one per pool: dedupeDiscoverTokens keeps the
  * highest-liquidity pair per token (PONS on three DEXes is one row, with
@@ -45,10 +50,13 @@
  * lists); the letter circle only appears when no source has a logo.
  *
  * Rate limits: GeckoTerminal free tier is 30 calls/min, DexScreener
- * 300/min. A page load makes 1 (trending) or up to 6 (new, all chains)
- * GeckoTerminal calls plus one DexScreener batch call per chain present
- * (usually 1-3). There is no auto-refresh polling — the user refreshes
- * manually — so a normal session stays far under the limit.
+ * 300/min. A page load makes 1 (single chain) or up to 7 (all usable
+ * chains, one trending/new call per network) GeckoTerminal calls plus
+ * one DexScreener batch call per chain present (usually 1-3). There is
+ * no auto-refresh polling — the user refreshes manually — so a normal
+ * session stays far under the limit. Scrolling deep through all 10
+ * free-tier pages on All chains is the only heavy path (~70 calls);
+ * the screen stops cleanly at page 10.
  *
  * Restored 2026-11-27: all chains active again. Results are still
  * filtered to USABLE_CHAINS (see lib/chains.ts) so a chain disabled
@@ -66,7 +74,7 @@ import { fetchTokenMarketData } from './prices';
 export interface DiscoverToken {
   symbol: string;
   name: string;
-  /** Stelix chain id: 'arc' | 'bnb' | 'base' | 'ethereum' | 'polygon' | 'solana'. */
+  /** Stelix chain id: 'arc-mainnet' | 'bnb' | 'base' | 'ethereum' | 'polygon' | 'solana' | 'plasma'. */
   chainId: string;
   address: string;
   pairAddress: string | null;
@@ -118,8 +126,11 @@ type FetchImpl = (url: string, init?: RequestInit) => Promise<Response>;
 
 const FETCH_TIMEOUT_MS = 8000;
 const MAX_BATCH_ADDRESSES = 30;
-/** GeckoTerminal trending pages fetched per Trending/Gainers load. */
-const TRENDING_PAGES = 2;
+/** GeckoTerminal free-tier page cap: pages 1–10 only. Page 11+ returns
+ *  HTTP 401 ("exceeds the allowed max number for page (10)"), so the
+ *  screen stops paging at page 10 and never requests page 11. At 20
+ *  pools per page that is at most ~200 pools per network. */
+const GECKO_MAX_PAGE = 10;
 /** GeckoTerminal default page size for trending_pools / new_pools.
  *  A page that returns this many pools is treated as full — there may
  *  be another page after it. */
@@ -159,6 +170,26 @@ export const DISCOVER_CHAINS: { id: string; label: string }[] = USABLE_CHAINS.ma
 export function discoverNetworks(chainId: string | 'all'): string[] {
   if (chainId === 'all') return USABLE_CHAINS.map((c) => c.geckoTerminalNetwork);
   return [getChain(chainId).geckoTerminalNetwork];
+}
+
+/**
+ * Map an upstream chain/network slug (GeckoTerminal network id or
+ * DexScreener chain id) to a Stelix chain id, derived from
+ * USABLE_CHAINS — never hardcoded. Needed because the upstream slugs
+ * do not always equal the Stelix id: GeckoTerminal and DexScreener
+ * both call Arc mainnet "arc", while the Stelix id is "arc-mainnet".
+ * Without this, Arc rows map to a dead "arc" id and the active-chain
+ * filter drops them — the same "0 tokens" symptom, one layer down.
+ * A slug that already is a usable Stelix id passes through; an
+ * unknown slug falls back to normalizeChainId.
+ */
+export function resolveUpstreamChainId(slug: string): string {
+  const normalized = normalizeChainId(slug);
+  if (USABLE_CHAINS.some((c) => c.id === normalized)) return normalized;
+  const bySlug = USABLE_CHAINS.find(
+    (c) => c.geckoTerminalNetwork === normalized || c.dexScreenerChainId === normalized,
+  );
+  return bySlug ? bySlug.id : normalized;
 }
 
 /** "pancakeswap_v2" -> "PancakeSwap V2" for display. */
@@ -214,7 +245,7 @@ export function mapDexScreenerPair(p: DexScreenerPairLike): DiscoverToken {
   return {
     symbol: p.baseToken?.symbol ?? '',
     name: p.baseToken?.name ?? '',
-    chainId: normalizeChainId(p.chainId ?? ''),
+    chainId: resolveUpstreamChainId(p.chainId ?? ''),
     address: p.baseToken?.address ?? '',
     pairAddress: p.pairAddress ?? null,
     priceUsd: p.priceUsd ? Number(p.priceUsd) : null,
@@ -274,7 +305,7 @@ export function mapGeckoPool(pool: GeckoPoolLike): DiscoverToken {
   return {
     symbol,
     name: symbol,
-    chainId: normalizeChainId(networkId),
+    chainId: resolveUpstreamChainId(networkId),
     address,
     pairAddress: a.address ?? null,
     priceUsd: num(a.base_token_price_usd),
@@ -484,34 +515,72 @@ async function fetchGeckoPools(
   return pools.map(mapGeckoPool).filter((t) => t.symbol && t.address);
 }
 
-/** Trending / Gainers from GeckoTerminal trending pools. */
-async function fetchTrendingPools(fetchImpl: FetchImpl): Promise<DiscoverToken[]> {
-  const pages = await Promise.all(
-    Array.from({ length: TRENDING_PAGES }, (_, i) =>
-      fetchGeckoPools(
-        `https://api.geckoterminal.com/api/v2/networks/trending_pools?page=${i + 1}`,
-        fetchImpl,
-      ).catch(() => [] as DiscoverToken[]),
-    ),
-  );
-  return pages.flat();
+interface PerNetworkPoolsResult {
+  tokens: DiscoverToken[];
+  /** True only when EVERY network call failed — a feed failure, not a
+   *  genuinely quiet chain. Callers must not confuse the two: a
+   *  successful-but-empty page is an honest empty, never an error. */
+  allFailed: boolean;
+  /** True when any network's page came back full (20 pools) — another
+   *  page may exist for that network. */
+  anyFullPage: boolean;
 }
 
-/** New pairs from GeckoTerminal new_pools, one call per network. */
+/**
+ * Fetch one page of a GeckoTerminal per-network pool list
+ * (`trending_pools` or `new_pools`) for every usable network behind
+ * the requested chain — one call per network, in parallel. A single
+ * network failing never fails the whole page; only when every network
+ * fails does allFailed come back true.
+ */
+async function fetchPerNetworkPools(
+  endpoint: 'trending_pools' | 'new_pools',
+  chainId: string | 'all',
+  page: number,
+  fetchImpl: FetchImpl,
+): Promise<PerNetworkPoolsResult> {
+  const networks = discoverNetworks(chainId);
+  const settled = await Promise.all(
+    networks.map((n) =>
+      fetchGeckoPools(
+        `https://api.geckoterminal.com/api/v2/networks/${encodeURIComponent(n)}/${endpoint}?page=${page}`,
+        fetchImpl,
+      ).then(
+        (tokens) => ({ tokens, ok: true as const }),
+        () => ({ tokens: [] as DiscoverToken[], ok: false as const }),
+      ),
+    ),
+  );
+  return {
+    tokens: settled.flatMap((s) => s.tokens),
+    allFailed: settled.length > 0 && settled.every((s) => !s.ok),
+    anyFullPage: settled.some((s) => s.ok && s.tokens.length >= GECKO_PAGE_SIZE),
+  };
+}
+
+/** Trending / Gainers from GeckoTerminal trending pools, PER NETWORK
+ *  (page 1). Throws when every network fails, so the caller can fall
+ *  back to DexScreener boosts; a genuinely quiet chain returns [] and
+ *  must NOT trigger the fallback. */
+async function fetchTrendingPools(
+  chainId: string | 'all',
+  fetchImpl: FetchImpl,
+): Promise<DiscoverToken[]> {
+  const per = await fetchPerNetworkPools('trending_pools', chainId, 1, fetchImpl);
+  if (per.allFailed) throw new Error('GeckoTerminal trending pools failed on every network.');
+  return per.tokens;
+}
+
+/** New pairs from GeckoTerminal new_pools, one call per network.
+ *  Throws when every network fails, so the caller can fall back to
+ *  DexScreener profiles; a genuinely quiet chain returns []. */
 async function fetchNewPools(
   chainId: string | 'all',
   fetchImpl: FetchImpl,
 ): Promise<DiscoverToken[]> {
-  const networks = discoverNetworks(chainId);
-  const pages = await Promise.all(
-    networks.map((n) =>
-      fetchGeckoPools(
-        `https://api.geckoterminal.com/api/v2/networks/${encodeURIComponent(n)}/new_pools?page=1`,
-        fetchImpl,
-      ).catch(() => [] as DiscoverToken[]),
-    ),
-  );
-  return pages.flat();
+  const per = await fetchPerNetworkPools('new_pools', chainId, 1, fetchImpl);
+  if (per.allFailed) throw new Error('GeckoTerminal new pools failed on every network.');
+  return per.tokens;
 }
 
 interface DexScreenerBoost {
@@ -531,7 +600,7 @@ async function fetchBoostedTokens(
   const seeds: DiscoverToken[] = boosts.slice(0, limit).map((b) => ({
     symbol: '',
     name: '',
-    chainId: normalizeChainId(b.chainId ?? ''),
+    chainId: resolveUpstreamChainId(b.chainId ?? ''),
     address: b.tokenAddress ?? '',
     pairAddress: null,
     priceUsd: null,
@@ -582,12 +651,12 @@ export async function fetchTokenProfilesNew(
     const wanted = chainId === 'all' ? null : getChain(chainId).dexScreenerChainId;
     const seeds: DiscoverToken[] = profiles
       // Profiles on inactive chains never become rows.
-      .filter((p) => p.tokenAddress && isChainActive(normalizeChainId(p.chainId ?? '')) && (!wanted || p.chainId === wanted))
+      .filter((p) => p.tokenAddress && isChainActive(resolveUpstreamChainId(p.chainId ?? '')) && (!wanted || p.chainId === wanted))
       .slice(0, limit)
       .map((p) => ({
         symbol: '',
         name: '',
-        chainId: normalizeChainId(p.chainId ?? ''),
+        chainId: resolveUpstreamChainId(p.chainId ?? ''),
         address: p.tokenAddress ?? '',
         pairAddress: null,
         priceUsd: null,
@@ -636,7 +705,7 @@ export interface DiscoverPageResult {
 }
 
 // ---------------------------------------------------------------------------
-// Binance Alpha (CoinMarketCap public listing API, `binance-alpha` tag)
+// BSC Alpha (CoinMarketCap public listing API, `binance-alpha` tag)
 // ---------------------------------------------------------------------------
 
 interface CmcAlphaListing {
@@ -694,9 +763,11 @@ export function mapCmcAlphaListing(c: CmcAlphaListing): DiscoverToken {
 }
 
 /**
- * Load ONE page of Binance Alpha tokens (100 per page, market-cap
+ * Load ONE page of BSC Alpha tokens (100 per page, market-cap
  * order) from CoinMarketCap's public listing API. No key, no auth.
  * A failed page reports unavailable rather than fabricating rows.
+ * The tab label is "BSC Alpha"; the CMC query tag stays
+ * `binance-alpha` — only the label changed.
  */
 export async function fetchAlphaPage(
   page = 1,
@@ -720,7 +791,7 @@ export async function fetchAlphaPage(
         tokens: [],
         hasMore: false,
         source: 'unavailable',
-        error: 'Binance Alpha tokens are unavailable right now — no data was fabricated.',
+        error: 'BSC Alpha tokens are unavailable right now — no data was fabricated.',
         updatedAt: Date.now(),
       };
     }
@@ -740,7 +811,7 @@ export async function fetchAlphaPage(
       tokens: [],
       hasMore: false,
       source: 'unavailable',
-      error: `Binance Alpha failed: ${e instanceof Error ? e.message : String(e)}`,
+      error: `BSC Alpha failed: ${e instanceof Error ? e.message : String(e)}`,
       updatedAt: Date.now(),
     };
   }
@@ -748,15 +819,22 @@ export async function fetchAlphaPage(
 
 /**
  * Load ONE page of a Discover tab (infinite scroll).
- * Trending / Gainers read GeckoTerminal trending_pools?page=N; New Pairs
- * reads new_pools?page=N per network. DexScreener has no list-all
- * endpoint, so GeckoTerminal pages are the honest source of thousands
- * of tokens. Rows are deduped by chain+address, enriched with
- * DexScreener logos/names, filtered to the chain and ranked per tab.
- * No DexScreener fallback here — a failed page reports unavailable
- * rather than fabricating rows (fetchDiscoverTab keeps the fallback
- * for its single-shot callers).
- * Binance Alpha reads CoinMarketCap's public listing API (see
+ * Trending / Gainers read GeckoTerminal trending_pools PER NETWORK
+ * (one call per usable network behind the selected chain — "All
+ * chains" aggregates them); New Pairs reads new_pools per network.
+ * Pages run 1–10 only (GeckoTerminal free-tier cap): a full page
+ * below 10 reports hasMore, a short/empty page or page 10 stops
+ * paging. That yields at most ~200 pools per network — an honest
+ * ceiling, never "thousands". Rows are deduped by chain+address,
+ * enriched with DexScreener logos/names, filtered to the chain and
+ * ranked per tab. A page whose networks ALL fail reports unavailable
+ * (existing error text); a page that succeeds but returns no pools
+ * is a genuinely quiet chain — tokens [] with NO error, so the screen
+ * shows the honest empty state instead of a failure. No DexScreener
+ * fallback here — a failed page reports unavailable rather than
+ * fabricating rows (fetchDiscoverTab keeps the fallback for its
+ * single-shot callers).
+ * BSC Alpha reads CoinMarketCap's public listing API (see
  * fetchAlphaPage) — no chain filter or enrichment applies there.
  */
 export async function fetchDiscoverPage(
@@ -766,33 +844,18 @@ export async function fetchDiscoverPage(
   fetchImpl: FetchImpl = fetch,
 ): Promise<DiscoverPageResult> {
   const safePage = Math.max(1, Math.floor(page));
-  // Binance Alpha has its own feed (CoinMarketCap) — no chain filter
+  // BSC Alpha has its own feed (CoinMarketCap) — no chain filter
   // or DexScreener enrichment applies.
   if (tab === 'alpha') return fetchAlphaPage(safePage, fetchImpl);
+  // The free tier ends at page 10 (page 11+ is HTTP 401) — never
+  // request beyond it; the screen already stops paging at 10.
+  if (safePage > GECKO_MAX_PAGE) {
+    return { tokens: [], hasMore: false, source: 'geckoterminal', error: null, updatedAt: Date.now() };
+  }
   try {
-    let tokens: DiscoverToken[] = [];
-    let hasMore = false;
-    if (tab === 'new') {
-      const networks = discoverNetworks(chainId);
-      const perNetwork = await Promise.all(
-        networks.map((n) =>
-          fetchGeckoPools(
-            `https://api.geckoterminal.com/api/v2/networks/${encodeURIComponent(n)}/new_pools?page=${safePage}`,
-            fetchImpl,
-          ).catch(() => [] as DiscoverToken[]),
-        ),
-      );
-      tokens = perNetwork.flat();
-      // Any network page that came back full may have another page.
-      hasMore = perNetwork.some((p) => p.length >= GECKO_PAGE_SIZE);
-    } else {
-      tokens = await fetchGeckoPools(
-        `https://api.geckoterminal.com/api/v2/networks/trending_pools?page=${safePage}`,
-        fetchImpl,
-      );
-      hasMore = tokens.length >= GECKO_PAGE_SIZE;
-    }
-    if (tokens.length === 0) {
+    const endpoint = tab === 'new' ? 'new_pools' : 'trending_pools';
+    const per = await fetchPerNetworkPools(endpoint, chainId, safePage, fetchImpl);
+    if (per.allFailed) {
       return {
         tokens: [],
         hasMore: false,
@@ -804,12 +867,16 @@ export async function fetchDiscoverPage(
         updatedAt: Date.now(),
       };
     }
-    const deduped = dedupeDiscoverTokens(tokens);
+    if (per.tokens.length === 0) {
+      // Genuinely quiet chain/networks — NOT a feed failure.
+      return { tokens: [], hasMore: false, source: 'geckoterminal', error: null, updatedAt: Date.now() };
+    }
+    const deduped = dedupeDiscoverTokens(per.tokens);
     const enriched = await enrichWithDexScreener(deduped, fetchImpl);
     const filtered = applyDiscoverFilters(enriched, { chainId });
     return {
       tokens: sortDiscoverTokens(filtered, TAB_SORT[tab]),
-      hasMore,
+      hasMore: per.anyFullPage && safePage < GECKO_MAX_PAGE,
       source: 'geckoterminal',
       error: null,
       updatedAt: Date.now(),
@@ -827,9 +894,12 @@ export async function fetchDiscoverPage(
 
 /**
  * Load one Discover tab. `chainId` is a Stelix chain id or 'all'.
- * Trending / Gainers share the GeckoTerminal trending feed with
- * different rankings; New uses GeckoTerminal new pools per network.
- * Each tab has a DexScreener fallback when its primary feed fails.
+ * Trending / Gainers share the GeckoTerminal per-network trending
+ * feed with different rankings; New uses GeckoTerminal new pools per
+ * network. Each tab has a DexScreener fallback when its primary feed
+ * FAILS (every network erroring). A feed that succeeds but returns
+ * no pools is a genuinely quiet chain — it returns empty with no
+ * error and does NOT trigger the fallback.
  */
 export async function fetchDiscoverTab(
   tab: DiscoverTab,
@@ -841,14 +911,27 @@ export async function fetchDiscoverTab(
     let tokens: DiscoverToken[] = [];
     let source: DiscoverResult['source'] = 'geckoterminal';
     if (tab === 'new') {
-      tokens = await fetchNewPools(chainId, fetchImpl);
-      if (tokens.length === 0) {
+      let failed = false;
+      try {
+        tokens = await fetchNewPools(chainId, fetchImpl);
+      } catch {
+        failed = true;
+      }
+      if (failed) {
         const fb = await fetchTokenProfilesNew(chainId, limit, fetchImpl);
         if (fb.tokens.length > 0) return { ...fb, tokens: fb.tokens.slice(0, limit) };
+      } else if (tokens.length === 0) {
+        // Genuinely quiet chain — not a failure, no fallback.
+        return { tokens: [], source: 'geckoterminal', error: null, updatedAt: Date.now() };
       }
     } else {
-      tokens = await fetchTrendingPools(fetchImpl);
-      if (tokens.length === 0) {
+      let failed = false;
+      try {
+        tokens = await fetchTrendingPools(chainId, fetchImpl);
+      } catch {
+        failed = true;
+      }
+      if (failed) {
         const boosted = await fetchBoostedTokens(limit, fetchImpl).catch(() => [] as DiscoverToken[]);
         if (boosted.length > 0) {
           const out = applyDiscoverFilters(dedupeDiscoverTokens(boosted), { chainId });
@@ -859,6 +942,9 @@ export async function fetchDiscoverTab(
             updatedAt: Date.now(),
           };
         }
+      } else if (tokens.length === 0) {
+        // Genuinely quiet chain — not a failure, no fallback.
+        return { tokens: [], source: 'geckoterminal', error: null, updatedAt: Date.now() };
       }
     }
     if (tokens.length === 0) {

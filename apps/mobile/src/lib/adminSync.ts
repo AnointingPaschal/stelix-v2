@@ -13,10 +13,14 @@
  * What one /api/sync response carries:
  * - chains + deletedIds: the authoritative chain registry. A slug in
  *   `deletedIds` (chain tombstone) must NEVER reappear — not from the
- *   built-in fallback, not when the API is down. The last-seen tombstones
- *   and disabled-chain ids are persisted in kv storage
- *   (stelix.admin.deletedChains.v1 / stelix.admin.disabledChains.v1) and
- *   applied on top of the built-ins whenever the fetch fails.
+ *   built-in fallback, not when the API is down. The last-good sync
+ *   payload (chains, fees, tokens, announcements, config,
+ *   maintenance, network mode — the FULL parsed response) is
+ *   persisted in kv storage (stelix.admin.lastGoodSync.v1) and
+ *   re-applied when the fetch fails, so the app still opens with the
+ *   last synced state instead of falling back to bare built-ins.
+ *   The tombstone / disabled / version / mode keys are kept as
+ *   well, for callers that only need those slices.
  * - fees: the latest published fee config, or null when the admin has
  *   never published one. Null is an honest empty state: the wallet uses
  *   its local defaults and SAYS so (source 'default'), it never silently
@@ -49,6 +53,10 @@ export const DELETED_CHAINS_KEY = 'stelix.admin.deletedChains.v1';
 export const DISABLED_CHAINS_KEY = 'stelix.admin.disabledChains.v1';
 export const SYNC_VERSION_KEY = 'stelix.admin.syncVersion.v1';
 export const NETWORK_MODE_KEY = 'stelix.admin.networkMode.v1';
+/** Full last-good sync payload (the whole parsed /api/sync response),
+ *  so a failed sync still opens the app with the last synced chains,
+ *  fees, tokens and network mode. */
+export const LAST_GOOD_SYNC_KEY = 'stelix.admin.lastGoodSync.v1';
 
 /** Global testnet/mainnet mode, admin-controlled. null = the admin has
  *  never chosen: the wallet shows all networks, exactly as before. */
@@ -220,7 +228,11 @@ function parseToken(v: unknown): AdminTokenEntry | null {
   if (!isRecord(v)) return null;
   const id = asNumber(v.id);
   const symbol = asString(v.symbol);
-  const chainId = asString(v.chain_id);
+  // Server rows use snake_case (chain_id / logo_url / sort_order);
+  // a persisted last-good payload carries the parsed camelCase
+  // spellings (chainId / logoUrl / sortOrder) — accept both so a
+  // re-parsed cached payload keeps its tokens.
+  const chainId = asString(v.chain_id) ?? asString(v.chainId);
   const address = asString(v.address);
   const decimals = asNumber(v.decimals);
   if (id === null || symbol === null || chainId === null || address === null || decimals === null) return null;
@@ -232,7 +244,7 @@ function parseToken(v: unknown): AdminTokenEntry | null {
     decimals,
     verified: asBool(v.verified, false),
     featured: asBool(v.featured, false),
-    logoUrl: asString(v.logo_url),
+    logoUrl: asString(v.logo_url) ?? asString(v.logoUrl),
     sortOrder: asNumber(v.sort_order) ?? asNumber(v.sortOrder) ?? 0,
   };
 }
@@ -240,7 +252,11 @@ function parseToken(v: unknown): AdminTokenEntry | null {
 function parseAppConfig(v: unknown): AdminAppConfig | null {
   if (!isRecord(v)) return null;
   const version = asString(v.version);
-  const payload = isRecord(v.payload) ? v.payload : null;
+  // Server shape: { version, payload: {...}, signatureValid, publishedAt }.
+  // Persisted last-good shape: the parsed config itself, flat
+  // ({ version, minAppVersion, forceUpgrade, flags, ... }) — the
+  // payload IS the record in that case. Accept both.
+  const payload = isRecord(v.payload) ? v.payload : isRecord(v.flags) ? v : null;
   if (version === null || payload === null) return null;
   const flags = isRecord(payload.flags) ? payload.flags : {};
   return {
@@ -340,6 +356,20 @@ export async function loadPersistedNetworkMode(): Promise<NetworkMode> {
   }
 }
 
+/** Last-good full sync payload, or null when none was ever saved or
+ *  the stored payload no longer parses. The payload is re-validated
+ *  through parseAdminSync, so a corrupt or partial stored value can
+ *  never become live state. */
+export async function loadLastGoodSync(): Promise<AdminSyncData | null> {
+  try {
+    const raw = await kvGet(LAST_GOOD_SYNC_KEY);
+    if (!raw) return null;
+    return parseAdminSync(JSON.parse(raw) as unknown);
+  } catch {
+    return null;
+  }
+}
+
 async function persistAdminChainState(data: AdminSyncData): Promise<void> {
   const disabledIds = data.chains
     .filter((r) => r.active === 0 || r.active === false)
@@ -349,6 +379,10 @@ async function persistAdminChainState(data: AdminSyncData): Promise<void> {
     await kvSet(DISABLED_CHAINS_KEY, JSON.stringify(disabledIds));
     await kvSet(SYNC_VERSION_KEY, String(data.version));
     await kvSet(NETWORK_MODE_KEY, data.networkMode ?? '');
+    // Full last-good payload: chains, fees, tokens, announcements,
+    // config, maintenance and network mode — not just tombstones.
+    // A failed sync re-applies this instead of bare built-ins.
+    await kvSet(LAST_GOOD_SYNC_KEY, JSON.stringify(data));
   } catch {
     // Persistence is best-effort; the in-memory state still applies.
   }
@@ -489,16 +523,17 @@ export function isTestnetChain(c: ChainConfig): boolean {
 }
 
 /**
- * Arc Testnet ('arc', 5042002) and Arc Mainnet ('arc-mainnet', 5042) are
- * TWO separate picker entries, each with its own id, chain id and RPC
- * (2026-11-27: the user asked for individual switching, as before).
+ * Arc Mainnet ('arc-mainnet', 5042) and an Arc testnet served by the
+ * admin are TWO separate picker entries, each with its own id, chain
+ * id and RPC (2026-11-27: the user asked for individual switching).
  * They must never share an id: every balance / history / signing read
- * re-resolves the chain by id (see lib/chains.ts getChain), so a shared
- * id made mainnet reads silently hit the testnet RPC — testnet tokens
- * showed on Mainnet and mainnet-only tokens (STX) were dropped as
- * unreadable. The admin network_mode still filters the list
- * (testnet-only / mainnet-only), but within the allowed set the user
- * picks either Arc variant freely.
+ * re-resolves the chain by id (see lib/chains.ts getChain), so a
+ * shared id made mainnet reads silently hit the wrong RPC — testnet
+ * tokens showed on Mainnet and mainnet-only tokens (STX) were
+ * dropped as unreadable. A testnet entry exists only when the admin
+ * serves it; the built-in registry is mainnet-only. The admin
+ * network_mode still filters the list, but within the allowed set
+ * the user picks either Arc variant freely.
  */
 export function filterChainsByMode(chains: ChainConfig[], mode: NetworkMode): ChainConfig[] {
   if (mode === null) return [...chains];
@@ -523,8 +558,8 @@ export function pickChainForMode(
   // chain instead. A coming-soon current chain therefore also moves.
   const visible = filterChainsByMode(chains, mode).filter(isChainUsable);
   // Each Arc variant has its own id, so the fit check compares the
-  // current chain directly: 'arc-mainnet' only fits mainnet mode,
-  // 'arc' only fits testnet mode.
+  // current chain directly: a mainnet entry only fits mainnet mode,
+  // a testnet entry (served by the admin) only fits testnet mode.
   if (
     visible.some(
       (c) => c.id === current.id && c.chainId === current.chainId && c.testnet === current.testnet,

@@ -73,6 +73,7 @@ function RootNavigator() {
       <Stack.Screen name="token/[symbol]" />
       <Stack.Screen name="tx/[hash]" />
       <Stack.Screen name="send" />
+      <Stack.Screen name="bridge" />
       <Stack.Screen name="receive" />
       <Stack.Screen name="vault/[id]" />
       <Stack.Screen name="notifications" />

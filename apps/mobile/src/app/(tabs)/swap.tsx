@@ -11,15 +11,17 @@
  *  the API key is set). When no live quote is available the page falls
  *  back to a price-ratio estimate that is labelled as estimated, never
  *  presented as a live quote — and execution always re-fetches a fresh
- *  live quote first. Arc has no verified DEX router on testnet and Solana
+ *  live quote first. Arc swaps are not wired yet and Solana
  *  has no EVM execution path: both say so honestly instead of faking a
  *  swap. Signing happens only in the shared SignTransactionModal — there
- *  is no password field on this page. */
+ *  is no password field on this page. A Bridge entry below the Swap
+ *  button opens the USDC bridge (Circle CCTP) for moving USDC between
+ *  supported chains. */
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { KeyboardAvoidingView, Platform, Pressable, ScrollView, StyleSheet, Text, TextInput, View, useWindowDimensions } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { ArrowDownUp, ChevronDown, Search, Settings } from 'lucide-react-native';
-import { useLocalSearchParams } from 'expo-router';
+import { useLocalSearchParams, router } from 'expo-router';
 import { COLORS } from '../../theme';
 import { useApp } from '../../store/AppContext';import { fmtNum, fmtPct, fmtPrice, fmtUsd } from '../../lib/format';
 import { minimumReceive, priceImpactPieces } from '../../lib/vault';
@@ -302,7 +304,7 @@ export default function Swap() {
         return `${fromToken.symbol} → ${toToken.symbol}`;
       }
     }
-    if (chain.id === 'arc') return 'No route — no DEX router verified on Arc testnet';
+    if (chain.id === 'arc') return 'No route — no DEX router wired for Arc swaps yet';
     return `${fromToken.symbol} → ${chain.dex.split(' ')[0]} → ${toToken.symbol}`;
   }, [fromToken, toToken, chain, merged]);
 
@@ -348,7 +350,7 @@ export default function Swap() {
     if (chainSwapNote) {
       setFormError(
         chain.id === 'arc'
-          ? 'Arc swaps are unavailable — no DEX router address has been verified on Arc testnet yet. BNB swaps are live via PancakeSwap.'
+          ? 'Arc swaps are unavailable — no DEX router is wired for Arc swaps yet. BNB swaps are live via PancakeSwap.'
           : 'Swap execution is wired for EVM chains only. No swap was executed.',
       );
       return;
@@ -395,7 +397,7 @@ export default function Swap() {
           fromAddress: address,
           toAddress: chain.id === 'bnb' ? PANCAKESWAP_V2_ROUTER : 'Set when the swap is built',
           toLabel: chain.id === 'bnb' ? 'PancakeSwap V2 router' : 'Swap route',
-          network: `${chain.name}${chain.testnet ? ' (testnet)' : ''}`,
+          network: `${chain.name}`,
           rows: [
             { label: 'You pay', value: `${fmtNum(amt, 4)} ${fromToken.symbol}` },
             { label: 'You receive (est.)', value: `${fmtNum(q.amountOutHuman, 4)} ${toToken.symbol}` },
@@ -653,6 +655,8 @@ export default function Swap() {
 
         <View style={styles.spacer} />
         <Btn label={btn.label} variant={btn.disabled ? 'secondary' : 'primary'} onPress={() => void review()} disabled={btn.disabled} />
+        <Btn label="Bridge USDC to another chain" variant="ghost" onPress={() => router.push('/bridge')} style={{ marginTop: 8 }} />
+        <Text style={styles.hint}>Move USDC between supported chains. USDC only — gas is paid on both chains.</Text>
 
         <BottomSheet visible={slipOpen} onClose={() => setSlipOpen(false)} title="Slippage tolerance">
           <View style={styles.slipRow}>

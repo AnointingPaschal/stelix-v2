@@ -27,15 +27,15 @@ function ownedToken(over: Partial<TokenBalance> = {}): TokenBalance {
 
 describe('swap catalogue', () => {
   it('lists the native asset first on every chain', () => {
-    for (const chainId of ['arc', 'bnb', 'base', 'ethereum', 'polygon', 'solana']) {
+    for (const chainId of ['arc-mainnet', 'bnb', 'base', 'ethereum', 'polygon', 'solana']) {
       const cat = getSwapCatalogue(chainId);
       expect(cat.length).toBeGreaterThan(0);
       expect(cat[0].address).toBe(''); // native asset
     }
   });
 
-  it('Arc lists only USDC — no unverified Arc testnet token is invented', () => {
-    expect(getSwapCatalogue('arc').map((t) => t.symbol)).toEqual(['USDC']);
+  it('Arc lists only USDC — no unverified Arc token is invented', () => {
+    expect(getSwapCatalogue('arc-mainnet').map((t) => t.symbol)).toEqual(['USDC']);
   });
 
   it('BNB lists BNB, WBNB, USDT and USDC with the canonical addresses', () => {

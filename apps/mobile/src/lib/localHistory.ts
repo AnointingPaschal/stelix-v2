@@ -44,7 +44,7 @@ export type LocalTxStatus = 'pending' | 'confirmed' | 'failed' | 'unknown';
 export interface LocalTxRecord {
   /** Transaction hash (lowercased). The dedupe key for History merging. */
   hash: string;
-  /** Chain id/key as in lib/chains.ts (e.g. 'arc', 'bnb', 'arc-mainnet'). */
+  /** Chain id/key as in lib/chains.ts (e.g. 'arc-mainnet', 'bnb'). */
   chain: string;
   /** Wallet (EVM) address that signed, lowercased. */
   wallet: string;

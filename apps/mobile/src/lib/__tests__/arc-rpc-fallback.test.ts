@@ -1,17 +1,17 @@
 /**
- * Arc RPC fallback regression tests (2026-11-27).
+ * Arc RPC fallback regression tests (2026-11-27, mainnet-first 2026-11-28).
  *
- * What broke: the old Arc testnet RPC hostname rpc.testnet.arc.network
- * stopped resolving on device (UnknownHostException) and is absent from
- * current Arc docs, and the wallet had NO fallback — getProvider() used
- * only chain.rpcUrl, so one dead hostname broke Import Token (the
- * resolveTokenMetadata contract read), balances, send and swap.
+ * What broke in 2026-11-27: the old Arc RPC hostname stopped
+ * resolving on device (UnknownHostException) and the wallet had NO
+ * fallback — getProvider() used only chain.rpcUrl, so one dead
+ * hostname broke Import Token (the resolveTokenMetadata contract
+ * read), balances, send and swap.
  *
  * What this pins:
- *   - Arc testnet primary is now https://rpc.testnet.arc.io with the
- *     verified docs.arc.io fallbacks, explorer explorer.testnet.arc.io.
- *   - Arc mainnet (5042) exists in the registry but is DISABLED
- *     (active: false) — not the default, not in the picker.
+ *   - Arc Mainnet (5042) is the default chain: primary
+ *     https://rpc.mainnet.arc.io, explorer https://explorer.arc.io.
+ *   - There is no hardcoded Arc testnet entry any more: a testnet
+ *     appears only when the admin serves it through /api/sync.
  *   - getProvider() falls back to a live RPC when the primary fails,
  *     proven against a local stub JSON-RPC server (no live network).
  */
@@ -27,98 +27,65 @@ import {
 } from '../chains';
 import { getProvider, getRpcUrls, resolveTokenMetadata } from '../balances';
 
-const ARC_TESTNET_USDC = '0x3600000000000000000000000000000000000000';
+const ARC_MAINNET_USDC = '0x3600000000000000000000000000000000000000';
 
-const ARC_TESTNET_RPC_URLS = [
-  'https://rpc.testnet.arc.io',
-  'https://rpc.blockdaemon.testnet.arc.io',
-  'https://rpc.drpc.testnet.arc.io',
-  'https://rpc.quicknode.testnet.arc.io',
-];
+const ARC_MAINNET_RPC_URLS = ['https://rpc.mainnet.arc.io'];
 
-describe('Arc testnet registry (post rpc.testnet.arc.network outage)', () => {
-  it('primary RPC is rpc.testnet.arc.io with the verified .arc.io fallbacks', () => {
-    const arc = getChain('arc');
-    expect(arc.rpcUrl).toBe('https://rpc.testnet.arc.io');
-    expect(arc.rpcUrls).toEqual(ARC_TESTNET_RPC_URLS);
-    for (const url of arc.rpcUrls) {
-      expect(url).toMatch(/^https:\/\/rpc\.([a-z0-9-]+\.)*testnet\.arc\.io$/);
-    }
-    expect(arc.rpcUrls).not.toContain('https://rpc.testnet.arc.network');
-    expect(arc.rpcUrl).not.toContain('arc.network');
-  });
-
-  it('explorer is explorer.testnet.arc.io (old testnet.arcscan.app gone)', () => {
-    const arc = getChain('arc');
-    expect(arc.explorerUrl).toBe('https://explorer.testnet.arc.io');
-    expect(arc.explorerApiUrl).toBe('https://explorer.testnet.arc.io/api');
+describe('Arc Mainnet registry', () => {
+  it('primary RPC is rpc.mainnet.arc.io, explorer explorer.arc.io', () => {
+    const arc = getChain('arc-mainnet');
+    expect(arc.rpcUrl).toBe('https://rpc.mainnet.arc.io');
+    expect(arc.rpcUrls).toEqual(ARC_MAINNET_RPC_URLS);
+    expect(arc.explorerUrl).toBe('https://explorer.arc.io');
+    expect(arc.explorerApiUrl).toBe('https://explorer.arc.io/api');
     expect(arc.explorerUrl).not.toContain('arcscan');
   });
 
-  it('testnet chain id, USDC gas and exit stablecoin are unchanged', () => {
-    const arc = getChain('arc');
-    expect(arc.chainId).toBe(5042002);
-    expect(arc.testnet).toBe(true);
+  it('mainnet chain id, USDC gas and exit stablecoin', () => {
+    const arc = getChain('arc-mainnet');
+    expect(arc.chainId).toBe(5042);
+    expect(arc.testnet).toBeUndefined();
+    expect(arc.status).toBe('live');
     expect(arc.nativeSymbol).toBe('USDC');
     expect(arc.nativeDecimals).toBe(6);
-    expect(arc.exitStablecoinAddress).toBe(ARC_TESTNET_USDC);
+    expect(arc.exitStablecoinAddress).toBe(ARC_MAINNET_USDC);
+  });
+
+  it('is the default, active and selectable', () => {
+    expect(DEFAULT_CHAIN.id).toBe('arc-mainnet');
+    expect(DEFAULT_CHAIN.chainId).toBe(5042);
+    expect(isChainActive('arc-mainnet')).toBe(true);
+    expect(ACTIVE_CHAINS.map((c) => c.id)).toContain('arc-mainnet');
+    expect(getChainByEvmId(5042)?.id).toBe('arc-mainnet');
+    expect(getChainByEvmId(5042002)).toBeNull();
   });
 
   it('getRpcUrls puts the (env-overridable) primary first, then fallbacks, de-duplicated', () => {
-    const arc = getChain('arc');
-    expect(getRpcUrls(arc)).toEqual(ARC_TESTNET_RPC_URLS);
+    const arc = getChain('arc-mainnet');
+    expect(getRpcUrls(arc)).toEqual(ARC_MAINNET_RPC_URLS);
     // A chain whose primary is also listed in rpcUrls must not duplicate it.
-    const dup: ChainConfig = { ...arc, rpcUrl: arc.rpcUrls[1], rpcUrls: [...arc.rpcUrls] };
-    expect(getRpcUrls(dup)[0]).toBe(arc.rpcUrls[1]);
+    const dup: ChainConfig = { ...arc, rpcUrl: arc.rpcUrls[0], rpcUrls: [...arc.rpcUrls] };
+    expect(getRpcUrls(dup)[0]).toBe(arc.rpcUrls[0]);
     expect(new Set(getRpcUrls(dup)).size).toBe(getRpcUrls(dup).length);
   });
 
-  it('EXPO_PUBLIC_ARC_RPC_URL still overrides the primary RPC', () => {
+  it('EXPO_PUBLIC_ARC_MAINNET_RPC_URL still overrides the primary RPC', () => {
     const custom = 'https://custom-arc-rpc.example/rpc';
     jest.isolateModules(() => {
-      const prev = process.env.EXPO_PUBLIC_ARC_RPC_URL;
-      process.env.EXPO_PUBLIC_ARC_RPC_URL = custom;
+      const prev = process.env.EXPO_PUBLIC_ARC_MAINNET_RPC_URL;
+      process.env.EXPO_PUBLIC_ARC_MAINNET_RPC_URL = custom;
       try {
         // eslint-disable-next-line @typescript-eslint/no-require-imports
         const freshChains = require('../chains') as typeof import('../chains');
-        expect(freshChains.getChain('arc').rpcUrl).toBe(custom);
+        expect(freshChains.getChain('arc-mainnet').rpcUrl).toBe(custom);
         // eslint-disable-next-line @typescript-eslint/no-require-imports
         const freshBalances = require('../balances') as typeof import('../balances');
-        expect(freshBalances.getRpcUrls(freshChains.getChain('arc'))[0]).toBe(custom);
+        expect(freshBalances.getRpcUrls(freshChains.getChain('arc-mainnet'))[0]).toBe(custom);
       } finally {
-        if (prev === undefined) delete process.env.EXPO_PUBLIC_ARC_RPC_URL;
-        else process.env.EXPO_PUBLIC_ARC_RPC_URL = prev;
+        if (prev === undefined) delete process.env.EXPO_PUBLIC_ARC_MAINNET_RPC_URL;
+        else process.env.EXPO_PUBLIC_ARC_MAINNET_RPC_URL = prev;
       }
     });
-  });
-});
-
-describe('Arc mainnet registry (disabled by default)', () => {
-  it('exists with chain 5042, mainnet RPC/explorer, same USDC and the Uniswap routers', () => {
-    const mainnet = getChain('arc-mainnet');
-    expect(mainnet.chainId).toBe(5042);
-    expect(mainnet.rpcUrl).toBe('https://rpc.mainnet.arc.io');
-    expect(mainnet.rpcUrls).toEqual(['https://rpc.mainnet.arc.io']);
-    expect(mainnet.explorerUrl).toBe('https://explorer.arc.io');
-    expect(mainnet.explorerApiUrl).toBe('https://explorer.arc.io/api');
-    expect(mainnet.nativeSymbol).toBe('USDC');
-    expect(mainnet.nativeDecimals).toBe(6);
-    expect(mainnet.exitStablecoin).toBe('USDC');
-    expect(mainnet.exitStablecoinAddress).toBe(ARC_TESTNET_USDC);
-    expect(mainnet.uniswapV3Router).toBe('0x53BF6B0684Ec7eF91e1387Da3D1a1769bC5A6F77');
-    expect(mainnet.uniswapV2Router).toBe('0x1f7d7550B1b028f7571E69A784071F0205FD2EfA');
-    expect(mainnet.status).toBe('live');
-    expect(getChainByEvmId(5042)?.id).toBe('arc-mainnet');
-    expect(getChainByEvmId(5042002)?.id).toBe('arc');
-  });
-
-  it('is NOT active, NOT selectable, and NOT the default — wallet stays testnet-first for Arc', () => {
-    const mainnet = getChain('arc-mainnet');
-    expect(mainnet.active).toBe(false);
-    expect(isChainActive('arc-mainnet')).toBe(false);
-    expect(ACTIVE_CHAINS.map((c) => c.id)).not.toContain('arc-mainnet');
-    expect(DEFAULT_CHAIN.id).toBe('arc');
-    expect(DEFAULT_CHAIN.chainId).toBe(5042002);
   });
 });
 
@@ -131,9 +98,9 @@ function stubRpcResult(method: string, params: unknown[]): unknown {
   const coder = new ethers.AbiCoder();
   switch (method) {
     case 'eth_chainId':
-      return '0x4cef52'; // 5042002
+      return '0x13b2'; // 5042
     case 'net_version':
-      return '5042002';
+      return '5042';
     case 'eth_blockNumber':
       return '0x1234';
     case 'eth_getBalance':
@@ -213,11 +180,11 @@ describe('getProvider() RPC fallback (dead primary -> live fallback)', () => {
     });
   });
 
-  /** Arc chain config whose primary is dead (port 9, nothing listening)
-   *  and whose only live RPC is the local stub — the exact shape of the
-   *  rpc.testnet.arc.network outage. */
+  /** Arc Mainnet chain config whose primary is dead (port 9, nothing
+   *  listening) and whose only live RPC is the local stub — the exact
+   *  shape of the 2026-11-27 outage. */
   function deadPrimaryChain(): ChainConfig {
-    const arc = getChain('arc');
+    const arc = getChain('arc-mainnet');
     return {
       ...arc,
       rpcUrl: 'http://127.0.0.1:9/rpc',
@@ -231,7 +198,7 @@ describe('getProvider() RPC fallback (dead primary -> live fallback)', () => {
   }, 15000);
 
   it('falls back for the Import Token path: resolveTokenMetadata reads USDC via the live RPC', async () => {
-    const meta = await resolveTokenMetadata(deadPrimaryChain(), ARC_TESTNET_USDC);
+    const meta = await resolveTokenMetadata(deadPrimaryChain(), ARC_MAINNET_USDC);
     expect(meta).toEqual({ symbol: 'USDC', name: 'USD Coin', decimals: 6 });
   }, 15000);
 

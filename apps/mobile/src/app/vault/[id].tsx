@@ -390,7 +390,7 @@ export default function LockDetail() {
         <Term label="Auto-sell" value={lock.autoSell ? `On — ${chain.exitStablecoinLabel}` : 'Off — unlock to wallet'} />
         <Term label="Slippage" value={`${lock.slippageBps / 100}%`} />
         <Term label="Minimum receive" value={fmtUsd(lock.minReceiveUsd)} />
-        <Term label="Contract" value={(() => { const s = getVaultDeploymentStatus(lock.chainId); return s.deployed ? s.address : 'Not deployed yet (testnet first)'; })()} />
+        <Term label="Contract" value={(() => { const s = getVaultDeploymentStatus(lock.chainId); return s.deployed ? s.address : 'Not deployed yet'; })()} />
         <Term label="Tx hash" value={lock.txHash ? `${lock.txHash.slice(0, 12)}…${lock.txHash.slice(-6)}` : '—'} />
         <Text style={styles.sentence}>{lockSummarySentence(lock, chain.exitStablecoinLabel)}</Text>
       </Card>

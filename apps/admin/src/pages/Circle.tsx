@@ -67,7 +67,7 @@ export default function Circle() {
             <p className="muted">Loading Circle status…</p>
           ) : (
             <>
-              <StatusRow label="API key configured" ok={status.apiKeyConfigured} detail={status.apiKeyConfigured ? 'Set as the CIRCLE_API_KEY Wrangler secret.' : 'Not set — see the command below.'} />
+              <StatusRow label="API key configured" ok={status.apiKeyConfigured} detail={status.apiKeySource === 'stored' ? 'Saved on the API Keys page as “circle” — it takes precedence over the Pages secret.' : status.apiKeyConfigured ? 'Set as the CIRCLE_API_KEY Wrangler secret.' : 'Not set — save a key named “circle” on the API Keys page, or use the command below.'} />
               <StatusRow label="App ID saved" ok={status.appIdConfigured} detail={status.appIdMasked ? `Saved as ${status.appIdMasked} (masked — the full ID is never shown).` : 'Not saved yet.'} />
               <StatusRow label="Circle reachable" ok={status.circleReachable} detail={status.circleReachable ? 'The harmless entity-config read succeeded.' : status.circleError ?? 'Not checked — set the API key first.'} />
               <StatusRow label="Saved App ID matches Circle" ok={status.circleAppIdMatches} detail={status.circleAppIdMatches === null ? 'Circle reports an App ID only once the key is set.' : status.circleAppIdMatches ? 'Matches the App ID Circle reports for this key.' : 'MISMATCH — the saved App ID is not the one Circle reports for this key. Re-check the Console value.'} />
@@ -90,7 +90,7 @@ export default function Circle() {
             autoComplete="off"
           />
           <p className="field-hint">
-            Find it in the Circle Console under Web3 Services. It is a public identifier the mobile SDK needs to initialise — paste it here, never the API key. The App ID the user supplied on 2026-11-27 (shown above) is already the default for fresh databases — migration 0010 seeds it into D1 — so on a fresh database this field is only needed to change it. The API key is set only as a Wrangler secret:
+            Find it in the Circle Console under Web3 Services. It is a public identifier the mobile SDK needs to initialise — paste it here, never the API key. The App ID the user supplied on 2026-11-27 (shown above) is already the default for fresh databases — migration 0010 seeds it into D1 — so on a fresh database this field is only needed to change it. The API key is saved on the API Keys page (name it “circle”) or set as a Wrangler secret:
           </p>
           <p className="field-hint"><code>wrangler pages secret put CIRCLE_API_KEY --project-name stelix-admin</code></p>
           <button className="btn mint block" onClick={save} disabled={busy}>

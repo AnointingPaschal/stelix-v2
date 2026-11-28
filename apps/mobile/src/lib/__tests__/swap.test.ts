@@ -60,13 +60,13 @@ describe('executeSwap refusals — never a fake swap', () => {
     ).rejects.toThrow(/stale/);
   });
 
-  it('refuses Arc — router not confirmed on testnet', async () => {
+  it('refuses Arc — router not confirmed', async () => {
     await expect(
       executeSwap(
         fakeSigner,
-        makeQuote({ chainId: 'arc', fromTokenAddress: '0x3600000000000000000000000000000000000000', toTokenAddress: USDT_BNB }),
+        makeQuote({ chainId: 'arc-mainnet', fromTokenAddress: '0x3600000000000000000000000000000000000000', toTokenAddress: USDT_BNB }),
       ),
-    ).rejects.toThrow(/no DEX router address has been verified on Arc testnet/i);
+    ).rejects.toThrow(/no DEX router address has been verified on Arc/i);
   });
 
   it('refuses Solana — no EVM execution path', async () => {

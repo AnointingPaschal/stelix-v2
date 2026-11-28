@@ -82,4 +82,28 @@ describe('validateFeePayload', () => {
       'maxLockUsd must be greater than minLockUsd',
     );
   });
+
+  it('feeRecipient is null until set, and must be a valid address when set', () => {
+    expect(DEFAULT_FEES.feeRecipient).toBeNull();
+    const { config, errors } = validateFeePayload(DEFAULT_FEES);
+    expect(errors).toEqual([]);
+    expect(config?.feeRecipient).toBeNull();
+    const set = validateFeePayload({ ...DEFAULT_FEES, feeRecipient: '0xCca907AE079DB7638A4d2D3e82defaea5FBDF383' });
+    expect(set.errors).toEqual([]);
+    expect(set.config?.feeRecipient).toBe('0xCca907AE079DB7638A4d2D3e82defaea5FBDF383');
+    // Blank means "not set", not an error.
+    expect(validateFeePayload({ ...DEFAULT_FEES, feeRecipient: '' }).config?.feeRecipient).toBeNull();
+    // Older published configs omit the field entirely — still valid.
+    const { feeRecipient: _r, ...old } = DEFAULT_FEES as FeeConfig & Record<string, unknown>;
+    const oldResult = validateFeePayload(old);
+    expect(oldResult.errors).toEqual([]);
+    expect(oldResult.config?.feeRecipient).toBeNull();
+    // A malformed address is rejected.
+    expect(validateFeePayload({ ...DEFAULT_FEES, feeRecipient: 'not-an-address' }).errors).toContain(
+      'feeRecipient must be a valid 0x address, or blank',
+    );
+    expect(validateFeePayload({ ...DEFAULT_FEES, feeRecipient: '0x1234' }).errors).toContain(
+      'feeRecipient must be a valid 0x address, or blank',
+    );
+  });
 });

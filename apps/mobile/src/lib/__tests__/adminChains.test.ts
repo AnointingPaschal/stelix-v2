@@ -39,8 +39,8 @@ describe('mergeAdminChains', () => {
   it('returns the built-ins unchanged when the fetch failed (remote null)', () => {
     const merged = mergeAdminChains(CHAINS, null);
     expect(merged.map((c) => c.id)).toEqual(CHAINS.map((c) => c.id));
-    expect(merged.find((c) => c.id === 'arc')?.active).toBe(true);
-    expect(merged.find((c) => c.id === 'arc')?.fromAdmin).toBeUndefined();
+    expect(merged.find((c) => c.id === 'arc-mainnet')?.active).toBe(true);
+    expect(merged.find((c) => c.id === 'arc-mainnet')?.fromAdmin).toBeUndefined();
   });
 
   it('overlays remote display fields on a matching slug; remote wins where it provides a value', () => {
@@ -92,19 +92,19 @@ describe('mergeAdminChains', () => {
     const tombstoned = mergeAdminChains(CHAINS, [row()], { deletedIds: ['bnb', 'arbitrum'] });
     expect(tombstoned.some((c) => c.id === 'bnb')).toBe(false);
     expect(tombstoned.some((c) => c.id === 'arbitrum')).toBe(false);
-    expect(tombstoned.some((c) => c.id === 'arc')).toBe(true);
+    expect(tombstoned.some((c) => c.id === 'arc-mainnet')).toBe(true);
   });
 
   it('a deleted chain stays deleted when the API is down (persisted tombstones)', () => {
     const merged = mergeAdminChains(CHAINS, null, { deletedIds: ['bnb'] });
     expect(merged.some((c) => c.id === 'bnb')).toBe(false);
-    expect(merged.some((c) => c.id === 'arc')).toBe(true);
+    expect(merged.some((c) => c.id === 'arc-mainnet')).toBe(true);
   });
 
   it('a disabled chain stays disabled when the API is down (persisted disabled ids)', () => {
     const merged = mergeAdminChains(CHAINS, null, { disabledIds: ['bnb'] });
     expect(merged.find((c) => c.id === 'bnb')?.active).toBe(false);
-    expect(merged.find((c) => c.id === 'arc')?.active).toBe(true);
+    expect(merged.find((c) => c.id === 'arc-mainnet')?.active).toBe(true);
   });
 
   it('carries the admin DEX router and paired chain when verified', () => {
@@ -189,7 +189,10 @@ describe('mergeAdminChains', () => {
     const silent = mergeAdminChains(CHAINS, [
       row({ id: 'plasma-testnet', name: 'Plasma Testnet', chain_id: 9746, rpc_urls: 'https://testnet-rpc.plasma.to', explorer_url: 'https://testnet.plasmascan.to', native_token: 'XPL', native_decimals: 18, stablecoin: 'USDT', stablecoin_address: '', status: 'testnet', is_testnet: 1, active: 1 }),
     ]);
-    expect(silent.find((c) => c.id === 'plasma-testnet')?.comingSoon).toBe(true);
+    // A remote-only chain whose row says nothing about coming-soon is
+    // not coming-soon: the admin serves coming_soon: 1 for Plasma
+    // testnet in production, and the flag is what marks it.
+    expect(silent.find((c) => c.id === 'plasma-testnet')?.comingSoon).toBe(false);
     // A coming-soon chain is NOT dropped by the merge — it stays in
     // the list so the picker can show it disabled.
     expect(snake.some((c) => c.id === 'plasma-testnet')).toBe(true);

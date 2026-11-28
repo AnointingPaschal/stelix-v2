@@ -24,6 +24,7 @@ import { ZoomIn, ZoomOut } from 'lucide-react-native';
 import { COLORS } from '../theme';
 import { bollingerSeries, macdSeries } from '../lib/chart';
 import { fmtPrice } from '../lib/format';
+import { Skeleton } from './ui';
 import { ema, type Candle } from '../lib/prices';
 
 export type ChartType = 'candles' | 'line';
@@ -243,10 +244,10 @@ export function PriceChart({
   if (visible.length < 2) {
     if (loading) {
       return (
-        <View style={[styles.empty, { height }]}>
+        <View style={[styles.empty, { height }]} accessibilityLabel="Loading chart">
           <View style={[styles.skelBar, { width: '70%' }]} />
           <View style={[styles.skelBar, { width: '45%' }]} />
-          <Text style={styles.emptySub}>Loading chart…</Text>
+          <Skeleton height={Math.max(90, height - 70)} width="100%" />
         </View>
       );
     }

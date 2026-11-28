@@ -89,7 +89,7 @@ export default function VaultHub() {
           </View>
         </View>
         <Btn
-          label={refreshing ? 'Refreshing…' : 'Refresh Positions'}
+          label="Refresh Positions"
           variant="secondary"
           onPress={refresh}
           loading={refreshing}

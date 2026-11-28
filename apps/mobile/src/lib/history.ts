@@ -5,8 +5,8 @@
  * at all, and no shared/hardcoded API key is shipped in the app.
  *
  * Sources, in order, for EVM chains:
- *  1. Blockscout v2 API (keyless) — Arc Testnet + Arc Mainnet (their
- *     explorers ARE Blockscout), Ethereum (eth.blockscout.com) and
+ *  1. Blockscout v2 API (keyless) — Arc Mainnet (its explorer IS
+ *     Blockscout), Ethereum (eth.blockscout.com) and
  *     Base (base.blockscout.com). Token transfers AND native
  *     transactions from /api/v2/addresses/{addr}/. Verified live
  *     2026-11-28: eth.blockscout.com returned real token-transfers
@@ -77,11 +77,10 @@ const EXPLORER_CHAIN_IDS: Record<string, number> = {
   bnb: 56,
   base: 8453,
   polygon: 137,
-  arc: 5042002,
 };
 
 /** Chains whose explorer is Blockscout — its v2 API needs no key. */
-const BLOCKSCOUT_CHAIN_IDS = new Set(['arc', 'arc-mainnet']);
+const BLOCKSCOUT_CHAIN_IDS = new Set(['arc-mainnet']);
 
 /** Public Blockscout v2 instances for non-Arc chains (keyless, no
  *  account). eth.blockscout.com verified live 2026-11-28 (real
@@ -392,7 +391,7 @@ function mapExplorerTx(raw: ExplorerTx, chain: ChainConfig, address: string): Tx
 }
 
 /* ------------------------------------------------------------------ */
-/* Keyless public-RPC Transfer-log scan (BNB / Polygon / testnets).   */
+/* Keyless public-RPC Transfer-log scan (BNB / Polygon).   */
 /*                                                                    */
 /* One eth_getLogs call per block page, filtered to the chain's known */
 /* stablecoin contracts, then filtered client-side to transfers      */

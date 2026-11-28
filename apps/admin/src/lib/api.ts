@@ -171,12 +171,52 @@ export interface CircleConfigStatus {
   configured: boolean
   appIdConfigured: boolean
   apiKeyConfigured: boolean
+  /** Where the effective Circle key comes from: a key named `circle`
+   *  saved on the API Keys page ('stored'), or the CIRCLE_API_KEY
+   *  Pages secret ('secret'). Null when no key is set anywhere. */
+  apiKeySource: 'stored' | 'secret' | null
   arcTestnet: boolean
   appIdMasked: string | null
   circleReachable: boolean | null
   circleAppIdMatches: boolean | null
   circleError: string | null
   vaultDeployed: boolean
+  note: string
+}
+
+/** One admin-managed API key. The VALUE is never returned — only the
+ *  name and a masked hint (see src/lib/apiKeys.ts). */
+export interface ApiKeyRow {
+  id: number
+  name: string
+  hint: string
+  updatedAt: string
+  updatedBy: string
+}
+
+/** STX/USDC pool on Arc Mainnet, read live from the Uniswap V3
+ *  factory + pool contracts. `exists` is false (and the price fields
+ *  null) until liquidity is added — STX has no DEX pool today. */
+export interface PoolStatus {
+  ok: boolean
+  chain: string
+  /** The STX token, resolved at runtime from the Token Registry (or
+   *  the latest STX launch record) — never hardcoded. Nulls until the
+   *  new STX token is deployed and registered. */
+  stx: { address: string | null; decimals: number | null; source: 'registry' | 'launchpad' | null }
+  usdc: { address: string; decimals: number }
+  factory: string
+  factoryVerified: boolean
+  poolAddress: string | null
+  exists: boolean
+  token0: string | null
+  token1: string | null
+  tick: number | null
+  priceUsdcPerStx: string | null
+  priceStxPerUsdc: string | null
+  liquidityRaw: string | null
+  explorerUrl: string | null
+  checkedAt: string
   note: string
 }
 
@@ -450,6 +490,27 @@ export const api = {
   },
   async getFeeHistory(): Promise<{ history: { id: number; version: number; payload_json: string; published_by: string; created_at: string }[] }> {
     return live('/api/admin/fees/history')
+  },
+  // ---- API Keys (migration 0021) ----
+  /** Values are never returned — only names + masked hints. Saving a
+   *  key encrypts it server-side; saving again under the same name
+   *  replaces it. Name the key `circle` to override the Circle API
+   *  key (stored key wins over the CIRCLE_API_KEY Pages secret). */
+  async getApiKeys(): Promise<ApiKeyRow[]> {
+    const d = await live<{ keys: { id: number; name: string; hint: string; updated_at: string; updated_by: string }[] }>('/api/admin/api-keys')
+    return d.keys.map((k) => ({ id: k.id, name: k.name, hint: k.hint, updatedAt: k.updated_at, updatedBy: k.updated_by }))
+  },
+  async saveApiKey(name: string, value: string): Promise<{ ok: boolean; name: string; hint: string }> {
+    return post('/api/admin/api-keys', { name, value })
+  },
+  async deleteApiKey(id: number): Promise<{ ok: boolean }> {
+    const r = await fetch(`/api/admin/api-keys?id=${id}`, { method: 'DELETE', credentials: 'same-origin' })
+    if (!r.ok) throw new Error(`Delete failed: ${r.status}`)
+    return r.json() as Promise<{ ok: boolean }>
+  },
+  // ---- Stelix Pool (STX/USDC on Arc Mainnet) ----
+  async getPool(): Promise<PoolStatus> {
+    return live<PoolStatus>('/api/admin/pool')
   },
   async getAnnouncements(): Promise<{ announcements: { id: number; title: string; message: string; audience: string; expires_at: string | null; created_at: string }[] }> {
     return live('/api/admin/announcements')

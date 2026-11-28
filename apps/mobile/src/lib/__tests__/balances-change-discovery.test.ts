@@ -184,7 +184,7 @@ describe('discovery parsers', () => {
 
 describe('discoverTokens (injected deps)', () => {
   it('uses keyless Blockscout on Arc and returns only balance > 0', async () => {
-    const out = await discoverTokens(getChain('arc'), ADDR, {
+    const out = await discoverTokens(getChain('arc-mainnet'), ADDR, {
       fetchFn: async (url) => {
         expect(url).toContain('/api/v2/addresses/');
         expect(url).toContain('type=ERC-20');
@@ -198,7 +198,7 @@ describe('discoverTokens (injected deps)', () => {
     });
     expect(out).toHaveLength(1);
     expect(out[0].symbol).toBe('AAA');
-    expect(out[0].chainId).toBe('arc');
+    expect(out[0].chainId).toBe('arc-mainnet');
   });
 
   it('uses tokenlist on BNB and keeps only tokens with balance > 0', async () => {
@@ -276,17 +276,11 @@ describe('default stablecoins (chain.stablecoins)', () => {
       USDT: null,
       USDC: '0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913',
     });
-    expect(getChain('base-sepolia').stablecoins?.USDC).toBe('0x036CbD53842c5426634e7929541eC2318f3dCF7e');
-    expect(getChain('ethereum-sepolia').stablecoins?.USDC).toBe('0x1c7D4B196Cb0C7B01d743Fbc6116a902379C7238');
-    expect(getChain('polygon-amoy').stablecoins?.USDC).toBe('0x41E94Eb019C0762f9Bfcf9Fb1E58725BfB0e7582');
   });
 
-  it('Arc lists USDC (native gas asset) and null USDT; BNB testnet lists neither', () => {
-    expect(getChain('arc').stablecoins?.USDC).toBe('0x3600000000000000000000000000000000000000');
-    expect(getChain('arc').stablecoins?.USDT).toBeNull();
+  it('Arc Mainnet lists USDC (native gas asset) and null USDT', () => {
     expect(getChain('arc-mainnet').stablecoins?.USDC).toBe('0x3600000000000000000000000000000000000000');
-    expect(getChain('bnb-testnet').stablecoins).toEqual({ USDT: null, USDC: null });
-    expect(getChain('plasma-testnet').stablecoins).toEqual({ USDT: null, USDC: null });
+    expect(getChain('arc-mainnet').stablecoins?.USDT).toBeNull();
   });
 
   it('Plasma lists USDT0 under USDT plus verified USDC', () => {

@@ -58,9 +58,9 @@ describe('Blockscout history (Arc, no API key)', () => {
     global.fetch = realFetch;
   });
 
-  it('shows a 30 USDC receive on Arc Testnet with no explorer key', async () => {
+  it('shows a 30 USDC receive on Arc Mainnet with no explorer key', async () => {
     mockBlockscout();
-    const res = await fetchHistory('arc', ME);
+    const res = await fetchHistory('arc-mainnet', ME);
     expect(res.status).toBe('ok');
     expect(res.error).toBeNull();
     // One record, not two: the same tx appears as both a token
@@ -275,7 +275,7 @@ const NOW_B = 1_800_000_000_000;
 
 function localRec(over: Partial<LocalTxRecord> & { hash: string }): LocalTxRecord {
   return {
-    chain: 'arc',
+    chain: 'arc-mainnet',
     wallet: ME.toLowerCase(),
     type: 'send',
     tokenSymbol: 'USDC',
@@ -308,7 +308,7 @@ describe('localTxToTxRecord', () => {
       amountRaw: '12500000',
       status: 'pending',
       isSpam: false,
-      chainId: 'arc',
+      chainId: 'arc-mainnet',
       blockNumber: null,
     });
     expect(rec.counterparty).toBe(OTHER);
@@ -396,7 +396,7 @@ describe('fetchHistory merges the local ledger (Phase B integration)', () => {
     await recordLocalTx(newLocalTx({ hash: '0xABC123', amount: '5', status: 'pending', timestamp: NOW_B + 2000 }));
     await recordLocalTx(newLocalTx({ hash: '0xlocal9', amount: '2', status: 'pending', timestamp: NOW_B + 1000 }));
     mockBlockscout();
-    const res = await fetchHistory('arc', ME);
+    const res = await fetchHistory('arc-mainnet', ME);
     expect(res.status).toBe('ok');
     // 0xabc123 once (local wins), 0xlocal9 local-only, no other rows.
     expect(res.txs).toHaveLength(2);
@@ -413,7 +413,7 @@ describe('fetchHistory merges the local ledger (Phase B integration)', () => {
     global.fetch = jest.fn(async () => {
       throw new Error('network down');
     }) as unknown as typeof fetch;
-    const res = await fetchHistory('arc', ME);
+    const res = await fetchHistory('arc-mainnet', ME);
     expect(res.status).toBe('ok');
     expect(res.error).toBeNull();
     expect(res.txs).toHaveLength(1);

@@ -19,8 +19,8 @@
  *    the wallet. A Circle lock's auto-sell only happens once the vault
  *    + keeper exist — never claim otherwise.
  *
- * Arc only: Circle vault locks are offered on Arc (testnet first,
- * 'arc' / 'arc-mainnet'). Any other chain is refused.
+ * Arc only: Circle vault locks are offered on Arc Mainnet
+ * ('arc-mainnet'). Any other chain is refused.
  *
  * Pure builder — no React Native imports, no SDK import. The provider
  * (store/CircleWalletContext.tsx) turns each returned step into a
@@ -80,7 +80,7 @@ export type CircleCreateLockResult =
 export function buildCircleCreateLockChallenge(
   params: CreateLockOnChainParams,
 ): CircleCreateLockResult {
-  if (params.chainId !== 'arc' && params.chainId !== 'arc-mainnet') {
+  if (params.chainId !== 'arc-mainnet') {
     return { ok: false, reason: CIRCLE_VAULT_ARC_ONLY_MESSAGE };
   }
   let vaultAddress: string;

@@ -10,6 +10,8 @@ import Chains from './pages/Chains'
 import Tokens from './pages/Tokens'
 import Keeper from './pages/Keeper'
 import Fees from './pages/Fees'
+import ApiKeys from './pages/ApiKeys'
+import Pool from './pages/Pool'
 import Announcements from './pages/Announcements'
 import Releases from './pages/Releases'
 import Config from './pages/Config'
@@ -33,6 +35,8 @@ export default function App() {
       <Route path="/tokens" element={<Tokens />} />
       <Route path="/keeper" element={<Keeper />} />
       <Route path="/fees" element={<Fees />} />
+      <Route path="/api-keys" element={<ApiKeys />} />
+      <Route path="/pool" element={<Pool />} />
       <Route path="/announcements" element={<Announcements />} />
       <Route path="/releases" element={<Releases />} />
       <Route path="/config" element={<Config />} />

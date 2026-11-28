@@ -1,7 +1,7 @@
 /**
  * Screen — Circle wallet on Arc (User-Controlled Wallet, MPC).
  *
- * EOA on Arc testnet first. No seed phrase: the user approves every
+ * EOA on Arc Mainnet. No seed phrase: the user approves every
  * transaction in the Circle PIN UI. Circle works ONLY in the EAS
  * release / dev build — NOT in Expo Go — and only once a Circle App ID
  * is configured and the admin Worker endpoints are live. Until then
@@ -24,7 +24,7 @@ import { getChain } from '../lib/chains';
 import { fetchBalances, type TokenBalance } from '../lib/balances';
 import { isValidEvmAddress } from '../lib/wallet';
 import { fmtNum, fmtUsd } from '../lib/format';
-import { Btn, Card, Chip, EmptyState, RiskNote, ScreenHeader, centeredContent } from '../components/ui';
+import { Btn, Card, Chip, EmptyState, RiskNote, ScreenHeader, Skeleton, centeredContent } from '../components/ui';
 
 export default function CircleWalletScreen() {
   const insets = useSafeAreaInsets();
@@ -39,14 +39,14 @@ export default function CircleWalletScreen() {
   const [localError, setLocalError] = useState<string | null>(null);
 
   const address = circle.activeWallet?.address ?? '';
-  const arc = getChain('arc');
+  const arc = getChain('arc-mainnet');
 
   const refreshBalance = useCallback(async () => {
     if (!address) return;
     setLoadingBalance(true);
     setBalanceError(null);
     try {
-      const res = await fetchBalances('arc', address, []);
+      const res = await fetchBalances('arc-mainnet', address, []);
       // Arc's native gas asset IS USDC (6 decimals) — the native row.
       const native = res.tokens.find((t) => t.address === '') ?? res.tokens.find((t) => t.symbol === 'USDC') ?? null;
       setUsdc(native);
@@ -165,9 +165,9 @@ export default function CircleWalletScreen() {
               <WalletIcon size={18} color={COLORS.mintDark} />
             </View>
             <View style={styles.rowMid}>
-              <Text style={styles.cardTitle}>Arc wallet · Testnet first</Text>
+              <Text style={styles.cardTitle}>Arc wallet</Text>
               <Text style={styles.cardBody}>
-                EOA wallet on Arc Testnet (chain 5042002). Gas is USDC. Smart contract accounts (SCA) and Gas Station
+                EOA wallet on Arc Mainnet (chain 5042). Gas is USDC. Smart contract accounts (SCA) and Gas Station
                 are not built yet.
               </Text>
             </View>
@@ -192,9 +192,9 @@ export default function CircleWalletScreen() {
             <View>
               <Text style={styles.label}>WALLET ADDRESS</Text>
               <Text style={styles.address} selectable>{address}</Text>
-              <Text style={styles.label}>USDC BALANCE · ARC TESTNET</Text>
+              <Text style={styles.label}>USDC BALANCE · ARC</Text>
               {loadingBalance ? (
-                <Text style={styles.balance}>Loading…</Text>
+                <Skeleton height={30} width={150} />
               ) : usdc ? (
                 <Text style={styles.balance}>{fmtNum(usdc.balance)} USDC</Text>
               ) : (

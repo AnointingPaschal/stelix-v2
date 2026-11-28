@@ -16,6 +16,7 @@ import {
   resolveModeChange,
   fetchAdminSync,
   filterChainsByMode,
+  loadLastGoodSync,
   loadPersistedAdminChainState,
   loadPersistedNetworkMode,
   maintenanceBlocksApp as maintenanceBlocksAppFn,
@@ -31,7 +32,7 @@ import {
   type MaintenanceState,
   type NetworkMode,
 } from '../lib/adminSync';
-import { fetchBalances, loadImportedTokens, migrateArcImportedTokens, migrateImportedTokensForWallet, type TokenBalance } from '../lib/balances';
+import { fetchBalances, loadImportedTokens, migrateImportedTokensForWallet, type TokenBalance } from '../lib/balances';
 import { fetchHistory, filterHistory, type TxRecord } from '../lib/history';
 import { getUserLocksOnChain, lockedByToken, mapChainLockToBullLock, type BullLock } from '../lib/vault';
 import {
@@ -286,16 +287,79 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
   }, []);
 
   /**
+   * Apply one parsed /api/sync payload (live or last-good cached) to
+   * state: merged chains, fees, announcements, config, token
+   * registry, maintenance, and the admin network mode (with the
+   * mid-transaction deferral). The caller owns the version check and
+   * the last-sync timestamp; this only applies the payload.
+   */
+  const applySyncData = useCallback((data: AdminSyncData) => {
+    adminSyncVersionRef.current = data.version;
+    setAdminSyncVersion(data.version);
+    const merged = mergeAdminChains(CHAINS, data.chains, { deletedIds: data.deletedIds });
+    lastMergedRef.current = merged;
+    setAdminFees(resolveEffectiveFees(data.fees, data.feeVersion));
+    setAnnouncements(data.announcements);
+    setAppConfig(data.config);
+    setAdminTokens(data.tokens);
+    setAdminTokensSynced(true);
+    setMaintenance(data.maintenance);
+    void maybeShowUpdate(data.appUpdate);
+    // Network mode (admin-controlled testnet/mainnet switch). A flip
+    // while a transaction is in progress is DEFERRED — the mode and
+    // the chain switch wait until the flow finishes or is cancelled
+    // (see the transactionActive effect below); the user is never
+    // switched mid-transaction.
+    const decision = resolveModeChange({
+      currentMode: networkModeRef.current,
+      nextMode: data.networkMode,
+      transactionActive: transactionActiveRef.current,
+      chains: merged,
+      currentChain: chainRef.current,
+    });
+    if (decision.deferred) {
+      pendingModeRef.current = data.networkMode;
+      setAvailableChains(filterChainsByMode(merged, networkModeRef.current));
+      return;
+    }
+    pendingModeRef.current = null;
+    const effectiveMode = data.networkMode;
+    const visible = filterChainsByMode(merged, effectiveMode);
+    setAvailableChains(visible);
+    if (effectiveMode !== networkModeRef.current) {
+      networkModeRef.current = effectiveMode;
+      setNetworkMode(effectiveMode);
+    }
+    if (decision.chain) {
+      setChainState(decision.chain);
+    } else {
+      // If the chain the user is on was deleted, disabled, or marked
+      // coming-soon, move them to the default chain instead of
+      // leaving them on a dead chain. A coming-soon chain is never a
+      // fallback target either — the fallback is always a usable
+      // chain (Arc Mainnet, the default, when nothing else fits).
+      const current = chainRef.current;
+      if (!visible.some((c) => c.id === current.id && isChainUsable(c))) {
+        const fallback = visible.find((c) => c.isDefault && isChainUsable(c)) ?? visible.find(isChainUsable) ?? DEFAULT_CHAIN;
+        if (fallback.id !== current.id) setChainState(fallback);
+      }
+    }
+  }, [maybeShowUpdate]);
+
+  /**
    * Live admin sync — LIVE POLLING, not push. One GET /api/sync carries
    * chains (+ tombstones), fees, announcements, signed config, token
    * registry and maintenance, plus the server's monotonic version; state
    * is only re-applied when the version changes, so an admin edit lands
    * within one poll interval (~45s).
    *
-   * On ANY fetch failure the last-known state is kept — except the
-   * persisted tombstones / disabled ids, which are still applied on top
-   * of the built-ins: a chain the admin deleted or disabled stays gone
-   * while the API is down and is never resurrected from the fallback.
+   * On ANY fetch failure the last-good sync payload is re-applied
+   * (chains, fees, tokens, mode — the full last synced state), so
+   * the app still opens with the admin's chains instead of bare
+   * built-ins. Only when no sync was ever saved do the persisted
+   * tombstones / disabled ids apply on top of the built-ins: a chain
+   * the admin deleted or disabled stays gone while the API is down
+   * and is never resurrected from the fallback.
    */
   const refreshAdmin = useCallback(async () => {
     let data: AdminSyncData | null = null;
@@ -306,61 +370,23 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     }
     if (data) {
       if (data.version === adminSyncVersionRef.current) return;
-      adminSyncVersionRef.current = data.version;
-      setAdminSyncVersion(data.version);
       setAdminLastSyncAt(Date.now());
-      const merged = mergeAdminChains(CHAINS, data.chains, { deletedIds: data.deletedIds });
-      lastMergedRef.current = merged;
-      setAdminFees(resolveEffectiveFees(data.fees, data.feeVersion));
-      setAnnouncements(data.announcements);
-      setAppConfig(data.config);
-      setAdminTokens(data.tokens);
-      setAdminTokensSynced(true);
-      setMaintenance(data.maintenance);
-      void maybeShowUpdate(data.appUpdate);
-      // Network mode (admin-controlled testnet/mainnet switch). A flip
-      // while a transaction is in progress is DEFERRED — the mode and
-      // the chain switch wait until the flow finishes or is cancelled
-      // (see the transactionActive effect below); the user is never
-      // switched mid-transaction.
-      const decision = resolveModeChange({
-        currentMode: networkModeRef.current,
-        nextMode: data.networkMode,
-        transactionActive: transactionActiveRef.current,
-        chains: merged,
-        currentChain: chainRef.current,
-      });
-      if (decision.deferred) {
-        pendingModeRef.current = data.networkMode;
-        setAvailableChains(filterChainsByMode(merged, networkModeRef.current));
-        return;
-      }
-      pendingModeRef.current = null;
-      const effectiveMode = data.networkMode;
-      const visible = filterChainsByMode(merged, effectiveMode);
-      setAvailableChains(visible);
-      if (effectiveMode !== networkModeRef.current) {
-        networkModeRef.current = effectiveMode;
-        setNetworkMode(effectiveMode);
-      }
-      if (decision.chain) {
-        setChainState(decision.chain);
-      } else {
-        // If the chain the user is on was deleted, disabled, or marked
-        // coming-soon, move them to the default chain instead of
-        // leaving them on a dead chain. A coming-soon chain is never a
-        // fallback target either — the fallback is always a usable
-        // chain (Arc, the default, when nothing else fits).
-        const current = chainRef.current;
-        if (!visible.some((c) => c.id === current.id && isChainUsable(c))) {
-          const fallback = visible.find((c) => c.isDefault && isChainUsable(c)) ?? visible.find(isChainUsable) ?? DEFAULT_CHAIN;
-          if (fallback.id !== current.id) setChainState(fallback);
-        }
-      }
+      applySyncData(data);
       return;
     }
-    // API down: keep last-known fees/announcements/config/maintenance,
-    // but still apply the persisted tombstones / disabled ids.
+    // API down: re-apply the full last-good sync when one exists.
+    try {
+      const lastGood = await loadLastGoodSync();
+      if (lastGood && lastGood.version !== adminSyncVersionRef.current) {
+        applySyncData(lastGood);
+        return;
+      }
+    } catch {
+      // Fall through to the tombstone-only fallback below.
+    }
+    // No last-good sync (never synced): keep last-known
+    // fees/announcements/config/maintenance, but still apply the
+    // persisted tombstones / disabled ids.
     try {
       const persisted = await loadPersistedAdminChainState();
       if (persisted.deletedIds.length > 0 || persisted.disabledIds.length > 0) {
@@ -377,7 +403,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     } catch {
       // Persistence read failed — keep the current chain list as-is.
     }
-  }, [maybeShowUpdate]);
+  }, [applySyncData]);
 
   /** Manual refresh / network-picker open: same sync, now. */
   const refreshChains = useCallback(async () => {
@@ -607,15 +633,13 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
             setSolanaAddress(active.solanaAddress ?? '');
             setOnboarded(true);
             // The old device-wide imported-token list belongs to this
-            // wallet — move it onto the wallet's own list once, then
-            // re-attribute any legacy 'arc' rows to the Arc network
-            // their contract actually lives on (testnet vs mainnet).
+            // wallet — move it onto the wallet's own list once.
+            // (The old Arc testnet/mainnet re-attribution migration
+            // is gone: there is no hardcoded testnet RPC to check
+            // against any more. A legacy 'arc' import row only
+            // reappears if the admin serves an 'arc' chain again,
+            // and it is then matched by id to that synced chain.)
             await migrateImportedTokensForWallet(active.address);
-            await migrateArcImportedTokens(active.address);
-            for (const w of metas) {
-              if (w.id !== active.id) await migrateArcImportedTokens(w.address);
-            }
-            await migrateArcImportedTokens();
           }
         }
       } finally {

@@ -17,14 +17,11 @@
  *     amountOutMin and a 20-minute deadline. Native BNB routes via WBNB.
  *   - Other EVM chains: 1inch Swap API v6 /swap when the API key is set
  *     (the API returns the unsigned tx; the user signs it).
- *   - Arc: NO router is registered. Uniswap V2/V3 router addresses are
- *     published for Arc MAINNET (5042) only; they were NOT verified on
- *     Arc testnet (5042002; the old testnet.arcscan.app explorer host
- *     returned rate-limited on 2026-11-26 — explorer is now
- *     explorer.testnet.arc.io) and mainnet addresses must never be used on testnet.
- *     Arc swaps therefore refuse with an honest "router not confirmed
- *     yet" error — never a fake swap — until a testnet router is
- *     verified and registered in ROUTER_ADDRESSES below.
+ *   - Arc: NO router is wired in ROUTER_ADDRESSES below. Uniswap
+ *     V2/V3 router addresses are published for Arc MAINNET (5042)
+ *     only; they are not wired as a swap router yet, so Arc swaps
+ *     refuse with an honest "router not confirmed yet" error — never
+ *     a fake swap — until a router is registered in ROUTER_ADDRESSES.
  */
 import { ethers } from 'ethers';
 import { EVM_NATIVE_RPC_DECIMALS, getChain, VAULT_DEFAULTS } from './chains';
@@ -41,7 +38,7 @@ export const NATIVE_SENTINEL = '0xEeeeeEeeeEeEeeEeEeEeeEEEeeeeEeeeeeeeEEeE';
  *  null = no router confirmed for this chain; swaps refuse honestly. */
 export const ROUTER_ADDRESSES: Record<string, string | null> = {
   bnb: PANCAKESWAP_V2_ROUTER,
-  arc: null, // Arc testnet router NOT confirmed yet — see header comment
+  'arc-mainnet': null, // Arc router NOT wired yet — see header comment
   base: null,
   ethereum: null,
   polygon: null,
@@ -268,10 +265,10 @@ export async function executeSwap(
   }
   // Router availability is checked BEFORE the signer is touched, so a
   // refused swap never asks for (or needs) a signature.
-  if (chain.id === 'arc') {
+  if (chain.id === 'arc-mainnet') {
     throw new SwapExecutionUnavailableError(
-      'Arc swap execution is unavailable — no DEX router address has been verified on Arc testnet yet ' +
-        '(explorer.testnet.arc.io). Uniswap router addresses published for Arc mainnet (5042) must not be used on testnet (5042002). ' +
+      'Arc swap execution is unavailable — no DEX router address has been verified on Arc yet ' +
+        '(explorer.arc.io). ' +
         'No swap was executed. BNB swaps are live via PancakeSwap.',
     );
   }

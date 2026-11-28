@@ -24,7 +24,7 @@ import { useEffect, useState } from 'react';
 import { getChain } from './chains';
 import { bucketMsFor, TIMEFRAME_CONFIG, type ChartTimeframe } from './chart';
 
-export type PriceSource = 'dexscreener' | 'coingecko' | 'geckoterminal' | 'unavailable';
+export type PriceSource = 'dexscreener' | 'coingecko' | 'geckoterminal' | 'pool' | 'unavailable';
 
 export interface LivePrice {
   price: number | null; // null = no live price available right now

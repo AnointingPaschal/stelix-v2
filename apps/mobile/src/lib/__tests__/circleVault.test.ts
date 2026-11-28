@@ -18,7 +18,7 @@ const VAULT = '0x2222222222222222222222222222222222222222';
 
 function makeParams(over: Partial<CreateLockOnChainParams> = {}): CreateLockOnChainParams {
   return {
-    chainId: 'arc',
+    chainId: 'arc-mainnet',
     vaultAddress: VAULT,
     tokenAddress: TOKEN,
     tokenDecimals: 6,
@@ -69,7 +69,7 @@ describe('buildCircleCreateLockChallenge', () => {
     expect(res.ok).toBe(true);
     if (!res.ok) throw new Error('expected ok');
     expect(res.vaultAddress).toBe(VAULT);
-    expect(res.chainId).toBe('arc');
+    expect(res.chainId).toBe('arc-mainnet');
     expect(res.steps).toHaveLength(2);
     expect(res.steps[0].kind).toBe('approve');
     expect(res.steps[1].kind).toBe('createLock');
@@ -119,10 +119,10 @@ describe('buildCircleCreateLockChallenge', () => {
 
 describe('circleVaultRefusal', () => {
   it('returns the not-deployed message when no vault is registered', () => {
-    expect(circleVaultRefusal('arc', null)).toBe(CIRCLE_VAULT_NOT_DEPLOYED_MESSAGE);
+    expect(circleVaultRefusal('arc-mainnet', null)).toBe(CIRCLE_VAULT_NOT_DEPLOYED_MESSAGE);
   });
 
   it('returns null (no refusal) when a vault is registered', () => {
-    expect(circleVaultRefusal('arc', VAULT)).toBeNull();
+    expect(circleVaultRefusal('arc-mainnet', VAULT)).toBeNull();
   });
 });

@@ -1,7 +1,7 @@
 /**
  * Discover tab restored, Trade tab removed — the Trade screen and its
  * confirm sheet are gone; the bottom tabs are Home / Swap / Discover /
- * History / Settings again, with a Binance Alpha tab inside Discover.
+ * History / Settings again, with a BSC Alpha tab inside Discover.
  *
  * Source checks, following the signing-modal / appshell test pattern
  * (Jest here is node-only for pure logic, so presence/behaviour is
@@ -82,12 +82,36 @@ describe('Discover data layer stays', () => {
   });
 });
 
-describe('Binance Alpha tab', () => {
-  it('the Discover screen has a Binance Alpha tab alongside Trending / Gainers / New Pairs', () => {
+describe('Discover fetches trending per network (Arc fix)', () => {
+  it('lib/discover.ts queries trending_pools per network, never the global feed, capped at page 10', () => {
+    const text = src('src/lib/discover.ts');
+    expect(text).toContain('/networks/${encodeURIComponent(n)}/${endpoint}?page=${page}');
+    expect(text).not.toContain('networks/trending_pools?page=');
+    expect(text).toContain('GECKO_MAX_PAGE = 10');
+  });
+
+  it('the Discover screen shows skeleton rows while loading, not loading text', () => {
+    const text = src(DISCOVER);
+    expect(text).toContain('DiscoverSkeletonRows');
+    expect(text).toContain("Skeleton } from '../../components/ui'");
+    expect(text).not.toContain('Loading tokens…');
+    expect(text).not.toContain('Loading more…');
+  });
+
+  it('the Discover screen uses the honest empty-state wording', () => {
+    const text = src(DISCOVER);
+    expect(text).toContain('No trending tokens on ${chainLabel} right now');
+    expect(text).toContain('No new pairs on ${chainLabel} yet');
+  });
+});
+
+describe('BSC Alpha tab', () => {
+  it('the Discover screen has a BSC Alpha tab alongside Trending / Gainers / New Pairs', () => {
     const text = src(DISCOVER);
     expect(text).toContain("key: 'alpha'");
-    expect(text).toContain("label: 'Binance Alpha'");
-    expect(text).toContain('Binance Alpha');
+    expect(text).toContain("label: 'BSC Alpha'");
+    expect(text).toContain('BSC Alpha');
+    expect(text).not.toContain("label: 'Binance Alpha'");
     for (const label of ['Trending', 'Gainers', 'New Pairs']) {
       expect(text).toContain(label);
     }

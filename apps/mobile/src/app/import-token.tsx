@@ -38,7 +38,7 @@ import { searchTokens, type DiscoverToken } from '../lib/discover';
 import { fetchDexScreenerToken } from '../lib/prices';
 import { fetchFactoryLogo, resolveTokenLogo } from '../lib/tokenLogos';
 import { findRegistryToken } from '../lib/adminSync';
-import { BottomSheet, Btn, Card, ScreenHeader } from '../components/ui';
+import { BottomSheet, Btn, Card, ScreenHeader, Skeleton } from '../components/ui';
 import { TokenLogo } from '../components/TokenLogo';
 import { BottomNav } from '../components/AppShell';
 
@@ -382,7 +382,16 @@ export default function ImportTokenScreen() {
         ) : null}
 
         {searching && mode === 'address' && previewLoading ? (
-          <Text style={styles.loading}>Fetching token details…</Text>
+          <Card style={styles.previewCard}>
+            <View style={styles.previewTop} accessibilityLabel="Loading token details">
+              <Skeleton height={64} width={64} />
+              <View style={styles.previewSkelMid}>
+                <Skeleton height={14} width="60%" />
+                <Skeleton height={12} width="85%" />
+                <Skeleton height={12} width="45%" />
+              </View>
+            </View>
+          </Card>
         ) : null}
         {previewError ? <Text style={styles.err}>{previewError}</Text> : null}
 
@@ -444,7 +453,20 @@ export default function ImportTokenScreen() {
 
         {mode === 'search' ? (
           <>
-            {searching ? <Text style={styles.loading}>Searching…</Text> : null}
+            {searching ? (
+              <View accessibilityLabel="Searching tokens">
+                {[0, 1, 2].map((i) => (
+                  <View key={i} style={styles.searchSkelRow}>
+                    <Skeleton height={38} width={38} />
+                    <View style={styles.searchSkelMid}>
+                      <Skeleton height={13} width="45%" />
+                      <Skeleton height={11} width="70%" />
+                    </View>
+                    <Skeleton height={11} width={44} />
+                  </View>
+                ))}
+              </View>
+            ) : null}
             {searchError ? <Text style={styles.err}>{searchError}</Text> : null}
             {!searching && !searchError && results.length === 0 && query.trim() !== '' && !isPartialContractAddress(query) ? (
               <Text style={styles.hint}>No tokens found for “{query.trim()}” on {selectedChain.name}.</Text>
@@ -560,7 +582,6 @@ const styles = StyleSheet.create({
   foot: { color: COLORS.textMuted, fontSize: 12, lineHeight: 17, marginTop: 16 },
   hint: { color: COLORS.textMuted, fontSize: 12, lineHeight: 17, marginTop: 10 },
   inner: { padding: 12 },
-  loading: { color: COLORS.textMuted, fontSize: 12, marginTop: 10 },
   logoWarn: {
     backgroundColor: COLORS.amberSoft,
     borderRadius: 12,
@@ -575,6 +596,7 @@ const styles = StyleSheet.create({
   previewAddrRow: { alignItems: 'center', flexDirection: 'row', gap: 4, marginTop: 4 },
   previewCard: { marginTop: 12 },
   previewMid: { flex: 1, minWidth: 0 },
+  previewSkelMid: { flex: 1, gap: 8, minWidth: 0 },
   previewName: { color: COLORS.text, fontSize: 15, fontWeight: '800' },
   previewPrice: { color: COLORS.text, fontSize: 13, fontWeight: '800', marginTop: 4 },
   previewSub: { color: COLORS.textMuted, fontSize: 12, marginTop: 2 },
@@ -591,6 +613,8 @@ const styles = StyleSheet.create({
     paddingVertical: 10,
   },
   rowMid: { flex: 1, minWidth: 0 },
+  searchSkelMid: { flex: 1, gap: 6, minWidth: 0 },
+  searchSkelRow: { alignItems: 'center', flexDirection: 'row', gap: 10, paddingVertical: 10 },
   rowSub: { color: COLORS.textMuted, fontSize: 12, marginTop: 2 },
   rowSymbol: { color: COLORS.text, fontSize: 14, fontWeight: '700' },
   searchBox: {

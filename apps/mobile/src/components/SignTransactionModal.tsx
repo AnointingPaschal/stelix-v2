@@ -62,7 +62,7 @@ export interface SignTxRequest {
   toAddress: string;
   /** What the To address is, e.g. 'Recipient' / 'PancakeSwap V2 router'. */
   toLabel: string;
-  /** e.g. 'BNB Chain (testnet)'. */
+  /** e.g. 'BNB Chain'. */
   network: string;
   rows: SignTxRow[];
   warning?: string | null;
