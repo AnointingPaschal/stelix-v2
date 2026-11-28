@@ -7,10 +7,12 @@
 import {
   applyDiscoverFilters,
   dedupeDiscoverTokens,
+  fetchAlphaPage,
   fetchDiscoverPage,
   fetchDiscoverTab,
   fetchTokenProfilesNew,
   formatTokenAge,
+  mapCmcAlphaListing,
   mapDexScreenerPair,
   mapGeckoPool,
   searchTokens,
@@ -441,5 +443,90 @@ describe('searchTokens (mocked network)', () => {
     } finally {
       (global as { fetch?: unknown }).fetch = realFetch;
     }
+  });
+});
+
+describe('Binance Alpha (CoinMarketCap listing, mocked network)', () => {
+  function cmcListing(id: number, symbol: string, marketCap: number): Record<string, unknown> {
+    return {
+      id,
+      name: `Token ${symbol}`,
+      symbol,
+      dateAdded: '2025-07-03T09:16:58.000Z',
+      quotes: [
+        {
+          price: 0.7817282933235369,
+          percentChange1h: 0.5,
+          percentChange24h: -6.07,
+          marketCap,
+          fullyDilluttedMarketCap: marketCap * 2,
+          volume24h: 1759892.61,
+        },
+      ],
+    };
+  }
+
+  it('mapCmcAlphaListing maps price, change, market cap and volume, with a cmc: address and icon', () => {
+    const t = mapCmcAlphaListing(cmcListing(35491, 'M', 1800166346) as never);
+    expect(t.symbol).toBe('M');
+    expect(t.name).toBe('Token M');
+    expect(t.address).toBe('cmc:35491');
+    expect(t.chainId).toBe('');
+    expect(t.priceUsd).toBeCloseTo(0.7817, 4);
+    expect(t.change24h).toBe(-6.07);
+    expect(t.change1h).toBe(0.5);
+    expect(t.marketCap).toBe(1800166346);
+    expect(t.volume24h).toBe(1759892.61);
+    expect(t.liquidityUsd).toBeNull();
+    expect(t.iconUrl).toBe('https://s2.coinmarketcap.com/static/img/coins/64x64/35491.png');
+    expect(t.pairCreatedAt).toBe(Date.parse('2025-07-03T09:16:58.000Z'));
+  });
+
+  it('fetchAlphaPage: a full page reports hasMore and market-cap order, source coinmarketcap', async () => {
+    const page1 = Array.from({ length: 100 }, (_, i) => cmcListing(1000 + i, `T${i}`, 10_000_000 - i * 1000));
+    const fetchImpl = mockFetch([
+      ['tagSlugs=binance-alpha', { data: { cryptoCurrencyList: page1, totalCount: 387 } }],
+    ]);
+    const res = await fetchAlphaPage(1, fetchImpl as never);
+    expect(res.source).toBe('coinmarketcap');
+    expect(res.error).toBeNull();
+    expect(res.tokens).toHaveLength(100);
+    expect(res.hasMore).toBe(true);
+    expect(res.tokens[0].symbol).toBe('T0');
+    expect(res.tokens[99].symbol).toBe('T99');
+  });
+
+  it('fetchAlphaPage: page 2 uses start=101 and a short page reports hasMore false', async () => {
+    const seen: string[] = [];
+    const fetchImpl = async (url: string) => {
+      seen.push(url);
+      return { ok: true, status: 200, json: async () => ({ data: { cryptoCurrencyList: [cmcListing(2001, 'Z', 500)], totalCount: 387 } }) } as Response;
+    };
+    const res = await fetchAlphaPage(2, fetchImpl as never);
+    expect(seen[0]).toContain('start=101');
+    expect(seen[0]).toContain('tagSlugs=binance-alpha');
+    expect(res.tokens).toHaveLength(1);
+    expect(res.hasMore).toBe(false);
+  });
+
+  it('fetchAlphaPage: an empty page is unavailable with hasMore false', async () => {
+    const fetchImpl = mockFetch([
+      ['tagSlugs=binance-alpha', { data: { cryptoCurrencyList: [], totalCount: 387 } }],
+    ]);
+    const res = await fetchAlphaPage(5, fetchImpl as never);
+    expect(res.tokens).toHaveLength(0);
+    expect(res.hasMore).toBe(false);
+    expect(res.source).toBe('unavailable');
+    expect(res.error).toMatch(/unavailable|failed/i);
+  });
+
+  it('fetchDiscoverPage routes the alpha tab to the CoinMarketCap feed', async () => {
+    const fetchImpl = mockFetch([
+      ['tagSlugs=binance-alpha', { data: { cryptoCurrencyList: [cmcListing(35491, 'M', 1800166346)], totalCount: 387 } }],
+    ]);
+    const res = await fetchDiscoverPage('alpha', 'all', 1, fetchImpl as never);
+    expect(res.source).toBe('coinmarketcap');
+    expect(res.tokens).toHaveLength(1);
+    expect(res.tokens[0].address).toBe('cmc:35491');
   });
 });

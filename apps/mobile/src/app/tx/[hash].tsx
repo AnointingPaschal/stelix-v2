@@ -11,11 +11,11 @@
 import { useEffect, useMemo, useState } from 'react';
 import { Linking, Pressable, ScrollView, StyleSheet, Text, View, useWindowDimensions } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
-import { useLocalSearchParams } from 'expo-router';
+import { router, useLocalSearchParams } from 'expo-router';
 import * as Clipboard from 'expo-clipboard';
-import { ArrowDown, ArrowUp, Check, Copy, ExternalLink } from 'lucide-react-native';
+import { ArrowDown, ArrowUp, Check, ChevronLeft, Copy, ExternalLink } from 'lucide-react-native';
 import { COLORS } from '../../theme';
-import { AppHeader, BottomNav } from '../../components/AppShell';
+import { BottomNav } from '../../components/AppShell';
 import { useApp } from '../../store/AppContext';
 import { EVM_NATIVE_RPC_DECIMALS, getChain } from '../../lib/chains';
 import { fmtDateTime, fmtNum, fmtUsd, shortAddress } from '../../lib/format';
@@ -150,9 +150,10 @@ export default function TransactionDetail() {
         },
       ]}
     >
-      <AppHeader showBack />
       <View style={styles.head}>
-        <View style={{ width: 22 }} />
+        <Pressable onPress={() => router.back()} hitSlop={8} accessibilityLabel="Back" style={styles.backBtn}>
+          <ChevronLeft size={22} color={COLORS.text} />
+        </Pressable>
         <Text style={styles.title} numberOfLines={1} adjustsFontSizeToFit minimumFontScale={0.85}>
           Transaction Details
         </Text>
@@ -254,6 +255,7 @@ export default function TransactionDetail() {
 
 const styles = StyleSheet.create({
   amount: { fontSize: 26, fontWeight: '800', marginTop: 10, textAlign: 'center' },
+  backBtn: { alignItems: 'center', justifyContent: 'center' },
   card: {
     backgroundColor: '#fff',
     borderColor: COLORS.border,

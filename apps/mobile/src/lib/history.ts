@@ -1,24 +1,36 @@
 /**
  * LIVE transaction history — real explorer / RPC data for the actual
  * wallet address. No placeholder transactions, no sample history.
+ * NEVER asks the user for a key: every path below works with no key
+ * at all, and no shared/hardcoded API key is shipped in the app.
  *
- * Two sources, in order:
- *  1. Blockscout v2 API (keyless) — used for Arc Testnet + Arc Mainnet,
- *     whose explorers ARE Blockscout (explorer.testnet.arc.io /
- *     explorer.arc.io). No API key exists or is needed: token transfers
- *     AND native transactions are read from /api/v2/addresses/{addr}/.
- *     This is what makes History work out of the box on Arc — the
- *     user's 30 USDC receive showed as "No explorer API key" before
- *     this, because the old code only knew the Etherscan path.
- *  2. Etherscan-family explorer APIs (BscScan / Etherscan / BaseScan /
- *     PolygonScan) for the other EVM chains. They need an API key —
- *     the bundled EXPO_PUBLIC_EXPLORER_API_KEY, or a free key saved
- *     on-device in Settings (getExplorerApiKeyAsync). Without a key the
- *     function returns an empty list with status 'no-key' and a clear
- *     message, NOT invented transactions. Etherscan API v2
- *     (`api.etherscan.io/v2/api?chainid=...`) is the documented
- *     multi-chain endpoint; per-chain api.<chain>.com bases are kept
- *     as fallback.
+ * Sources, in order, for EVM chains:
+ *  1. Blockscout v2 API (keyless) — Arc Testnet + Arc Mainnet (their
+ *     explorers ARE Blockscout), Ethereum (eth.blockscout.com) and
+ *     Base (base.blockscout.com). Token transfers AND native
+ *     transactions from /api/v2/addresses/{addr}/. Verified live
+ *     2026-11-28: eth.blockscout.com returned real token-transfers
+ *     and transactions for a known-active address, no key.
+ *  2. Etherscan-family APIs (BscScan / Etherscan / BaseScan /
+ *     PolygonScan) — ONLY when a key is already set (bundled
+ *     EXPO_PUBLIC_EXPLORER_API_KEY or a key saved on-device in
+ *     Settings). Optional enhancement: fuller coverage, including
+ *     native transfers. Never required, never requested.
+ *  3. Public-RPC eth_getLogs scan (keyless) — ERC-20/BEP-20 Transfer
+ *     events for the chain's known stablecoins (chain.stablecoins +
+ *     exitStablecoinAddress), one call per block page with the token
+ *     contracts as the address filter, walked backwards, decoded
+ *     with symbol()/decimals() read on-chain. Honest limits: only
+ *     token transfers for known contracts (native sends are invisible
+ *     to logs), and only as far back as the page cap reaches; public
+ *     nodes rate-limit this hard (bsc-dataseed refused even 10-block
+ *     scans from the dev VM on 2026-11-28, so the page size halves
+ *     on limit errors and the scan degrades to an error, never to
+ *     invented data). Etherscan-family APIs WITHOUT a key were
+ *     verified dead the same day (Missing/Invalid API Key on ETH /
+ *     Polygon; "Free API access is not supported for this chain" on
+ *     BNB / Base), and no public Blockscout exists for BNB or
+ *     Polygon — so the log scan is the only keyless BNB/Polygon path.
  *
  * Restored 2026-11-27: all chains active again (Arc + BNB scope-down reversed).
  *
@@ -54,7 +66,7 @@ export interface HistoryResult {
   chain: ChainConfig;
   address: string;
   txs: TxRecord[];
-  status: 'ok' | 'no-key' | 'error';
+  status: 'ok' | 'error';
   error: string | null;
   updatedAt: number;
 }
@@ -69,6 +81,27 @@ const EXPLORER_CHAIN_IDS: Record<string, number> = {
 
 /** Chains whose explorer is Blockscout — its v2 API needs no key. */
 const BLOCKSCOUT_CHAIN_IDS = new Set(['arc', 'arc-mainnet']);
+
+/** Public Blockscout v2 instances for non-Arc chains (keyless, no
+ *  account). eth.blockscout.com verified live 2026-11-28 (real
+ *  token-transfers + transactions, no key). base.blockscout.com
+ *  exists but Cloudflare-challenges datacentre IPs (403 from the dev
+ *  VM); it is tried best-effort and falls through to the RPC log
+ *  scan when challenged. No public Blockscout exists for BNB or
+ *  Polygon (bsc.blockscout.com 404, polygon.blockscout.com
+ *  unreachable, both checked 2026-11-28). */
+const BLOCKSCOUT_BASES: Record<string, string> = {
+  ethereum: 'https://eth.blockscout.com',
+  base: 'https://base.blockscout.com',
+};
+
+/** Blockscout v2 base for this chain, or null when no public
+ *  Blockscout instance covers it. Arc chains use their own
+ *  explorer URL (which IS Blockscout). */
+function blockscoutBaseFor(chain: ChainConfig): string | null {
+  if (BLOCKSCOUT_CHAIN_IDS.has(chain.id)) return chain.explorerUrl.replace(/\/$/, '');
+  return BLOCKSCOUT_BASES[chain.id] ?? null;
+}
 
 /** Blockscout v2 address fields are { hash } objects (or a plain string). */
 function bsAddress(v: unknown): string {
@@ -155,11 +188,11 @@ function mapBlockscoutTx(raw: BlockscoutTx, chain: ChainConfig, address: string)
   return rec;
 }
 
-/** Keyless Blockscout v2 history for Arc. Token transfers first, then
+/** Keyless Blockscout v2 history. Token transfers first, then
  *  native transactions; a tx that appears in both (Arc's native USDC
  *  is also its ERC-20 view) is kept once, as the token transfer. */
-async function fetchBlockscoutHistory(chain: ChainConfig, address: string): Promise<TxRecord[]> {
-  const base = chain.explorerUrl.replace(/\/$/, '');
+async function fetchBlockscoutHistory(chain: ChainConfig, address: string, baseUrl?: string): Promise<TxRecord[]> {
+  const base = (baseUrl ?? chain.explorerUrl).replace(/\/$/, '');
   const [ttRes, txRes] = await Promise.all([
     fetchWithTimeout(`${base}/api/v2/addresses/${address}/token-transfers?type=ERC-20`),
     fetchWithTimeout(`${base}/api/v2/addresses/${address}/transactions`),
@@ -212,13 +245,6 @@ export async function getExplorerApiKeyAsync(): Promise<string | null> {
   } catch {
     return null;
   }
-}
-
-/** True when an error string is the "no explorer key" failure from
- *  fetchHistory — the History screen uses this to show the friendly
- *  "add a key in Settings" hint instead of the bare error text. */
-export function isNoExplorerKeyError(error: string | null): boolean {
-  return !!error && error.startsWith('No explorer API key');
 }
 
 async function fetchWithTimeout(url: string, ms = 10_000): Promise<Response> {
@@ -290,10 +316,261 @@ function mapExplorerTx(raw: ExplorerTx, chain: ChainConfig, address: string): Tx
   return rec;
 }
 
+/* ------------------------------------------------------------------ */
+/* Keyless public-RPC Transfer-log scan (BNB / Polygon / testnets).   */
+/*                                                                    */
+/* One eth_getLogs call per block page, filtered to the chain's known */
+/* stablecoin contracts, then filtered client-side to transfers      */
+/* where the wallet is sender or receiver. Token symbol/decimals      */
+/* come from on-chain eth_call; block times from eth_getBlockByNumber */
+/* Public nodes rate-limit eth_getLogs hard, so the page size halves  */
+/* on a limit error (2000 -> 100 blocks) instead of failing outright. */
+/* ------------------------------------------------------------------ */
+
+const TRANSFER_TOPIC = '0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef';
+const SYMBOL_SELECTOR = '0x95d89b41'; // symbol()
+const DECIMALS_SELECTOR = '0x313ce567'; // decimals()
+
+interface RpcLog {
+  address: string;
+  blockNumber: string;
+  data: string;
+  transactionHash: string;
+  logIndex: string;
+  topics: string[];
+}
+
+/** Single JSON-RPC call. Throws an Error whose message carries the
+ *  node's error code (e.g. -32005 limit exceeded) when it fails. */
+async function rpcCall(rpcUrl: string, method: string, params: unknown[]): Promise<unknown> {
+  const ctrl = new AbortController();
+  const t = setTimeout(() => ctrl.abort(), 15_000);
+  try {
+    const res = await fetch(rpcUrl, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ jsonrpc: '2.0', id: 1, method, params }),
+      signal: ctrl.signal,
+    });
+    if (!res.ok) throw new Error(`RPC returned HTTP ${res.status}.`);
+    const json = await res.json();
+    if (json?.error) {
+      const code = typeof json.error.code === 'number' ? json.error.code : '?';
+      throw new Error(`RPC ${method} failed (${code}): ${json.error.message ?? 'unknown error'}`);
+    }
+    if (!('result' in (json ?? {}))) throw new Error(`RPC ${method} returned no result.`);
+    return json.result;
+  } finally {
+    clearTimeout(t);
+  }
+}
+
+function isRpcLimitError(e: unknown): boolean {
+  const msg = e instanceof Error ? e.message : String(e);
+  return /-32005|-32011|limit exceeded|request limit/i.test(msg);
+}
+
+function hexToUtf8(hex: string): string {
+  const clean = hex.startsWith('0x') ? hex.slice(2) : hex;
+  let out = '';
+  for (let i = 0; i + 1 < clean.length; i += 2) {
+    const code = parseInt(clean.slice(i, i + 2), 16);
+    if (code === 0) continue;
+    if (code < 0x80) out += String.fromCharCode(code);
+  }
+  return out;
+}
+
+/** Decode an ABI-encoded string return (dynamic string, or a bytes32
+ *  symbol from older tokens). Returns null when undecodable. */
+function decodeAbiString(hex: string): string | null {
+  const clean = (hex.startsWith('0x') ? hex.slice(2) : hex).toLowerCase();
+  if (clean.length < 64) return null;
+  const offset = parseInt(clean.slice(0, 64), 16);
+  if (offset === 32 && clean.length >= 128) {
+    const len = parseInt(clean.slice(64, 128), 16);
+    if (!Number.isFinite(len) || len <= 0 || len > 256) return null;
+    return hexToUtf8(`0x${clean.slice(128, 128 + len * 2)}`) || null;
+  }
+  const asBytes32 = hexToUtf8(`0x${clean.slice(0, 64)}`).trim();
+  return asBytes32 || null;
+}
+
+function decodeUint(hex: string): number | null {
+  const clean = hex.startsWith('0x') ? hex.slice(2) : hex;
+  if (!clean) return null;
+  try {
+    const n = Number(BigInt(`0x${clean}`));
+    return Number.isFinite(n) ? n : null;
+  } catch {
+    return null;
+  }
+}
+
+interface TokenMeta {
+  symbol: string;
+  decimals: number;
+}
+
+/** symbol()/decimals() for one token contract, read on-chain.
+ *  Falls back to DexScreener for the symbol and 18 decimals so one
+ *  unreadable contract never kills the whole scan. */
+async function fetchTokenMeta(chain: ChainConfig, tokenAddress: string): Promise<TokenMeta> {
+  const fallbackSymbol = `${tokenAddress.slice(0, 6)}…${tokenAddress.slice(-4)}`;
+  let symbol: string | null = null;
+  let decimals: number | null = null;
+  try {
+    const [symRes, decRes] = await Promise.all([
+      rpcCall(chain.rpcUrl, 'eth_call', [{ to: tokenAddress, data: SYMBOL_SELECTOR }, 'latest']),
+      rpcCall(chain.rpcUrl, 'eth_call', [{ to: tokenAddress, data: DECIMALS_SELECTOR }, 'latest']),
+    ]);
+    symbol = typeof symRes === 'string' ? decodeAbiString(symRes) : null;
+    decimals = typeof decRes === 'string' ? decodeUint(decRes) : null;
+  } catch {
+    // Fall through to the DexScreener fallback below.
+  }
+  if (!symbol) {
+    try {
+      const ds = await fetchDexScreenerToken(chain.id, tokenAddress);
+      symbol = ds?.symbol ?? null;
+    } catch {
+      symbol = null;
+    }
+  }
+  return { symbol: symbol ?? fallbackSymbol, decimals: decimals ?? 18 };
+}
+
+async function fetchBlockTimeMs(
+  chain: ChainConfig,
+  blockNumberHex: string,
+  cache: Map<string, number>,
+): Promise<number> {
+  const cached = cache.get(blockNumberHex);
+  if (cached !== undefined) return cached;
+  try {
+    const block = (await rpcCall(chain.rpcUrl, 'eth_getBlockByNumber', [blockNumberHex, false])) as {
+      timestamp?: string;
+    } | null;
+    const ms = block?.timestamp ? parseInt(block.timestamp, 16) * 1000 : 0;
+    cache.set(blockNumberHex, ms);
+    return ms;
+  } catch {
+    cache.set(blockNumberHex, 0);
+    return 0;
+  }
+}
+
+function topicAddress(topic: string): string {
+  return `0x${topic.slice(-40)}`.toLowerCase();
+}
+
+/** Keyless token-transfer history from the public RPC: Transfer logs
+ *  for the chain's known stablecoins, newest first. `tokenAddresses`
+ *  overrides the chain's stablecoin list when the caller knows more
+ *  contracts (e.g. the wallet's imported tokens). Only token
+ *  transfers are visible this way — native coin sends leave no log.
+ *  Throws when the RPC refuses log queries, so the caller can report
+ *  the failure instead of showing an empty list as if it were fact. */
+export async function fetchRpcLogHistory(
+  chain: ChainConfig,
+  address: string,
+  opts?: { tokenAddresses?: string[]; maxTxs?: number },
+): Promise<TxRecord[]> {
+  const configured = [
+    ...(opts?.tokenAddresses ?? []),
+    ...Object.values(chain.stablecoins ?? {}),
+    chain.exitStablecoinAddress,
+  ];
+  const tokens = [...new Set(configured.filter((a): a is string => !!a).map((a) => a.toLowerCase()))];
+  if (tokens.length === 0) {
+    throw new Error(`No known token contracts to scan for history on ${chain.name}.`);
+  }
+  const me = address.toLowerCase();
+  const latestHex = (await rpcCall(chain.rpcUrl, 'eth_blockNumber', [])) as string;
+  let toBlock = parseInt(latestHex, 16);
+  if (!Number.isFinite(toBlock) || toBlock <= 0) throw new Error('RPC returned no latest block.');
+  const maxTxs = opts?.maxTxs ?? 50;
+  const out: TxRecord[] = [];
+  const seen = new Set<string>();
+  const metaCache = new Map<string, TokenMeta>();
+  const timeCache = new Map<string, number>();
+  let pageSize = 2000;
+  let pages = 0;
+  const MAX_PAGES = 60;
+  while (out.length < maxTxs && pages < MAX_PAGES && toBlock > 0) {
+    const fromBlock = Math.max(0, toBlock - pageSize + 1);
+    let logs: RpcLog[];
+    try {
+      const res = (await rpcCall(chain.rpcUrl, 'eth_getLogs', [
+        {
+          fromBlock: `0x${fromBlock.toString(16)}`,
+          toBlock: `0x${toBlock.toString(16)}`,
+          address: tokens,
+          topics: [TRANSFER_TOPIC],
+        },
+      ])) as RpcLog[];
+      logs = Array.isArray(res) ? res : [];
+    } catch (e) {
+      if (isRpcLimitError(e) && pageSize > 100) {
+        pageSize = Math.max(100, Math.floor(pageSize / 2));
+        continue;
+      }
+      throw e;
+    }
+    pages += 1;
+    for (const log of logs) {
+      if (!log || !Array.isArray(log.topics) || log.topics.length < 3) continue;
+      const from = topicAddress(log.topics[1]);
+      const to = topicAddress(log.topics[2]);
+      if (from !== me && to !== me) continue;
+      const dedupeKey = `${log.transactionHash}:${log.logIndex}`;
+      if (seen.has(dedupeKey)) continue;
+      seen.add(dedupeKey);
+      const tokenAddress = (log.address ?? '').toLowerCase();
+      let meta = metaCache.get(tokenAddress);
+      if (!meta) {
+        meta = await fetchTokenMeta(chain, tokenAddress);
+        metaCache.set(tokenAddress, meta);
+      }
+      let value = 0n;
+      try {
+        value = BigInt(log.data ?? '0x0');
+      } catch {
+        value = 0n;
+      }
+      const amount = Number(value) / 10 ** meta.decimals;
+      if (!Number.isFinite(amount)) continue;
+      const at = await fetchBlockTimeMs(chain, log.blockNumber, timeCache);
+      const kind: TxKind = from === me ? 'sent' : 'received';
+      const rec: TxRecord = {
+        id: dedupeKey,
+        hash: log.transactionHash,
+        kind,
+        token: meta.symbol,
+        amount,
+        amountRaw: value.toString(),
+        usd: null,
+        counterparty: kind === 'sent' ? to : from,
+        at,
+        status: 'confirmed',
+        isSpam: false,
+        chainId: chain.id,
+        blockNumber: parseInt(log.blockNumber, 16) || null,
+      };
+      rec.isSpam = isDustOrSpam(rec);
+      out.push(rec);
+      if (out.length >= maxTxs) break;
+    }
+    toBlock = fromBlock - 1;
+  }
+  out.sort((a, b) => b.at - a.at);
+  return out;
+}
+
 export async function fetchHistory(
   chainId: string,
   address: string,
-  opts?: { page?: number; offset?: number },
+  opts?: { page?: number; offset?: number; tokenAddresses?: string[] },
 ): Promise<HistoryResult> {
   const chain = getChain(chainId);
   const startedAt = Date.now();
@@ -359,66 +636,75 @@ export async function fetchHistory(
       };
     }
   }
-  // Arc runs on Blockscout — keyless, so History works with no key at all.
-  let lastBlockscoutError: string | null = null;
-  if (BLOCKSCOUT_CHAIN_IDS.has(chain.id)) {
-    try {
-      const txs = await fetchBlockscoutHistory(chain, address);
-      return { chain, address, txs, status: 'ok', error: null, updatedAt: Date.now() };
-    } catch (e) {
-      lastBlockscoutError = e instanceof Error ? e.message : String(e);
-      // Fall through: if an explorer key is set, the Etherscan path
-      // below is tried next. Otherwise the Blockscout error is reported.
-    }
-  }
-  const apiKey = await getExplorerApiKeyAsync();
-  if (!apiKey) {
-    return {
-      chain,
-      address,
-      txs: [],
-      status: lastBlockscoutError ? 'error' : 'no-key',
-      error:
-        lastBlockscoutError ??
-        `No explorer API key configured. Add a free Etherscan API key in Settings to unlock transaction history on ${chain.name} — no sample transactions are shown.`,
-      updatedAt: startedAt,
-    };
-  }
-  const chainIdNum = EXPLORER_CHAIN_IDS[chain.id];
-  const page = opts?.page ?? 1;
-  const offset = opts?.offset ?? 50;
-  // Etherscan API v2 (documented multi-chain endpoint), per-chain base as fallback.
-  const urls = chainIdNum
-    ? [
-        `https://api.etherscan.io/v2/api?chainid=${chainIdNum}&module=account&action=tokentx&address=${address}&page=${page}&offset=${offset}&sort=desc&apikey=${apiKey}`,
-        `https://api.etherscan.io/v2/api?chainid=${chainIdNum}&module=account&action=txlist&address=${address}&page=${page}&offset=${offset}&sort=desc&apikey=${apiKey}`,
-      ]
-    : [];
-  if (chain.explorerApiUrl) {
-    urls.push(
-      `${chain.explorerApiUrl}?module=account&action=tokentx&address=${address}&page=${page}&offset=${offset}&sort=desc&apikey=${apiKey}`,
-    );
-  }
+  // Keyless first, always: Blockscout v2 where a public instance
+  // exists (Arc, Ethereum, Base), then — only if a key is already
+  // set — the Etherscan-family APIs, then the keyless public-RPC
+  // Transfer-log scan. No step asks the user for anything, and no
+  // key is ever required: with no key at all the Blockscout and
+  // log-scan paths still return real transactions.
   let lastError: string | null = null;
-  for (const url of urls) {
+  const bsBase = blockscoutBaseFor(chain);
+  if (bsBase) {
     try {
-      const res = await fetchWithTimeout(url);
-      if (!res.ok) {
-        lastError = `Explorer API returned HTTP ${res.status}.`;
-        continue;
-      }
-      const json = await res.json();
-      if (json?.status !== '1' || !Array.isArray(json?.result)) {
-        lastError = typeof json?.message === 'string' ? json.message : 'Explorer API returned no transactions.';
-        continue;
-      }
-      const txs = (json.result as ExplorerTx[])
-        .map((r) => mapExplorerTx(r, chain, address))
-        .sort((a, b) => b.at - a.at);
+      const txs = await fetchBlockscoutHistory(chain, address, bsBase);
       return { chain, address, txs, status: 'ok', error: null, updatedAt: Date.now() };
     } catch (e) {
       lastError = e instanceof Error ? e.message : String(e);
     }
   }
-  return { chain, address, txs: [], status: 'error', error: lastError ?? 'Explorer API request failed.', updatedAt: startedAt };
+  const apiKey = await getExplorerApiKeyAsync();
+  if (apiKey) {
+    const chainIdNum = EXPLORER_CHAIN_IDS[chain.id];
+    const page = opts?.page ?? 1;
+    const offset = opts?.offset ?? 50;
+    // Etherscan API v2 (documented multi-chain endpoint), per-chain base as fallback.
+    const urls = chainIdNum
+      ? [
+          `https://api.etherscan.io/v2/api?chainid=${chainIdNum}&module=account&action=tokentx&address=${address}&page=${page}&offset=${offset}&sort=desc&apikey=${apiKey}`,
+          `https://api.etherscan.io/v2/api?chainid=${chainIdNum}&module=account&action=txlist&address=${address}&page=${page}&offset=${offset}&sort=desc&apikey=${apiKey}`,
+        ]
+      : [];
+    if (chain.explorerApiUrl) {
+      urls.push(
+        `${chain.explorerApiUrl}?module=account&action=tokentx&address=${address}&page=${page}&offset=${offset}&sort=desc&apikey=${apiKey}`,
+      );
+    }
+    for (const url of urls) {
+      try {
+        const res = await fetchWithTimeout(url);
+        if (!res.ok) {
+          lastError = `Explorer API returned HTTP ${res.status}.`;
+          continue;
+        }
+        const json = await res.json();
+        if (json?.status !== '1' || !Array.isArray(json?.result)) {
+          lastError = typeof json?.message === 'string' ? json.message : 'Explorer API returned no transactions.';
+          continue;
+        }
+        const txs = (json.result as ExplorerTx[])
+          .map((r) => mapExplorerTx(r, chain, address))
+          .sort((a, b) => b.at - a.at);
+        return { chain, address, txs, status: 'ok', error: null, updatedAt: Date.now() };
+      } catch (e) {
+        lastError = e instanceof Error ? e.message : String(e);
+      }
+    }
+  }
+  // Keyless fallback: Transfer logs from the public RPC. Token
+  // transfers only, for the chain's known stablecoins (or the
+  // caller's tokenAddresses) — never invented, never key-gated.
+  try {
+    const txs = await fetchRpcLogHistory(chain, address, { tokenAddresses: opts?.tokenAddresses });
+    return { chain, address, txs, status: 'ok', error: null, updatedAt: Date.now() };
+  } catch (e) {
+    lastError = e instanceof Error ? e.message : String(e);
+  }
+  return {
+    chain,
+    address,
+    txs: [],
+    status: 'error',
+    error: `Could not load transaction history on ${chain.name} right now (${lastError ?? 'history source unavailable'}). Pull to refresh to try again.`,
+    updatedAt: startedAt,
+  };
 }

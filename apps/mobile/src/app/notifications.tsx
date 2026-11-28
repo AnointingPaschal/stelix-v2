@@ -8,8 +8,9 @@
  *  Read state for derived items is kept in kv storage. Empty state
  *  only when there is genuinely nothing to report. */
 import { useCallback, useEffect, useMemo, useState } from 'react';
-import { ScrollView, StyleSheet, Text, View } from 'react-native';
-import { Bell } from 'lucide-react-native';
+import { Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
+import { Bell, ChevronLeft } from 'lucide-react-native';
+import { router } from 'expo-router';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { COLORS } from '../theme';
 import { useApp } from '../store/AppContext';
@@ -17,7 +18,7 @@ import { fmtDateTime } from '../lib/format';
 import { deriveLockNotifications } from '../lib/notifications';
 import { kvGet, kvSet } from '../lib/storage';
 import { Btn, EmptyState, centeredContent } from '../components/ui';
-import { AppHeader, BottomNav } from '../components/AppShell';
+import { BottomNav } from '../components/AppShell';
 
 const READ_DERIVED_KEY = 'stelix_read_derived_notifications_v1';
 
@@ -90,7 +91,9 @@ export default function Notifications() {
   return (
     <View style={styles.shell}>
     <ScrollView style={styles.root} contentContainerStyle={[styles.inner, centeredContent, { paddingTop: 12 + insets.top, paddingBottom: 24 + insets.bottom }]}>
-      <AppHeader showBack />
+      <Pressable onPress={() => router.back()} hitSlop={8} accessibilityLabel="Back" style={styles.backBtn}>
+        <ChevronLeft size={22} color={COLORS.text} />
+      </Pressable>
       <Text style={styles.title}>Notifications</Text>
       {rows.length > 0 && unreadCount > 0 ? (
         <Btn label={`Mark all read (${unreadCount})`} variant="ghost" onPress={markAllRead} style={styles.markBtn} />
@@ -128,6 +131,7 @@ export default function Notifications() {
 }
 
 const styles = StyleSheet.create({
+  backBtn: { alignSelf: 'flex-start', paddingVertical: 4 },
   dot: { backgroundColor: COLORS.mint, borderRadius: 999, height: 8, width: 8 },
   icon: { alignItems: 'center', backgroundColor: COLORS.bgMuted, borderRadius: 999, height: 36, justifyContent: 'center', width: 36 },
   inner: { padding: 12 },

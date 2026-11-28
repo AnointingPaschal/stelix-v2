@@ -1,9 +1,9 @@
 /**
- * Tests for the Trade screen (src/app/(tabs)/trade.tsx) and its pure
- * helpers (src/lib/trade.ts). The Hyperliquid client is mocked at the
- * helper level (pure functions only) and the screen itself is pinned
- * by source checks, following the appshell / safe-area-audit pattern —
- * jest here is node-only, so RN screens cannot be rendered.
+ * Tests for the Trade screen's pure helpers (src/lib/trade.ts). The
+ * Trade screen itself (src/app/(tabs)/trade.tsx) and its
+ * TradeConfirmSheet were removed on 2026-11-28 when Discover was
+ * restored — the helpers and the Hyperliquid client stay dormant in
+ * place until Trade returns, so only the pure-helper tests remain.
  */
 import * as fs from 'fs';
 import * as path from 'path';
@@ -30,7 +30,6 @@ const MOBILE = path.resolve(__dirname, '..', '..', '..');
 function src(rel: string): string {
   return fs.readFileSync(path.join(MOBILE, rel), 'utf8');
 }
-const TRADE_SCREEN = 'src/app/(tabs)/trade.tsx';
 const TRADE_LIB = 'src/lib/trade.ts';
 
 describe('leverage cap', () => {
@@ -204,76 +203,36 @@ describe('deposit honesty', () => {
   });
 });
 
-describe('Trade screen source', () => {
-  it('has Spot and Perpetuals tabs and defaults the env to testnet', () => {
-    const text = src(TRADE_SCREEN);
-    expect(text).toMatch(/'Spot'/);
-    expect(text).toMatch(/'Perpetuals'/);
-    expect(text).toMatch(/useState<HyperliquidEnv>\(DEFAULT_TRADE_ENV\)/);
-    expect(text).toMatch(/DEFAULT_TRADE_ENV/);
+describe('Trade screen removed (dormant helpers only)', () => {
+  it('the Trade screen and TradeConfirmSheet are gone; the dormant libs stay', () => {
+    expect(fs.existsSync(path.join(MOBILE, 'src', 'app', '(tabs)', 'trade.tsx'))).toBe(false);
+    expect(fs.existsSync(path.join(MOBILE, 'src', 'components', 'TradeConfirmSheet.tsx'))).toBe(false);
+    expect(fs.existsSync(path.join(MOBILE, 'src', 'lib', 'trade.ts'))).toBe(true);
+    expect(fs.existsSync(path.join(MOBILE, 'src', 'lib', 'hyperliquid.ts'))).toBe(true);
   });
 
-  it('imports the TradeConfirmSheet under the sibling contract and never builds its own auth UI', () => {
-    const text = src(TRADE_SCREEN);
-    expect(text).toMatch(/import \{ TradeConfirmSheet \} from '\.\.\/\.\.\/components\/TradeConfirmSheet';/);
-    expect(text).toMatch(/<TradeConfirmSheet/);
-    expect(text).toMatch(/onConfirm=\{async \(signer: Signer\)/);
-    expect(text).not.toMatch(/SignTransactionModal/);
-    expect(text).not.toMatch(/fingerprint/i);
-    expect(text).not.toMatch(/password/i);
+  it('the dormant libs say they are dormant', () => {
+    expect(src('src/lib/trade.ts')).toMatch(/DORMANT/);
+    expect(src('src/lib/hyperliquid.ts')).toMatch(/DORMANT/);
   });
 
-  it('uses the reusable PriceChart fed by Hyperliquid candles', () => {
-    const text = src(TRADE_SCREEN);
-    expect(text).toMatch(/import \{ PriceChart \} from '\.\.\/\.\.\/components\/PriceChart';/);
-    expect(text).toMatch(/getCandles\(chartCoin/);
-    expect(text).toMatch(/<PriceChart/);
-  });
-
-  it('caps leverage at MAX_LEVERAGE and uses the client for orders', () => {
-    const text = src(TRADE_SCREEN);
-    expect(text).toMatch(/MAX_LEVERAGE/);
-    expect(text).toMatch(/clampLeverage\(/);
-    expect(text).toMatch(/placeSpotMarketOrder|placeSpotLimitOrder/);
-    expect(text).toMatch(/placePerpMarketOrder|placePerpLimitOrder/);
-    expect(text).toMatch(/placeTpSlOrder/);
-    expect(text).toMatch(/closePosition/);
-    expect(text).toMatch(/client\.withdraw/);
-  });
-
-  it('shows positions with entry/mark/liquidation/P&L and a close button', () => {
-    const text = src(TRADE_SCREEN);
-    expect(text).toMatch(/Positions/);
-    expect(text).toMatch(/Liquidation/);
-    expect(text).toMatch(/Unrealised P&L|unrealizedPnl/);
-    expect(text).toMatch(/Close Position/);
-    expect(text).toMatch(/Funding rate/);
-    expect(text).toMatch(/Margin balance/);
-    expect(text).toMatch(/Open spot orders/);
-    expect(text).toMatch(/Spot balances/);
-    expect(text).toMatch(/Order history/);
-  });
-
-  it('links testnet deposits to the faucet URL from the client deposit info', () => {
-    const text = src(TRADE_SCREEN);
-    expect(text).toMatch(/getDepositInfo\(\)/);
-    expect(text).toMatch(/depositInfo\.faucetUrl/);
-    expect(text).toMatch(/Open Testnet Faucet/);
-    expect(text).toMatch(/depositInfo\.bridgeAddress/);
-  });
-
-  it('never mentions the admin, infrastructure or locked funds to the user', () => {
-    const text = src(TRADE_SCREEN);
-    expect(text.toLowerCase()).not.toMatch(/\badmin\b/);
-    expect(text.toLowerCase()).not.toMatch(/\bvault\b/);
-    expect(text.toLowerCase()).not.toMatch(/\bsync\b/);
-    expect(text.toLowerCase()).not.toMatch(/infrastructure/);
-  });
-
-  it('labels testnet as play money and mainnet as real money', () => {
-    const text = src(TRADE_SCREEN);
-    expect(text).toMatch(/play money/i);
-    expect(text).toMatch(/real money/i);
+  it('no screen still imports the dormant Trade libs', () => {
+    const offenders: string[] = [];
+    const walk = (dir: string): void => {
+      for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+        const f = path.join(dir, entry.name);
+        if (entry.isDirectory()) walk(f);
+        else if (/\.(tsx?)$/.test(entry.name)) {
+          const text = fs.readFileSync(f, 'utf8');
+          if (/from '.*\/lib\/(trade|hyperliquid)'/.test(text)) {
+            offenders.push(path.relative(MOBILE, f));
+          }
+        }
+      }
+    };
+    walk(path.join(MOBILE, 'src', 'app'));
+    walk(path.join(MOBILE, 'src', 'components'));
+    expect(offenders).toEqual([]);
   });
 });
 

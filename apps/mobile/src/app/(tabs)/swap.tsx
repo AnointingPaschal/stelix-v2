@@ -86,20 +86,25 @@ export default function Swap() {
   // --- Prefill from Home / Token Detail / Trade -----------------------
   // ?from=BNB&to=USDT pre-fills that token as pay / receive. Only applied
   // when the symbol exists on the active chain — a token from another
-  // chain never silently switches the network.
-  const prefillDone = useRef(false);
+  // chain never silently switches the network. Re-applied whenever the
+  // params change: this is a tab screen, so it stays mounted, and a
+  // BUY/SELL tap from the token detail page must re-prefill even when
+  // Swap was already visited. Manual picker changes never re-trigger
+  // it — the params do not change while the user picks tokens.
+  const prefillKey = useRef<string | null>(null);
   useEffect(() => {
-    if (prefillDone.current) return;
     const from = params.from?.toUpperCase();
     const to = params.to?.toUpperCase();
+    const key = `${from ?? ''}|${to ?? ''}`;
+    if (prefillKey.current === key) return;
     if (!from && !to) {
-      prefillDone.current = true;
+      prefillKey.current = key;
       return;
     }
     if (merged.length === 0) return;
     if (from && merged.some((t) => t.symbol === from)) setFromSymbol(from);
     if (to && merged.some((t) => t.symbol === to) && to !== from) setToSymbol(to);
-    prefillDone.current = true;
+    prefillKey.current = key;
   }, [params.from, params.to, merged]);
 
   // Keep the selection valid when the chain changes.

@@ -15,15 +15,14 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { KeyRound, Plus } from 'lucide-react-native';
 import { COLORS } from '../theme';
 import { Btn, Card, ScreenHeader, centeredContent } from '../components/ui';
-import { AppHeader, BottomNav } from '../components/AppShell';
+import { BottomNav } from '../components/AppShell';
 
 export default function WalletSetup() {
   const insets = useSafeAreaInsets();
   return (
     <View style={styles.shell}>
       <View style={[styles.root, centeredContent, { paddingTop: 12 + insets.top, paddingBottom: 24 + insets.bottom }]}>
-      <AppHeader showBack />
-      <ScreenHeader title="Import / Create wallet" />
+      <ScreenHeader title="Import / Create wallet" onBack={() => router.back()} />
       <Text style={styles.body}>
         Choose how to set up a wallet on this device.
       </Text>

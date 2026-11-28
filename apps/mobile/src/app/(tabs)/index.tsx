@@ -25,7 +25,7 @@ import { COLORS } from '../../theme';
 import { useApp } from '../../store/AppContext';
 import { fmtNum, fmtPct, fmtPrice, fmtUsd, shortAddress } from '../../lib/format';
 import { loadWatchlist, resolveWatchlistEntries, type WatchlistEntry } from '../../lib/watchlist';
-import { calcPortfolioPnl, visibleTokens } from '../../lib/balances';
+import { calcPortfolioPnl, sortMyAssets, visibleTokens } from '../../lib/balances';
 import { tokenDetailRoute } from '../../lib/tokenResolve';
 import { visibleAnnouncements } from '../../lib/adminSync';
 import {
@@ -68,7 +68,7 @@ export default function Home() {
       };
     }, [tokens]),
   );
-  const visible = visibleTokens(tokens, showSpam);
+  const visible = visibleTokens(sortMyAssets(tokens, chain), showSpam);
   // Latest admin announcement for this chain (audience 'all' or this
   // chain's slug), unless dismissed. Maintenance scope 'wallet' shows a
   // banner here too (scope 'all' replaces the whole screen instead).

@@ -27,6 +27,15 @@
  *   - DexScreener token boosts (fallback for Trending):
  *       GET https://api.dexscreener.com/token-boosts/top/v1
  *     Most-boosted tokens; enriched with the batch lookup.
+ *   - CoinMarketCap public listing API (Binance Alpha tab only):
+ *       GET https://api.coinmarketcap.com/data-api/v3/cryptocurrency/listing?tagSlugs=binance-alpha
+ *     Verified live from this VM on 2026-11-28 (387 Alpha-tagged coins,
+ *     page 2 returns a full 100 rows). No key needed. Binance's own
+ *     Alpha endpoints and CoinGecko's `binance-alpha` category both 404,
+ *     so CMC is the list source. The listing feed carries no chain or
+ *     contract address — Alpha rows use a stable `cmc:<id>` address, a
+ *     CoinMarketCap icon URL, and do not navigate to a token detail page.
+ *     Prices, 24h change, market cap and volume are live from CMC.
  *
  * One row per TOKEN, never one per pool: dedupeDiscoverTokens keeps the
  * highest-liquidity pair per token (PONS on three DEXes is one row, with
@@ -84,12 +93,12 @@ export interface DiscoverToken {
 
 export interface DiscoverResult {
   tokens: DiscoverToken[];
-  source: 'dexscreener' | 'geckoterminal' | 'unavailable';
+  source: 'dexscreener' | 'geckoterminal' | 'coinmarketcap' | 'unavailable';
   error: string | null;
   updatedAt: number;
 }
 
-export type DiscoverTab = 'trending' | 'gainers' | 'new';
+export type DiscoverTab = 'trending' | 'gainers' | 'new' | 'alpha';
 export type DiscoverSort = 'trending' | 'volume' | 'marketcap' | 'newest' | 'gainers';
 
 export interface DiscoverFilters {
@@ -612,6 +621,7 @@ const TAB_SORT: Record<DiscoverTab, DiscoverSort> = {
   trending: 'trending',
   gainers: 'gainers',
   new: 'newest',
+  alpha: 'marketcap',
 };
 
 export interface DiscoverPageResult {
@@ -625,6 +635,117 @@ export interface DiscoverPageResult {
   updatedAt: number;
 }
 
+// ---------------------------------------------------------------------------
+// Binance Alpha (CoinMarketCap public listing API, `binance-alpha` tag)
+// ---------------------------------------------------------------------------
+
+interface CmcAlphaListing {
+  id?: number;
+  name?: string;
+  symbol?: string;
+  dateAdded?: string;
+  quotes?: {
+    price?: number;
+    percentChange1h?: number;
+    percentChange24h?: number;
+    marketCap?: number;
+    fullyDilluttedMarketCap?: number;
+    volume24h?: number;
+  }[];
+}
+
+const CMC_ALPHA_PAGE_SIZE = 100;
+
+/**
+ * Map one CoinMarketCap Alpha listing row to a DiscoverToken. The CMC
+ * listing feed carries no chain or contract address, so these rows use
+ * a stable `cmc:<id>` address (never a real contract address), no chain
+ * (the screen does not navigate on them), and the CoinMarketCap icon
+ * URL — no logo resolution is needed. pairCreatedAt is the CMC
+ * dateAdded, so the Newest sort orders by listing date.
+ */
+export function mapCmcAlphaListing(c: CmcAlphaListing): DiscoverToken {
+  const q = c.quotes?.[0];
+  const mc = num(q?.marketCap);
+  const fdv = num(q?.fullyDilluttedMarketCap);
+  return {
+    symbol: c.symbol ?? '',
+    name: c.name ?? '',
+    chainId: '',
+    address: typeof c.id === 'number' ? `cmc:${c.id}` : '',
+    pairAddress: null,
+    priceUsd: num(q?.price),
+    change24h: num(q?.percentChange24h),
+    change1h: num(q?.percentChange1h),
+    marketCap: mc ?? fdv,
+    marketCapSource: mc !== null ? 'marketcap' : fdv !== null ? 'fdv' : null,
+    fdvUsd: fdv,
+    liquidityUsd: null,
+    volume24h: num(q?.volume24h),
+    txns24h: null,
+    dexId: null,
+    url: null,
+    pairCreatedAt: c.dateAdded ? Date.parse(c.dateAdded) : null,
+    iconUrl:
+      typeof c.id === 'number'
+        ? `https://s2.coinmarketcap.com/static/img/coins/64x64/${c.id}.png`
+        : null,
+  };
+}
+
+/**
+ * Load ONE page of Binance Alpha tokens (100 per page, market-cap
+ * order) from CoinMarketCap's public listing API. No key, no auth.
+ * A failed page reports unavailable rather than fabricating rows.
+ */
+export async function fetchAlphaPage(
+  page = 1,
+  fetchImpl: FetchImpl = fetch,
+): Promise<DiscoverPageResult> {
+  const safePage = Math.max(1, Math.floor(page));
+  const start = (safePage - 1) * CMC_ALPHA_PAGE_SIZE + 1;
+  try {
+    const res = await fetchWithTimeout(
+      `https://api.coinmarketcap.com/data-api/v3/cryptocurrency/listing?start=${start}&limit=${CMC_ALPHA_PAGE_SIZE}&sortBy=market_cap&sortType=desc&convert=USD&tagSlugs=binance-alpha`,
+      fetchImpl,
+    );
+    if (!res.ok) throw new Error(`CoinMarketCap returned HTTP ${res.status}.`);
+    const json = await res.json();
+    const list: CmcAlphaListing[] = Array.isArray(json?.data?.cryptoCurrencyList)
+      ? json.data.cryptoCurrencyList
+      : [];
+    const total = num(json?.data?.totalCount);
+    if (list.length === 0) {
+      return {
+        tokens: [],
+        hasMore: false,
+        source: 'unavailable',
+        error: 'Binance Alpha tokens are unavailable right now — no data was fabricated.',
+        updatedAt: Date.now(),
+      };
+    }
+    const tokens = list.map(mapCmcAlphaListing).filter((t) => t.symbol && t.address);
+    const hasMore =
+      list.length >= CMC_ALPHA_PAGE_SIZE &&
+      (total === null || start + list.length - 1 < total);
+    return {
+      tokens: sortDiscoverTokens(tokens, 'marketcap'),
+      hasMore,
+      source: 'coinmarketcap',
+      error: null,
+      updatedAt: Date.now(),
+    };
+  } catch (e) {
+    return {
+      tokens: [],
+      hasMore: false,
+      source: 'unavailable',
+      error: `Binance Alpha failed: ${e instanceof Error ? e.message : String(e)}`,
+      updatedAt: Date.now(),
+    };
+  }
+}
+
 /**
  * Load ONE page of a Discover tab (infinite scroll).
  * Trending / Gainers read GeckoTerminal trending_pools?page=N; New Pairs
@@ -635,6 +756,8 @@ export interface DiscoverPageResult {
  * No DexScreener fallback here — a failed page reports unavailable
  * rather than fabricating rows (fetchDiscoverTab keeps the fallback
  * for its single-shot callers).
+ * Binance Alpha reads CoinMarketCap's public listing API (see
+ * fetchAlphaPage) — no chain filter or enrichment applies there.
  */
 export async function fetchDiscoverPage(
   tab: DiscoverTab,
@@ -643,6 +766,9 @@ export async function fetchDiscoverPage(
   fetchImpl: FetchImpl = fetch,
 ): Promise<DiscoverPageResult> {
   const safePage = Math.max(1, Math.floor(page));
+  // Binance Alpha has its own feed (CoinMarketCap) — no chain filter
+  // or DexScreener enrichment applies.
+  if (tab === 'alpha') return fetchAlphaPage(safePage, fetchImpl);
   try {
     let tokens: DiscoverToken[] = [];
     let hasMore = false;

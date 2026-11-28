@@ -87,7 +87,7 @@ describe('safe-area: every screen clears the status bar / notch and the gesture 
     'app/token/[symbol].tsx',
     'app/(tabs)/index.tsx',
     'app/(tabs)/swap.tsx',
-    'app/(tabs)/trade.tsx',
+    'app/(tabs)/discover.tsx',
     'app/(tabs)/history.tsx',
   ];
 

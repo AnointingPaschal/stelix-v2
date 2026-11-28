@@ -4,13 +4,14 @@
  *  hardcoded one. */
 import { useState } from 'react';
 import { ScrollView, StyleSheet, Text, View } from 'react-native';
+import { router } from 'expo-router';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import * as Clipboard from 'expo-clipboard';
 import QRCode from 'react-native-qrcode-svg';
 import { COLORS } from '../theme';
 import { useApp } from '../store/AppContext';
 import { Btn, Card, ScreenHeader, centeredContent } from '../components/ui';
-import { AppHeader, BottomNav } from '../components/AppShell';
+import { BottomNav } from '../components/AppShell';
 
 export default function Receive() {
   const { chain, chainAddress } = useApp();
@@ -32,8 +33,7 @@ export default function Receive() {
   return (
     <View style={styles.shell}>
     <ScrollView style={styles.root} contentContainerStyle={[styles.inner, centeredContent, { paddingTop: 12 + insets.top, paddingBottom: 24 + insets.bottom }]}>
-      <AppHeader showBack />
-      <ScreenHeader title="Receive Assets" />
+      <ScreenHeader title="Receive Assets" onBack={() => router.back()} />
 
       <View style={styles.chainPill}>
         <View style={styles.netDot} />

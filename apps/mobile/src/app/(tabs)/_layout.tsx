@@ -1,9 +1,9 @@
 import { Tabs } from 'expo-router';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
-import { ArrowLeftRight, History, Home, Settings as SettingsIcon, TrendingUp } from 'lucide-react-native';
+import { ArrowLeftRight, Compass, History, Home, Settings as SettingsIcon } from 'lucide-react-native';
 import { COLORS } from '../../theme';
 
-/** v1 bottom tabs: Home / Swap / Trade / History / Settings.
+/** v1 bottom tabs: Home / Swap / Discover / History / Settings.
  *  Vault Hub stays a route (reachable from Discipline / lock links) but is
  *  not a tab, as in v1. Launchpad is admin-only (apps/admin Launchpad
  *  Manager) and has no tab, screen or link in the wallet. */
@@ -39,10 +39,10 @@ export default function TabsLayout() {
         }}
       />
       <Tabs.Screen
-        name="trade"
+        name="discover"
         options={{
-          title: 'Trade',
-          tabBarIcon: ({ color, size }) => <TrendingUp size={size} color={color} />,
+          title: 'Discover',
+          tabBarIcon: ({ color, size }) => <Compass size={size} color={color} />,
         }}
       />
       <Tabs.Screen

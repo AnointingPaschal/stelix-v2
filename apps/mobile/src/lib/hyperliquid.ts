@@ -1,3 +1,7 @@
+/** DORMANT — the Trade tab was removed on 2026-11-28 (Discover restored).
+ *  This client and src/lib/trade.ts are kept in place, with their tests,
+ *  until Trade returns. Do not remove the @nktkas/hyperliquid dependency.
+ */
 /**
  * Hyperliquid client for the Stelix wallet.
  *

@@ -13,6 +13,7 @@
  *  toggled off — their toggle is disabled and says so. */
 import { useEffect, useRef, useState } from 'react';
 import { Pressable, ScrollView, StyleSheet, Switch, Text, TextInput, View, useWindowDimensions } from 'react-native';
+import { router } from 'expo-router';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Copy, Search, X } from 'lucide-react-native';
 import * as Clipboard from 'expo-clipboard';
@@ -39,7 +40,7 @@ import { fetchFactoryLogo, resolveTokenLogo } from '../lib/tokenLogos';
 import { findRegistryToken } from '../lib/adminSync';
 import { BottomSheet, Btn, Card, ScreenHeader } from '../components/ui';
 import { TokenLogo } from '../components/TokenLogo';
-import { AppHeader, BottomNav } from '../components/AppShell';
+import { BottomNav } from '../components/AppShell';
 
 /** One row in the import screen: a search hit (decimals unknown until
  *  activation) or an address preview (decimals known). */
@@ -325,8 +326,7 @@ export default function ImportTokenScreen() {
         ]}
         keyboardShouldPersistTaps="handled"
       >
-        <AppHeader showBack />
-        <ScreenHeader title="Import Token" sub="Search by name, or paste a contract address" />
+        <ScreenHeader title="Import Token" sub="Search by name, or paste a contract address" onBack={() => router.back()} />
 
         <ScrollView horizontal showsHorizontalScrollIndicator={false} style={styles.chainRow}>
           {usableChains.map((c) => {

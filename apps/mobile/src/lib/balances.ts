@@ -458,6 +458,45 @@ export function visibleTokens<T extends { isSpam: boolean }>(tokens: T[], showSp
   return tokens.filter((t) => !t.isSpam || showSpam);
 }
 
+/** My Assets display order: the chain's native asset first, then USDT,
+ *  then USDC — pinned at the top in that fixed order. Everything else
+ *  follows: registry tokens in their admin order (sortOrder), then
+ *  imported / discovered tokens in their existing order. A stablecoin
+ *  that is also a registry row still pins to the top (its rank wins
+ *  over sortOrder), and on Arc the native row already IS USDC, so
+ *  there is no second USDC row to pin. Matching is by symbol
+ *  (USDT / USDT0 / USDC) or, when the chain config is passed, by the
+ *  chain's verified stablecoin addresses — Plasma's USDT0 reads
+ *  on-chain as USDT0, so the address match pins it. Pure and stable:
+ *  equal ranks keep their input order. Applied in fetchBalances and
+ *  again at render, so a cached / differently-ordered list still
+ *  displays pinned. */
+export function sortMyAssets<T extends TokenBalance>(tokens: T[], chain?: ChainConfig): T[] {
+  const usdtAddr = chain?.stablecoins?.USDT?.toLowerCase();
+  const usdcAddr = chain?.stablecoins?.USDC?.toLowerCase();
+  const rank = (t: T): number => {
+    if (t.address === '') return 0; // native asset
+    const symbol = t.symbol.toUpperCase();
+    const addr = t.address.toLowerCase();
+    if (symbol === 'USDT' || symbol === 'USDT0' || (usdtAddr !== undefined && addr === usdtAddr)) return 1;
+    if (symbol === 'USDC' || (usdcAddr !== undefined && addr === usdcAddr)) return 2;
+    if (t.sortOrder !== undefined) return 3; // registry row, admin order
+    return 4; // imported / discovered, existing order
+  };
+  return tokens
+    .map((t, i) => ({ t, i }))
+    .sort((a, b) => {
+      const r = rank(a.t) - rank(b.t);
+      if (r !== 0) return r;
+      if (rank(a.t) === 3) {
+        const s = (a.t.sortOrder ?? 0) - (b.t.sortOrder ?? 0);
+        if (s !== 0) return s;
+      }
+      return a.i - b.i;
+    })
+    .map(({ t }) => t);
+}
+
 const IMPORTED_TOKENS_KEY = 'stelix_imported_tokens_v2';
 
 /** Imported tokens are per WALLET, not per device: switching wallets
@@ -833,8 +872,9 @@ export async function fetchBalances(
         }),
       );
       tokens.push(...priced);
-      const totalUsd = tokens.reduce((s, t) => s + (t.priceUsd !== null ? t.balance * t.priceUsd : 0), 0);
-      return { chain, address, tokens, totalUsd, loading: false, error: null, updatedAt: Date.now() };
+      const ordered = sortMyAssets(tokens, chain);
+      const totalUsd = ordered.reduce((s, t) => s + (t.priceUsd !== null ? t.balance * t.priceUsd : 0), 0);
+      return { chain, address, tokens: ordered, totalUsd, loading: false, error: null, updatedAt: Date.now() };
     } catch (e) {
       return {
         chain,
@@ -912,7 +952,10 @@ export async function fetchBalances(
       }
     }),
   );
-  const tokens = [native, ...erc20.filter((t): t is TokenBalance => t !== null)];
+  const tokens = sortMyAssets(
+    [native, ...erc20.filter((t): t is TokenBalance => t !== null)],
+    chain,
+  );
 
   // Prices: DexScreener per ERC-20, CoinGecko for majors (native + stables).
   // The DexScreener reads run in parallel: a sequential loop made the

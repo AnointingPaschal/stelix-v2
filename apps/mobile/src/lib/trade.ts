@@ -1,3 +1,6 @@
+/** DORMANT — the Trade tab was removed on 2026-11-28 (Discover restored).
+ *  These helpers and their tests are kept in place until Trade returns.
+ */
 /**
  * Pure helpers for the Trade screen (src/app/(tabs)/trade.tsx).
  *

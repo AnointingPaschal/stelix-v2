@@ -6,9 +6,10 @@
  *  ONLY in the shared SignTransactionModal — there is no password field
  *  on this page. */
 import { useEffect, useState } from 'react';
-import { ScrollView, StyleSheet, Text, View } from 'react-native';
+import { Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
 import { router, useLocalSearchParams } from 'expo-router';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
+import { ChevronLeft } from 'lucide-react-native';
 import * as Clipboard from 'expo-clipboard';
 import { COLORS } from '../../theme';
 import { useApp } from '../../store/AppContext';
@@ -27,7 +28,8 @@ import {
   requestBreakOnChain,
   targetProgress,
 } from '../../lib/vault';
-import { Btn, Card, Chip, ProgressBar, RiskNote, SectionTitle, centeredContent } from '../../components/ui';
+import { Btn, Card, Chip, ProgressBar, SectionTitle, centeredContent } from '../../components/ui';
+import { BottomNav } from '../../components/AppShell';
 import { PriceChart } from '../../components/PriceChart';
 import {
   SignTransactionModal,
@@ -83,10 +85,16 @@ export default function LockDetail() {
 
   if (!lock) {
     return (
-      <View style={[styles.missing, centeredContent, { paddingTop: 12 + insets.top, paddingBottom: 24 + insets.bottom }]}>
-        <Text style={styles.title}>Lock not found</Text>
-        <Text style={styles.missingBody}>This lock is no longer in your vault.</Text>
-        <Btn label="Back to Vault" onPress={() => router.replace('/(tabs)/vault')} />
+      <View style={styles.shell}>
+        <View style={[styles.missing, centeredContent, { paddingTop: 12 + insets.top, paddingBottom: 24 + insets.bottom }]}>
+          <Pressable onPress={() => router.back()} hitSlop={8} accessibilityLabel="Back" style={styles.backBtn}>
+            <ChevronLeft size={22} color={COLORS.text} />
+          </Pressable>
+          <Text style={styles.title}>Lock not found</Text>
+          <Text style={styles.missingBody}>This lock is no longer in your vault.</Text>
+          <Btn label="Back to Vault" onPress={() => router.replace('/(tabs)/vault')} />
+        </View>
+        <BottomNav />
       </View>
     );
   }
@@ -280,7 +288,11 @@ export default function LockDetail() {
   }
 
   return (
+    <View style={styles.shell}>
     <ScrollView style={styles.root} contentContainerStyle={[styles.inner, centeredContent, { paddingTop: 12 + insets.top, paddingBottom: 24 + insets.bottom }]}>
+      <Pressable onPress={() => router.back()} hitSlop={8} accessibilityLabel="Back" style={styles.backBtn}>
+        <ChevronLeft size={22} color={COLORS.text} />
+      </Pressable>
       <Text style={styles.title}>{lock.id}</Text>
       <Text style={styles.sub}>
         {fmtNum(lock.amountRemaining)} {lock.tokenSymbol} · {chain.name} · {lock.status.replace('-', ' ')}
@@ -404,7 +416,6 @@ export default function LockDetail() {
         />
       </View>
       {copiedReceipt ? <Text style={styles.sentLine}>Receipt copied — paste it anywhere to share.</Text> : null}
-      <RiskNote />
 
       <SignTransactionModal
         visible={signModal !== null}
@@ -415,6 +426,8 @@ export default function LockDetail() {
         onSigned={(res) => void onVaultSigned(res)}
       />
     </ScrollView>
+    <BottomNav />
+    </View>
   );
 }
 
@@ -430,6 +443,7 @@ function Term({ label, value }: { label: string; value: string }) {
 const styles = StyleSheet.create({
   actionBtn: { flexBasis: 140, flexGrow: 1 },
   actions: { flexDirection: 'row', flexWrap: 'wrap', gap: 8, marginTop: 16 },
+  backBtn: { alignSelf: 'flex-start', paddingVertical: 4 },
   breach: { color: COLORS.red, fontWeight: '700' },
   countdown: { color: COLORS.mint, fontSize: 14, fontWeight: '800', marginTop: 6 },
   date: { color: COLORS.textOnNavyMuted, fontSize: 12, marginTop: 4 },
@@ -443,6 +457,7 @@ const styles = StyleSheet.create({
   progressLabel: { color: COLORS.textMuted, fontSize: 12, marginTop: 6 },
   root: { backgroundColor: COLORS.bg, flex: 1 },
   sentence: { color: COLORS.text, fontSize: 12, fontWeight: '700', lineHeight: 18, marginTop: 10 },
+  shell: { backgroundColor: COLORS.bg, flex: 1 },
   stageRow: { alignItems: 'center', flexDirection: 'row', gap: 8, paddingVertical: 6 },
   stageText: { color: COLORS.text, flex: 1, fontSize: 12, fontWeight: '700' },
   stageUsd: { color: COLORS.textMuted, fontSize: 12 },

@@ -19,7 +19,7 @@ import { useApp } from '../store/AppContext';
 import { fmtUsd } from '../lib/format';
 import { disciplineScore } from '../lib/vault';
 import { Btn, Card, EmptyState, ScreenHeader, SectionTitle, centeredContent } from '../components/ui';
-import { AppHeader, BottomNav } from '../components/AppShell';
+import { BottomNav } from '../components/AppShell';
 import { LockCard } from '../components/TokenRow';
 
 const GAUGE_SIZE = 168;
@@ -54,8 +54,7 @@ export default function Discipline() {
   return (
     <View style={styles.shell}>
       <ScrollView style={styles.root} contentContainerStyle={[styles.inner, centeredContent, { paddingTop: 12 + insets.top, paddingBottom: 24 + insets.bottom }]}>
-        <AppHeader showBack />
-        <ScreenHeader title="Discipline Report" />
+        <ScreenHeader title="Discipline Report" onBack={() => router.back()} />
 
         <Card dark style={styles.vaultCard}>
           <Text style={styles.vaultLabel}>Discipline Score</Text>

@@ -40,10 +40,10 @@ describe('no launchpad in the wallet UI', () => {
     expect(offenders).toEqual([]);
   });
 
-  it('the bottom nav is exactly Home, Swap, Trade, History, Settings', () => {
+  it('the bottom nav is exactly Home, Swap, Discover, History, Settings', () => {
     const layout = fs.readFileSync(path.join(APP, '(tabs)', '_layout.tsx'), 'utf8');
     const titles = [...layout.matchAll(/title: '([^']+)'/g)].map((m) => m[1]);
-    expect(titles).toEqual(['Home', 'Swap', 'Trade', 'History', 'Settings']);
+    expect(titles).toEqual(['Home', 'Swap', 'Discover', 'History', 'Settings']);
   });
 
   it('the mobile launchpad lib and its tests are gone', () => {

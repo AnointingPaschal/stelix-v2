@@ -24,15 +24,14 @@ describe('History screen no-key hint', () => {
     expect(text).toContain('<AppHeader />');
   });
 
-  it('shows a friendly inline hint with a Settings button instead of the bare red error when no key is set', () => {
+  it('never asks for an explorer API key — no key card, no Settings key prompt (keyless history, 2026-11-28)', () => {
     const text = src(HISTORY_SCREEN);
-    expect(text).toContain('isNoExplorerKeyError(historyError)');
-    expect(text).toContain('History needs an explorer API key');
-    expect(text).toContain('etherscan.io');
-    expect(text).toContain('Add key in Settings');
-    expect(text).toContain("router.push('/(tabs)/settings')");
-    // The red error text is only rendered for non-no-key failures.
-    expect(text).toMatch(/isNoKey \? \([\s\S]*?\) : historyError \? \(/);
+    expect(text).not.toContain('History needs an explorer API key');
+    expect(text).not.toContain('Add key in Settings');
+    expect(text).not.toContain('isNoExplorerKeyError');
+    expect(text).not.toContain('etherscan.io');
+    // A plain error line is still rendered for genuine load failures.
+    expect(text).toContain('historyError ?');
   });
 
   it('keeps tx rows linking to the tx detail screen', () => {
@@ -41,24 +40,14 @@ describe('History screen no-key hint', () => {
   });
 });
 
-describe('Settings explorer API key field', () => {
-  it('has a secure input with Save/Clear persisted under the exact storage key', () => {
+describe('Settings explorer API key field — REMOVED (keyless history, 2026-11-28)', () => {
+  it('Settings no longer has an Explorer API key row, form, or key prompt', () => {
     const text = src(SETTINGS_SCREEN);
-    expect(text).toContain('Explorer API key');
-    expect(text).toContain('secureTextEntry');
-    expect(text).toContain('kvSet(EXPLORER_API_KEY_STORAGE_KEY');
-    expect(text).toContain('kvDelete(EXPLORER_API_KEY_STORAGE_KEY');
-    expect(text).toContain("import { EXPLORER_API_KEY_STORAGE_KEY } from '../lib/history'");
-    // The literal key lives in history.ts; the constant must be exactly this.
-    expect(src('src/lib/history.ts')).toContain("EXPLORER_API_KEY_STORAGE_KEY = 'stelix_explorer_api_key_v1'");
-    expect(text).toContain('Save Key');
-    expect(text).toContain('Clear Key');
-  });
-
-  it('notes that a free etherscan.io key unlocks history on BNB, Base, Ethereum and Polygon', () => {
-    const text = src(SETTINGS_SCREEN);
-    expect(text).toContain('etherscan.io');
-    expect(text).toMatch(/BNB, Base, Ethereum and Polygon/);
+    expect(text).not.toContain('Explorer API key');
+    expect(text).not.toContain('Save Key');
+    expect(text).not.toContain('Clear Key');
+    expect(text).not.toContain('EXPLORER_API_KEY_STORAGE_KEY');
+    expect(text).not.toContain('etherscan.io');
   });
 
   it('renders AppHeader, and BottomNav only outside the tab group (no doubled nav in the tab)', () => {
@@ -66,6 +55,8 @@ describe('Settings explorer API key field', () => {
     expect(text).toContain("import { AppHeader, BottomNav } from '../components/AppShell'");
     expect(text).toContain('<AppHeader showBack={!inTabs} />');
     expect(text).toContain('{!inTabs ? <BottomNav /> : null}');
-    expect(text).toContain("usePathname().includes('(tabs)')");
+    // The old usePathname().includes('(tabs)') check was always false
+    // (usePathname never contains group segments); the fix uses segments.
+    expect(text).toContain("useSegments().includes('(tabs)')");
   });
 });

@@ -20,7 +20,7 @@ import { getSignerForChain } from '../lib/signer';
 import { displaySavedAddress, loadAddressBook, type SavedAddress } from '../lib/addressBook';
 import { estimateSendFee, sendToken, type SendEstimate, type SendResult } from '../lib/send';
 import { BottomSheet, Btn, OptionSheet, ScreenHeader, centeredContent } from '../components/ui';
-import { AppHeader, BottomNav } from '../components/AppShell';
+import { BottomNav } from '../components/AppShell';
 import { TokenLogo } from '../components/TokenLogo';
 import {
   SignTransactionModal,
@@ -170,8 +170,7 @@ export default function Send() {
     return (
       <View style={styles.shell}>
         <View style={[styles.root, centeredContent, { paddingTop: 12 + insets.top, paddingBottom: 24 + insets.bottom }]}>
-          <AppHeader showBack />
-          <ScreenHeader title="Transfer Assets" />
+          <ScreenHeader title="Transfer Assets" onBack={() => router.back()} />
           <View style={styles.inner}>
             <Text style={styles.emptyTitle}>Nothing to send yet</Text>
             <Text style={styles.emptyBody}>You have no tokens on {chain.name}. Receive funds first.</Text>
@@ -188,8 +187,7 @@ export default function Send() {
     <KeyboardAvoidingView style={styles.root} behavior={Platform.OS === 'ios' ? 'padding' : 'height'} keyboardVerticalOffset={insets.top}>
       <ScrollView style={{ flex: 1 }}
         keyboardShouldPersistTaps="handled" contentContainerStyle={[styles.inner, centeredContent, { paddingTop: 12 + insets.top, paddingBottom: 32 + insets.bottom }]}>
-        <AppHeader showBack />
-        <ScreenHeader title="Transfer Assets" />
+        <ScreenHeader title="Transfer Assets" onBack={() => router.back()} />
 
         <View style={styles.chainPill}>
           <View style={styles.netDot} />

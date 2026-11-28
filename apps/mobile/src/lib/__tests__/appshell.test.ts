@@ -2,12 +2,14 @@
  * AppShell audit — regression test for the shared AppHeader + BottomNav
  * (2026-11-28).
  *
- * Every screen renders the same header (wallet pill left, chain pill
- * right, exactly like Home's topRow) and the stack screens outside the
- * tab navigator also get the same 5-tab bottom nav. Source checks,
- * following the safe-area-audit / keyboard-ux pattern (Jest here is
- * node-only for pure logic, so presence/behaviour is pinned by reading
- * the screen and component sources).
+ * Tab screens render AppHeader (wallet pill left, chain pill right,
+ * exactly like Home's topRow) and the native tab bar. Stack screens
+ * outside the tab navigator render NO AppHeader — just a minimal back
+ * chevron (their own ChevronLeft or ScreenHeader with onBack) — plus
+ * the same 5-tab BottomNav. Source checks, following the
+ * safe-area-audit / keyboard-ux pattern (Jest here is node-only for
+ * pure logic, so presence/behaviour is pinned by reading the screen
+ * and component sources).
  */
 import * as fs from 'fs';
 import * as path from 'path';
@@ -24,15 +26,23 @@ const SHELL = 'src/components/AppShell.tsx';
 
 /** Tab-group screens: AppHeader only (the native tab bar already shows). */
 const TAB_SCREENS = ['src/app/(tabs)/swap.tsx', 'src/app/(tabs)/vault.tsx'];
-/** Stack screens: AppHeader (showBack) + BottomNav. */
+/** Stack screens: NO AppHeader — minimal back chevron only (own
+ *  ChevronLeft, or ScreenHeader with onBack) + BottomNav. This is the
+ *  rule for every stack screen since 2026-11-28 (the user asked the
+ *  wallet/chain header off the stack screens); the token detail
+ *  screen follows the same rule, plus the floating BUY/SELL bar — see
+ *  the 'token detail header' tests below. */
 const STACK_SCREENS = [
   'src/app/send.tsx',
   'src/app/receive.tsx',
-  'src/app/token/[symbol].tsx',
   'src/app/tx/[hash].tsx',
   'src/app/notifications.tsx',
   'src/app/wallet-setup.tsx',
+  'src/app/vault/[id].tsx',
+  'src/app/discipline.tsx',
+  'src/app/import-token.tsx',
 ];
+const TOKEN_DETAIL = 'src/app/token/[symbol].tsx';
 
 describe('AppShell exports', () => {
   it('exports AppHeader and BottomNav under exactly those names', () => {
@@ -67,10 +77,10 @@ describe('AppShell exports', () => {
 
   it('BottomNav has the same 5 tabs, icons, colours and height as the native tab bar', () => {
     const text = src(SHELL);
-    for (const label of ['Home', 'Swap', 'Trade', 'History', 'Settings']) {
+    for (const label of ['Home', 'Swap', 'Discover', 'History', 'Settings']) {
       expect(text).toContain(`label: '${label}'`);
     }
-    for (const icon of ['Home', 'ArrowLeftRight', 'TrendingUp', 'History', 'Settings as SettingsIcon']) {
+    for (const icon of ['Home', 'ArrowLeftRight', 'Compass', 'History', 'Settings as SettingsIcon']) {
       expect(text).toContain(icon);
     }
     expect(text).toMatch(/height:\s*60 \+ insets\.bottom/);
@@ -89,7 +99,7 @@ describe('AppShell exports', () => {
 });
 
 describe('AppShell wrapping', () => {
-  it.each([...TAB_SCREENS, ...STACK_SCREENS])('%s renders AppHeader', (file) => {
+  it.each(TAB_SCREENS)('%s renders AppHeader', (file) => {
     expect(src(file)).toContain('<AppHeader');
   });
 
@@ -97,20 +107,40 @@ describe('AppShell wrapping', () => {
     expect(src(file)).not.toContain('BottomNav');
   });
 
-  it.each(STACK_SCREENS)('%s renders AppHeader with showBack and BottomNav at the bottom', (file) => {
+  it.each(STACK_SCREENS)('%s has no AppHeader — back chevron only, plus BottomNav', (file) => {
     const text = src(file);
-    expect(text).toContain('<AppHeader showBack />');
+    expect(text).not.toContain('<AppHeader');
+    expect(text).not.toContain('AppHeader');
+    expect(text).toContain('<BottomNav />');
+    // The back action exists on every stack screen (own ChevronLeft,
+    // or ScreenHeader with onBack which renders the chevron).
+    expect(text).toContain('router.back()');
+  });
+
+  it('stack screens carry their own back chevron (ChevronLeft or ScreenHeader onBack)', () => {
+    for (const file of STACK_SCREENS) {
+      const text = src(file);
+      expect(text.includes('ChevronLeft') || text.includes('ScreenHeader')).toBe(true);
+    }
+  });
+
+  it('token detail follows the same stack rule: minimal back chevron only, no AppHeader, BottomNav kept', () => {
+    const text = src(TOKEN_DETAIL);
+    expect(text).not.toContain('<AppHeader');
+    expect(text).not.toContain('AppHeader');
+    expect(text).toContain('ChevronLeft');
+    expect(text).toContain('router.back()');
     expect(text).toContain('<BottomNav />');
   });
 
-  it('stack screens have no second back chevron of their own', () => {
-    // ScreenHeader without onBack renders a spacer, not a chevron;
-    // the token/tx heads lost their own back Pressable to AppHeader.
-    for (const file of ['src/app/send.tsx', 'src/app/receive.tsx', 'src/app/wallet-setup.tsx']) {
-      expect(src(file)).not.toContain('onBack={() => router.back()}');
-    }
-    expect(src('src/app/token/[symbol].tsx')).not.toContain('ChevronLeft');
-    expect(src('src/app/tx/[hash].tsx')).not.toContain('ChevronLeft');
+  it('token detail has a floating BUY/SELL bar above the bottom nav, prefilled to Swap via USDC', () => {
+    const text = src(TOKEN_DETAIL);
+    expect(text).toContain('tradeBar');
+    expect(text).toContain('BUY');
+    expect(text).toContain('SELL');
+    expect(text).toContain("pathname: '/(tabs)/swap'");
+    expect(text).toContain("from: 'USDC', to: sym");
+    expect(text).toContain("from: sym, to: 'USDC'");
   });
 });
 
@@ -132,7 +162,7 @@ describe('swap screen: chain switch + slippage pill', () => {
 
 describe('text removal in AppShell files', () => {
   it('no RiskNote render remains in the wrapped screens', () => {
-    for (const file of [...TAB_SCREENS, ...STACK_SCREENS]) {
+    for (const file of [...TAB_SCREENS, ...STACK_SCREENS, TOKEN_DETAIL]) {
       expect(src(file)).not.toContain('RiskNote');
     }
   });

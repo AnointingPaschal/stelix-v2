@@ -18,10 +18,10 @@ import {
   ChevronDown,
   ChevronLeft,
   ChevronRight,
+  Compass,
   History,
   Home,
   Settings as SettingsIcon,
-  TrendingUp,
   User,
   X,
 } from 'lucide-react-native';
@@ -143,7 +143,7 @@ export function AppHeader({ showBack }: { showBack?: boolean }) {
 const TABS = [
   { label: 'Home', route: '/(tabs)', icon: Home },
   { label: 'Swap', route: '/(tabs)/swap', icon: ArrowLeftRight },
-  { label: 'Trade', route: '/(tabs)/trade', icon: TrendingUp },
+  { label: 'Discover', route: '/(tabs)/discover', icon: Compass },
   { label: 'History', route: '/(tabs)/history', icon: History },
   { label: 'Settings', route: '/(tabs)/settings', icon: SettingsIcon },
 ] as const;

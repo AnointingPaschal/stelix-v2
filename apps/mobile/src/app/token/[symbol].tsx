@@ -24,7 +24,7 @@ import { Animated, KeyboardAvoidingView, Platform, Pressable, ScrollView, StyleS
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { router, useLocalSearchParams } from 'expo-router';
 import * as Clipboard from 'expo-clipboard';
-import { Lock, RefreshCw, Star } from 'lucide-react-native';
+import { ChevronLeft, Lock, RefreshCw, Star } from 'lucide-react-native';
 import { COLORS } from '../../theme';
 import { useApp } from '../../store/AppContext';
 import { isWatched, toggleWatchlist, watchKey as buildWatchKey } from '../../lib/watchlist';
@@ -70,7 +70,7 @@ import {
 } from '../../components/SignTransactionModal';
 import { fmtDate, fmtNum, fmtPct, fmtPrice, fmtUsd } from '../../lib/format';
 import { Btn, BottomSheet, Card, Chip, SectionTitle } from '../../components/ui';
-import { AppHeader, BottomNav } from '../../components/AppShell';
+import { BottomNav } from '../../components/AppShell';
 import { PriceChart, type ChartType } from '../../components/PriceChart';
 import { SafetyScoreCard } from '../../components/SafetyScoreCard';
 import { TokenLogo } from '../../components/TokenLogo';
@@ -787,11 +787,24 @@ export default function TokenDetail() {
     router.replace(`/vault/${lock.id}`);
   }
 
+  /** Floating BUY/SELL: open Swap prefilled via route params — BUY pays
+   *  USDC for this token, SELL pays this token for USDC. Swap owns the
+   *  quote + execution; this screen only picks the pair. */
+  function openSwap(direction: 'buy' | 'sell') {
+    if (direction === 'buy') {
+      router.push({ pathname: '/(tabs)/swap', params: { from: 'USDC', to: sym } });
+    } else {
+      router.push({ pathname: '/(tabs)/swap', params: { from: sym, to: 'USDC' } });
+    }
+  }
+
   if (!ref.found) {
     return (
       <View style={styles.shell}>
         <View style={[styles.missing, { paddingTop: 12 + insets.top, paddingBottom: 24 + insets.bottom }]}>
-          <AppHeader showBack />
+          <Pressable onPress={() => router.back()} hitSlop={8} accessibilityLabel="Back" style={styles.backBtn}>
+            <ChevronLeft size={22} color={COLORS.text} />
+          </Pressable>
           <View style={styles.missingInner}>
             <Text style={styles.title}>Token not found</Text>
             <Text style={styles.missingBody}>This token is not in your wallet and no contract address was given.</Text>
@@ -826,7 +839,9 @@ export default function TokenDetail() {
           },
         ]}
       >
-        <AppHeader showBack />
+        <Pressable onPress={() => router.back()} hitSlop={8} accessibilityLabel="Back" style={styles.backBtn}>
+          <ChevronLeft size={22} color={COLORS.text} />
+        </Pressable>
         <View style={styles.head}>
           <View style={styles.headToken}>
             <TokenLogo chainId={chainId} address={address} symbol={sym} size={36} logoUrl={storeToken?.logoUrl} />
@@ -1269,6 +1284,15 @@ export default function TokenDetail() {
         />
       </ScrollView>
     </KeyboardAvoidingView>
+    {/* Floating BUY/SELL — pinned above the bottom nav, never scrolls
+        away. Hidden for USDC itself: buying/selling USDC for USDC is
+        not a trade. */}
+    {sym !== 'USDC' ? (
+      <View style={[styles.tradeBar, isWide ? styles.tradeBarWide : null]}>
+        <Btn label="BUY" variant="mint" onPress={() => openSwap('buy')} style={styles.tradeBtn} />
+        <Btn label="SELL" variant="primary" onPress={() => openSwap('sell')} style={styles.tradeBtn} />
+      </View>
+    ) : null}
     <BottomNav />
     </View>
   );
@@ -1309,6 +1333,7 @@ function ReviewRow({ label, value }: { label: string; value: string }) {
 const styles = StyleSheet.create({
   actionBtn: { flex: 1 },
   actions: { flexDirection: 'row', gap: 8, marginTop: 16 },
+  backBtn: { alignItems: 'center', alignSelf: 'flex-start', justifyContent: 'center', marginBottom: 12 },
   addr: { color: COLORS.blue, fontSize: 12, marginTop: 8 },
   amountInput: { color: '#fff', flex: 1, fontSize: 16, fontWeight: '800' },
   amountRow: {
@@ -1452,6 +1477,17 @@ const styles = StyleSheet.create({
   tfTextOn: { color: COLORS.text },
   tfs: { alignItems: 'center', flex: 1, flexDirection: 'row', justifyContent: 'center' },
   title: { color: COLORS.text, fontSize: 16, fontWeight: '800' },
+  tradeBar: {
+    backgroundColor: '#fff',
+    borderTopColor: COLORS.border,
+    borderTopWidth: 1,
+    flexDirection: 'row',
+    gap: 8,
+    paddingHorizontal: 12,
+    paddingVertical: 10,
+  },
+  tradeBarWide: { alignSelf: 'center', maxWidth: 768, width: '100%' },
+  tradeBtn: { flex: 1 },
   typeSeg: { backgroundColor: COLORS.bgMuted, borderRadius: 999, flexDirection: 'row', padding: 2 },
   unlockLine: { color: COLORS.textOnNavyMuted, fontSize: 12, marginTop: 8 },
   vaultWarn: { color: '#FCA5A5', fontSize: 12, fontWeight: '600', lineHeight: 17, marginTop: 10 },
