@@ -22,6 +22,9 @@ export interface Chain {
   isTestnet: boolean
   /** The admin enable/disable toggle: false hides the chain from the wallet. */
   active: boolean
+  /** Shown in the wallet picker with a "Coming soon" badge, disabled —
+   *  never selectable, never used for a balance, swap or lock. */
+  comingSoon: boolean
   /** Slug of the paired chain in a testnet/mainnet pair, or null. */
   pairedChainId: string | null
 }

@@ -35,7 +35,7 @@
  * cache in adminChains.ts hid admin edits).
  */
 import { getAdminApiBase, mergeAdminChains, type AdminChainRow } from './adminChains';
-import { VAULT_DEFAULTS, type ChainConfig } from './chains';
+import { VAULT_DEFAULTS, isChainUsable, type ChainConfig } from './chains';
 import { kvGet, kvSet } from './storage';
 
 export const ADMIN_POLL_INTERVAL_MS = 45_000;
@@ -493,7 +493,11 @@ export function pickChainForMode(
   current: ChainConfig,
   mode: NetworkMode,
 ): ChainConfig | null {
-  const visible = filterChainsByMode(chains, mode).filter((c) => c.active);
+  // Usable only: a mode flip must never land the user on a
+  // coming-soon chain (shown in the picker, disabled, never
+  // selectable) — it falls through to the pair/default/first usable
+  // chain instead. A coming-soon current chain therefore also moves.
+  const visible = filterChainsByMode(chains, mode).filter(isChainUsable);
   // Each Arc variant has its own id, so the fit check compares the
   // current chain directly: 'arc-mainnet' only fits mainnet mode,
   // 'arc' only fits testnet mode.

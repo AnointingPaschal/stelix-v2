@@ -507,7 +507,7 @@ export default function ContractStudio() {
               </div>
             )}
             {deployNet && deployNet.routerKind !== 'none' && (
-              <DeployAdapters network={deployNet} explorerUrl={net.explorerUrl} onDeployed={onAdaptersDeployed} />
+              <DeployAdapters network={deployNet} explorerUrl={net.explorerUrl} onDeployed={onAdaptersDeployed} feedAddressFromPreset={params.priceFeed} />
             )}
             <label>Constructor parameters — StelixVault(owner, keeper, router, priceFeed, penaltyRecipient, feeRecipient, autoSellFeeBps)</label>
             {presetFor(effectiveChainId, env) ? (

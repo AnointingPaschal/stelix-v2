@@ -55,7 +55,7 @@
  * `dexRouter` (null until registered) from the admin row.
  */
 
-import type { ChainConfig } from './chains';
+import type { ChainConfig, ChainKind } from './chains';
 
 /** One row of GET /api/chains, as stored in D1 (snake_case). */
 export interface AdminChainRow {
@@ -79,6 +79,14 @@ export interface AdminChainRow {
   paired_chain_id?: string | null;
   launchpad_address?: string | null;
   token_factory_address?: string | null;
+  /** Coming-soon flag from the admin Chain Manager (D1 `coming_soon`).
+   *  /api/sync serves chain rows RAW (snake_case, like /api/chains),
+   *  so the flag arrives as `coming_soon: 1` (integer) and may be
+   *  absent on old rows (default false). The camelCase spelling is
+   *  accepted only as a defensive fallback — the admin never sends
+   *  it on chain rows. */
+  coming_soon?: number | boolean | null;
+  comingSoon?: number | boolean | null;
 }
 
 /** A built-in chain, or a remote-only chain appended from the admin. */
@@ -112,9 +120,21 @@ function httpsUrls(csv: string | null | undefined): string[] {
 }
 
 function mapRemoteStatus(status: string | undefined, fallback: ChainConfig['status']): ChainConfig['status'] {
-  if (status === 'live' || status === 'testnet' || status === 'paused') return status;
+  if (status === 'live' || status === 'testnet' || status === 'paused' || status === 'coming-soon') return status;
   if (status === 'hidden') return 'coming-soon';
   return fallback;
+}
+
+/** Coming-soon flag from a remote row: the raw `coming_soon` integer
+ *  wins (that is what /api/sync serves); the camelCase spelling is a
+ *  defensive fallback only. A 'hidden' status also means coming-soon.
+ *  Undefined = the row says nothing — the caller falls back to the
+ *  built-in value. */
+function remoteComingSoon(row: AdminChainRow): boolean | undefined {
+  const v = asBool(row.coming_soon) ?? asBool(row.comingSoon);
+  if (v !== undefined) return v;
+  if (row.status === 'hidden') return true;
+  return undefined;
 }
 
 function isValidRow(row: unknown): row is AdminChainRow {
@@ -188,9 +208,9 @@ function overlayBuiltIn(builtIn: ChainConfig, remote: AdminChainRow, remoteIsDef
   const next: AdminMergedChain = {
     ...builtIn,
     name: remote.name.trim() || builtIn.name,
-    // Solana has no EVM chain id in the wallet (chainId null); a remote
-    // numeric id must never overwrite that.
-    chainId: builtIn.kind === 'solana' ? null : typeof remote.chain_id === 'number' && remote.chain_id > 0 ? remote.chain_id : builtIn.chainId,
+    // Non-EVM chains have no EVM chain id in the wallet (Solana, Pi);
+    // a remote numeric id must never overwrite that.
+    chainId: builtIn.kind !== 'evm' ? null : typeof remote.chain_id === 'number' && remote.chain_id > 0 ? remote.chain_id : builtIn.chainId,
     nativeSymbol: remote.native_token && remote.native_token.trim() !== '' ? remote.native_token.trim() : builtIn.nativeSymbol,
     nativeDecimals:
       typeof remote.native_decimals === 'number' && remote.native_decimals >= 0 && remote.native_decimals <= 18
@@ -230,6 +250,12 @@ function overlayBuiltIn(builtIn: ChainConfig, remote: AdminChainRow, remoteIsDef
     status: mapRemoteStatus(remote.status, builtIn.status),
     testnet: remoteTestnet !== undefined ? remoteTestnet : remote.status === 'testnet' ? true : remote.status === 'live' ? false : builtIn.testnet,
     active: remoteActive !== undefined ? remoteActive : builtIn.active,
+    // Admin coming-soon wins when it says anything; otherwise the
+    // built-in value stands. A coming-soon chain stays in the picker
+    // (disabled) — it is never dropped by the merge. Pi is pinned
+    // coming-soon: the wallet has no Pi execution path (no Soroban
+    // build yet), so no admin flag may make it selectable.
+    comingSoon: builtIn.kind === 'pi' ? true : remoteComingSoon(remote) ?? builtIn.comingSoon ?? false,
     isDefault: remoteIsDefault !== null ? remote.id === remoteIsDefault : builtIn.isDefault,
   };
   return next;
@@ -239,9 +265,14 @@ function remoteOnlyChain(remote: AdminChainRow, remoteIsDefault: string | null):
   const rpcUrls = httpsUrls(remote.rpc_urls);
   if (rpcUrls.length === 0) return null;
   const isSolana = remote.id === 'solana';
-  const chainId = isSolana ? null : typeof remote.chain_id === 'number' && remote.chain_id > 0 ? remote.chain_id : null;
+  // Pi is Stellar-based, not EVM — its Horizon URL is not a JSON-RPC
+  // endpoint and it has no EVM chain id. Kind 'pi' keeps every EVM
+  // guard (balances, swap, vault, provider) from ever touching it.
+  const isPi = remote.id === 'pi' || remote.id === 'pi-testnet';
+  const kind: ChainKind = isSolana ? 'solana' : isPi ? 'pi' : 'evm';
+  const chainId = kind === 'evm' ? (typeof remote.chain_id === 'number' && remote.chain_id > 0 ? remote.chain_id : null) : null;
   // An EVM chain without a numeric chain id cannot be used on-chain.
-  if (!isSolana && chainId === null) return null;
+  if (kind === 'evm' && chainId === null) return null;
   const stablecoin = remote.stablecoin && remote.stablecoin.trim() !== '' ? remote.stablecoin.trim().toUpperCase() : 'USDC';
   const exitStablecoin: ChainConfig['exitStablecoin'] = stablecoin === 'USDT' ? 'USDT' : 'USDC';
   const nativeSymbol = remote.native_token && remote.native_token.trim() !== '' ? remote.native_token.trim() : stablecoin;
@@ -253,16 +284,17 @@ function remoteOnlyChain(remote: AdminChainRow, remoteIsDefault: string | null):
     id: remote.id,
     name: remote.name.trim(),
     chainId,
-    kind: isSolana ? 'solana' : 'evm',
+    kind,
     nativeSymbol,
     nativeName: nativeSymbol,
     nativeDecimals,
     exitStablecoin,
     exitStablecoinLabel: `auto-sell to ${exitStablecoin}`,
-    // Only a verified 0x address is carried; blank means "not confirmed
-    // yet" and the UI must say so — never a guessed address.
+    // Only a verified 0x address on an EVM chain is carried; blank
+    // means "not confirmed yet" and the UI must say so — never a
+    // guessed address, and never a 0x address on a non-EVM chain.
     exitStablecoinAddress:
-      !isSolana && remote.stablecoin_address && /^0x[0-9a-fA-F]{40}$/.test(remote.stablecoin_address)
+      kind === 'evm' && remote.stablecoin_address && /^0x[0-9a-fA-F]{40}$/.test(remote.stablecoin_address)
         ? remote.stablecoin_address
         : null,
     rpcUrl: rpcUrls[0],
@@ -288,6 +320,9 @@ function remoteOnlyChain(remote: AdminChainRow, remoteIsDefault: string | null):
     isDefault: remoteIsDefault !== null ? remote.id === remoteIsDefault : false,
     testnet: asBool(remote.is_testnet) ?? remote.status === 'testnet',
     active: asBool(remote.active) ?? true,
+    // Pi has no execution path in the wallet (no Soroban build yet),
+    // so it is always coming-soon even if the admin row says otherwise.
+    comingSoon: isPi ? true : remoteComingSoon(remote) ?? false,
     fromAdmin: true,
   };
 }

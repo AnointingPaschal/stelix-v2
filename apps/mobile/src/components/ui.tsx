@@ -20,6 +20,7 @@ import {
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Check, ChevronLeft, X } from 'lucide-react-native';
 import { COLORS, FONT, RADIUS, SHADOW } from '../theme';
+import { buildNetworkOptions, selectableChain } from '../lib/networkPicker';
 import { useApp } from '../store/AppContext';
 
 /** Responsive breakpoints (Group B): phones 320–430px, tablets ≥768px,
@@ -314,6 +315,10 @@ export interface SheetOption {
   label: string;
   sub?: string;
   selected?: boolean;
+  /** Shown greyed out, taps ignored (e.g. a "Coming soon" chain). */
+  disabled?: boolean;
+  /** Small badge shown at the right of the row (e.g. "Coming soon"). */
+  badge?: string;
 }
 
 /** Generic single-select bottom sheet. */
@@ -337,19 +342,27 @@ export function OptionSheet({
       {options.map((o) => (
         <Pressable
           key={o.key}
-          style={[styles.option, o.selected && styles.optionSelected]}
+          style={[styles.option, o.selected && styles.optionSelected, o.disabled && styles.optionDisabled]}
+          disabled={o.disabled}
+          accessibilityState={{ disabled: o.disabled }}
           onPress={() => {
+            if (o.disabled) return;
             onSelect(o.key);
             onClose();
           }}
         >
-          <View style={styles.optionDot} />
+          <View style={[styles.optionDot, o.disabled && styles.optionDotDisabled]} />
           <View style={styles.optionMid}>
-            <Text style={[styles.optionLabel, o.selected && styles.optionLabelSelected]}>{o.label}</Text>
+            <Text style={[styles.optionLabel, o.selected && styles.optionLabelSelected, o.disabled && styles.optionLabelDisabled]}>{o.label}</Text>
             {o.sub ? (
               <Text style={[styles.optionSub, o.selected && styles.optionSubSelected]}>{o.sub}</Text>
             ) : null}
           </View>
+          {o.badge ? (
+            <View style={styles.optionBadge}>
+              <Text style={styles.optionBadgeText}>{o.badge}</Text>
+            </View>
+          ) : null}
           {o.selected ? <Check size={18} color={COLORS.textOnNavy} /> : null}
         </Pressable>
       ))}
@@ -365,10 +378,13 @@ export function OptionSheet({
  *  Mainnet are separate entries the user picks freely (2026-11-27: the
  *  user asked for individual switching). The picker can never override
  *  the admin mode: it only lists chains the mode allows, and says so.
- *  A chain added in admin appears here after a refresh. */
+ *  A chain added in admin appears here after a refresh. Coming-soon
+ *  chains (Plasma testnet, Pi — 2026-11-28) are SHOWN with a "Coming
+ *  soon" badge but visibly disabled and never selectable (see
+ *  lib/networkPicker.ts). */
 export function NetworkSheet({ visible, onClose }: { visible: boolean; onClose: () => void }) {
   const { chain, setChain, availableChains, refreshChains, networkMode } = useApp();
-  const chains = availableChains.filter((c) => c.active);
+  const chains = availableChains;
   // Opening the picker re-polls the admin registry immediately, so a
   // chain added / disabled / deleted in admin shows here at once
   // instead of waiting for the next ~45s poll.
@@ -380,14 +396,9 @@ export function NetworkSheet({ visible, onClose }: { visible: boolean; onClose: 
       visible={visible}
       onClose={onClose}
       title="Select Network"
-      options={chains.map((c) => ({
-        key: c.id,
-        label: c.name,
-        sub: `${c.testnet ? 'Testnet' : 'Mainnet'} · Native: ${c.nativeSymbol}${c.isDefault ? ' · Default' : ''}${c.vaultContract ? '' : ' · Vault not deployed'}${c.dexRouter ? ' · Router verified' : ''}`,
-        selected: chain.id === c.id,
-      }))}
+      options={buildNetworkOptions(chains, chain.id)}
       onSelect={(id) => {
-        const c = chains.find((x) => x.id === id);
+        const c = selectableChain(chains, id);
         if (c) setChain(c);
       }}
       footer={
@@ -447,8 +458,18 @@ const styles = StyleSheet.create({
     padding: 12,
   },
   optionDot: { backgroundColor: COLORS.mint, borderRadius: 999, height: 10, width: 10 },
+  optionDotDisabled: { backgroundColor: COLORS.border },
+  optionBadge: {
+    backgroundColor: COLORS.bgMuted,
+    borderRadius: 999,
+    paddingHorizontal: 8,
+    paddingVertical: 3,
+  },
+  optionBadgeText: { color: COLORS.textMuted, fontSize: FONT.label, fontWeight: '700' },
   optionLabel: { color: COLORS.text, fontSize: FONT.body, fontWeight: '700' },
   optionLabelSelected: { color: COLORS.textOnNavy },
+  optionLabelDisabled: { color: COLORS.textMuted },
+  optionDisabled: { opacity: 0.6 },
   optionMid: { flex: 1 },
   optionSelected: { backgroundColor: COLORS.navy, borderColor: COLORS.navy },
   optionSub: { color: COLORS.textMuted, fontSize: FONT.small, marginTop: 2 },

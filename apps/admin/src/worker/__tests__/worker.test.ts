@@ -415,6 +415,30 @@ describe('Worker API (live endpoints, no sample data)', () => {
     expect((pub2.body.chains as Record<string, unknown>[]).find((c) => c.id === 'optimism')?.active).toBe(1)
   })
 
+  it('chains: coming-soon flag — create with it, PATCH /coming-soon flips it, /api/sync carries it', async () => {
+    const created = await call(env, '/api/admin/chains', { method: 'POST', token, body: { id: 'plasma', name: 'Plasma', chainId: 9745, rpcUrls: 'https://rpc.plasma.to', explorerUrl: 'https://plasmascan.to', nativeToken: 'XPL', stablecoin: 'USDT0', stablecoinAddress: '0xB8CE59FC3717ada4C02eaDF9682A9e934F625ebb', dexRouter: '0x807F4E281B7A3B324825C64ca53c69F0b418dE40', status: 'live', comingSoon: true } })
+    expect(created.status).toBe(201)
+    const pub = await call(env, '/api/chains')
+    const row = (pub.body.chains as Record<string, unknown>[]).find((c) => c.id === 'plasma') as Record<string, unknown>
+    expect(row.coming_soon).toBe(1)
+    // /api/sync serves the raw chain rows (snake_case), same as /api/chains.
+    const sync = await call(env, '/api/sync')
+    const syncChain = (sync.body.chains as Record<string, unknown>[]).find((c) => c.id === 'plasma') as Record<string, unknown>
+    expect(syncChain.coming_soon).toBe(1)
+    // Flip it off from the Chain Manager toggle.
+    const off = await call(env, '/api/admin/chains/plasma/coming-soon', { method: 'PATCH', token, body: { comingSoon: false } })
+    expect(off.status).toBe(200)
+    expect(off.body.comingSoon).toBe(false)
+    const pub2 = await call(env, '/api/chains')
+    expect((pub2.body.chains as Record<string, unknown>[]).find((c) => c.id === 'plasma')?.coming_soon).toBe(0)
+    const bad = await call(env, '/api/admin/chains/plasma/coming-soon', { method: 'PATCH', token, body: { comingSoon: 'yes' } })
+    expect(bad.status).toBe(400)
+    const missing = await call(env, '/api/admin/chains/nope/coming-soon', { method: 'PATCH', token, body: { comingSoon: true } })
+    expect(missing.status).toBe(404)
+    const noAuth = await call(env, '/api/admin/chains/plasma/coming-soon', { method: 'PATCH', body: { comingSoon: true } })
+    expect(noAuth.status).toBe(401)
+  })
+
   it('announcements: publish to D1 and serve publicly to the app banner feed', async () => {
     const pub = await call(env, '/api/admin/announcements', { method: 'POST', token, body: { title: 'Arc is live', message: 'Arc testnet is now live on Stelix.', audience: 'all' } })
     expect(pub.status).toBe(201)

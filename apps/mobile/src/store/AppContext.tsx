@@ -9,7 +9,7 @@
  */
 import React, { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from 'react';
 import { AppState as RNAppState } from 'react-native';
-import { ACTIVE_CHAINS, CHAINS, DEFAULT_CHAIN, VAULT_NOT_DEPLOYED_MESSAGE, type ChainConfig } from '../lib/chains';
+import { ACTIVE_CHAINS, CHAINS, DEFAULT_CHAIN, VAULT_NOT_DEPLOYED_MESSAGE, isChainUsable, type ChainConfig } from '../lib/chains';
 import { mergeAdminChains } from '../lib/adminChains';
 import {
   ADMIN_POLL_INTERVAL_MS,
@@ -309,11 +309,14 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
       if (decision.chain) {
         setChainState(decision.chain);
       } else {
-        // If the chain the user is on was deleted or disabled, move them
-        // to the default chain instead of leaving them on a dead chain.
+        // If the chain the user is on was deleted, disabled, or marked
+        // coming-soon, move them to the default chain instead of
+        // leaving them on a dead chain. A coming-soon chain is never a
+        // fallback target either — the fallback is always a usable
+        // chain (Arc, the default, when nothing else fits).
         const current = chainRef.current;
-        if (!visible.some((c) => c.id === current.id && c.active)) {
-          const fallback = visible.find((c) => c.isDefault && c.active) ?? visible.find((c) => c.active) ?? DEFAULT_CHAIN;
+        if (!visible.some((c) => c.id === current.id && isChainUsable(c))) {
+          const fallback = visible.find((c) => c.isDefault && isChainUsable(c)) ?? visible.find(isChainUsable) ?? DEFAULT_CHAIN;
           if (fallback.id !== current.id) setChainState(fallback);
         }
       }
@@ -329,8 +332,8 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
         const visible = filterChainsByMode(merged, networkModeRef.current);
         setAvailableChains(visible);
         const current = chainRef.current;
-        if (!visible.some((c) => c.id === current.id && c.active)) {
-          const fallback = visible.find((c) => c.isDefault && c.active) ?? visible.find((c) => c.active) ?? DEFAULT_CHAIN;
+        if (!visible.some((c) => c.id === current.id && isChainUsable(c))) {
+          const fallback = visible.find((c) => c.isDefault && isChainUsable(c)) ?? visible.find(isChainUsable) ?? DEFAULT_CHAIN;
           if (fallback.id !== current.id) setChainState(fallback);
         }
       }
@@ -443,9 +446,12 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     return disciplineFromLocks(locks, lockedUsd, totalUsd);
   }, [locks, tokens]);
 
-  /** Address for the active chain: the derived Solana address on Solana,
-   *  the EVM address everywhere else. */
-  const chainAddress = chain.kind === 'solana' ? solanaAddress : address;
+  /** Address for the active chain: the derived Solana address on
+   *  Solana, the EVM address on EVM chains, and '' on Pi (no Pi wallet
+   *  yet — Pi can never be the active chain, and an empty address
+   *  makes the balance/history fetches no-op instead of reading the
+   *  EVM address on the wrong chain). */
+  const chainAddress = chain.kind === 'solana' ? solanaAddress : chain.kind === 'evm' ? address : '';
 
   const refreshBalances = useCallback(async () => {
     if (!chainAddress) return;
@@ -647,7 +653,14 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     if (address && tokens.length > 0) balancesCacheRef.current.set(`${address}:${chain.id}`, tokens);
   }, [address, chain.id, tokens]);
 
-  const setChain = useCallback((c: ChainConfig) => setChainState(c), []);
+  // Second layer behind the picker: a coming-soon or disabled chain
+  // can never become the active chain, even from a stale tap or a
+  // programmatic call. The picker itself only offers usable chains
+  // (see lib/networkPicker.ts selectableChain).
+  const setChain = useCallback((c: ChainConfig) => {
+    if (!isChainUsable(c)) return;
+    setChainState(c);
+  }, []);
   const addLock = useCallback((l: BullLock) => setLocks((prev) => [l, ...prev]), []);
   const updateLock = useCallback(
     (l: BullLock) => setLocks((prev) => prev.map((x) => (x.id === l.id ? l : x))),

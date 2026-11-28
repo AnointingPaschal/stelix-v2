@@ -284,10 +284,10 @@ describe('network mode (admin testnet/mainnet switch)', () => {
 
   it('testnet mode shows testnet chains only; mainnet mode shows mainnet chains only; null shows all with both Arc variants', () => {
     expect(filterChainsByMode(merged, 'testnet').map((c) => c.id)).toEqual([
-      'arc', 'bnb-testnet', 'base-sepolia', 'ethereum-sepolia', 'polygon-amoy',
+      'arc', 'bnb-testnet', 'base-sepolia', 'ethereum-sepolia', 'polygon-amoy', 'plasma-testnet', 'pi-testnet',
     ]);
     expect(filterChainsByMode(merged, 'mainnet').map((c) => c.id)).toEqual([
-      'arc-mainnet', 'bnb', 'base', 'ethereum', 'polygon', 'solana',
+      'arc-mainnet', 'bnb', 'base', 'ethereum', 'polygon', 'solana', 'plasma', 'pi',
     ]);
     expect(filterChainsByMode(merged, null).map((c) => c.id)).toEqual(
       merged.map((c) => c.id),
@@ -327,6 +327,26 @@ describe('network mode (admin testnet/mainnet switch)', () => {
     expect(d.deferred).toBe(false);
     expect(d.chain).toBeNull();
     expect(d.notice).toBeNull();
+  });
+
+  it('a coming-soon current chain never stays and never becomes the target of a mode flip', () => {
+    // Plasma testnet is coming-soon: on a testnet flip the wallet must
+    // move to a usable chain (Arc, the default) — not stay, not pick
+    // its mainnet pair (wrong mode), and never pick another
+    // coming-soon chain.
+    const plasmaTestnet = merged.find((c) => c.id === 'plasma-testnet')!;
+    expect(plasmaTestnet.comingSoon).toBe(true);
+    const next = pickChainForMode(merged, plasmaTestnet, 'testnet');
+    expect(next?.id).toBe('arc');
+    expect(next?.comingSoon).not.toBe(true);
+    // Same for Pi on mainnet: its pair is the Pi testnet (wrong mode),
+    // so the flip lands on the first usable mainnet chain.
+    const piChain = merged.find((c) => c.id === 'pi')!;
+    expect(piChain.comingSoon).toBe(true);
+    const nextMainnet = pickChainForMode(merged, piChain, 'mainnet');
+    expect(nextMainnet).not.toBeNull();
+    expect(nextMainnet?.comingSoon).not.toBe(true);
+    expect(nextMainnet?.id).not.toBe('pi');
   });
 
   it('a mode flip mid-transaction is deferred, not applied', () => {

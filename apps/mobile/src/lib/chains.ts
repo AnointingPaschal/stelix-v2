@@ -8,6 +8,17 @@
  * The `active` flag stays so a chain can be disabled again later
  * (e.g. from the admin Chain Manager — see apps/mobile/SCOPE.md).
  *
+ * ADDED (2026-11-28): Plasma (EVM, Uniswap V3) and Pi Network
+ * (Stellar-based, NOT EVM). Plasma mainnet is live with verified
+ * addresses (see the `plasma` entry); Plasma testnet and both Pi
+ * chains are `comingSoon` — shown in the picker, disabled, never
+ * selectable — until their routers / stablecoins are verified. A
+ * coming-soon chain must never become the active chain: see
+ * isChainUsable / USABLE_CHAINS below and the setChain guard in
+ * store/AppContext.tsx. Pi is modelled like Solana (kind 'pi'): no
+ * EVM RPC, balance, swap or lock call may ever target it — every
+ * EVM guard in the codebase keys off `kind !== 'evm'`.
+ *
  * Arc is the DEFAULT chain and is TESTNET-FIRST (chain id 5042002).
  * Verified against Arc docs (docs.arc.io, 2026-11-27):
  *   - Arc Testnet chain id: 5042002 (0x4cef52)
@@ -47,7 +58,7 @@
  * see VAULT_ADDRESSES / getVaultAddress().
  */
 
-export type ChainKind = 'evm' | 'solana';
+export type ChainKind = 'evm' | 'solana' | 'pi';
 
 /**
  * The unit every EVM native RPC value is in: eth_getBalance, the
@@ -125,6 +136,17 @@ export interface ChainConfig {
    * active as restored 2026-11-27 at the user's instruction.
    */
   active: boolean;
+  /**
+   * Coming soon — the chain is SHOWN in the picker with a "Coming
+   * soon" badge but is visibly disabled and can never be selected
+   * (see lib/networkPicker.ts and the setChain guard in
+   * store/AppContext.tsx). Set from the admin Chain Manager
+   * (D1 `chains.coming_soon`, carried through /api/sync as the raw
+   * `coming_soon` integer); absent means false. A coming-soon chain
+   * is never a usable chain for balances, swaps or locks — see
+   * isChainUsable.
+   */
+  comingSoon?: boolean;
 }
 
 /** Env override for a chain's RPC, e.g. EXPO_PUBLIC_ARC_RPC_URL. Never a key.
@@ -436,6 +458,125 @@ export const CHAINS: ChainConfig[] = [
     status: 'live',
     active: true,
   },
+  {
+    id: 'plasma',
+    name: 'Plasma',
+    chainId: 9745,
+    kind: 'evm',
+    nativeSymbol: 'XPL',
+    nativeName: 'Plasma (XPL gas asset)',
+    nativeDecimals: 18,
+    exitStablecoin: 'USDT',
+    exitStablecoinLabel: 'auto-sell to USDT',
+    // USDT0 — verified on Plasma mainnet 2026-11-28 by eth_call on
+    // https://rpc.plasma.to (symbol USDT0, 6 decimals). USDC is the
+    // second verified stablecoin (token0 of the USDC/USDT0 pool).
+    exitStablecoinAddress: '0xB8CE59FC3717ada4C02eaDF9682A9e934F625ebb',
+    rpcUrl: rpcFromEnv('plasma', 'https://rpc.plasma.to'),
+    rpcUrls: ['https://rpc.plasma.to'],
+    explorerUrl: 'https://plasmascan.to',
+    explorerApiUrl: null, // plasmascan.to is Routescan-based; the
+    // Routescan Etherscan-compatible API returns "chain not supported"
+    // for 9745 (checked 2026-11-28) — history falls back to RPC.
+    dexScreenerChainId: 'plasma',
+    geckoTerminalNetwork: 'plasma',
+    dex: 'Uniswap V3 (SwapRouter02)',
+    // Uniswap V3 SwapRouter02 — canonical deployment per Uniswap
+    // governance; code verified live on rpc.plasma.to 2026-11-28
+    // (24,497 bytes at the address). USDC/USDT0 0.01% pool
+    // 0x56cf5fc8a6d04f52df99752eed255ee8a64504de exists.
+    uniswapV3Router: '0x807F4E281B7A3B324825C64ca53c69F0b418dE40',
+    vaultContract: null, // not deployed yet
+    status: 'live',
+    active: true,
+    comingSoon: false,
+    pairedChainId: 'plasma-testnet',
+  },
+  {
+    id: 'plasma-testnet',
+    name: 'Plasma Testnet',
+    chainId: 9746,
+    kind: 'evm',
+    nativeSymbol: 'XPL',
+    nativeName: 'Plasma (testnet)',
+    nativeDecimals: 18,
+    exitStablecoin: 'USDT',
+    exitStablecoinLabel: 'auto-sell to USDT',
+    // No verified stablecoin on Plasma testnet yet (testnet USDT0 was
+    // still in development 2026-11-28) — null until one is confirmed
+    // on testnet.plasmascan.to. Same for the router: no verified
+    // Uniswap router on testnet yet.
+    exitStablecoinAddress: null,
+    rpcUrl: 'https://testnet-rpc.plasma.to',
+    rpcUrls: ['https://testnet-rpc.plasma.to'],
+    explorerUrl: 'https://testnet.plasmascan.to',
+    explorerApiUrl: null,
+    dexScreenerChainId: 'plasma',
+    geckoTerminalNetwork: 'plasma',
+    dex: 'No verified router on Plasma testnet yet',
+    vaultContract: null,
+    status: 'testnet',
+    testnet: true,
+    active: true,
+    comingSoon: true,
+    pairedChainId: 'plasma',
+  },
+  {
+    id: 'pi',
+    name: 'Pi Network',
+    chainId: null, // NOT EVM — Stellar-based (Stellar Core, SCP). No EVM chain id.
+    kind: 'pi',
+    nativeSymbol: 'PI',
+    nativeName: 'Pi',
+    nativeDecimals: 7, // Stellar convention (1 PI = 10^7 micro-PI).
+    exitStablecoin: 'USDT',
+    exitStablecoinLabel: 'auto-sell to USDT',
+    // No stablecoin, no DEX router, no vault on Pi: smart contracts
+    // are internal-only for third parties (Pi Core Team, Oct 2026;
+    // Protocol v28 live). A Pi vault would need a separate Soroban
+    // (Rust) build, like Solana's Anchor program.
+    exitStablecoinAddress: null,
+    // Horizon API (Stellar), NOT an EVM JSON-RPC endpoint — never
+    // pass this to ethers or any EVM call (every EVM guard keys off
+    // kind !== 'evm'). Verified live 2026-11-28 (Horizon root doc).
+    rpcUrl: 'https://api.mainnet.minepi.com',
+    rpcUrls: ['https://api.mainnet.minepi.com'],
+    explorerUrl: 'https://blockexplorer.minepi.com',
+    explorerApiUrl: null,
+    dexScreenerChainId: 'pi',
+    geckoTerminalNetwork: 'pi',
+    dex: 'No DEX on Pi yet — contracts internal-only',
+    vaultContract: null,
+    status: 'coming-soon',
+    active: true,
+    comingSoon: true,
+    pairedChainId: 'pi-testnet',
+  },
+  {
+    id: 'pi-testnet',
+    name: 'Pi Testnet',
+    chainId: null, // NOT EVM — Stellar-based, no EVM chain id.
+    kind: 'pi',
+    nativeSymbol: 'PI',
+    nativeName: 'Pi (testnet)',
+    nativeDecimals: 7,
+    exitStablecoin: 'USDT',
+    exitStablecoinLabel: 'auto-sell to USDT',
+    exitStablecoinAddress: null, // no stablecoin / router / vault on Pi testnet either
+    rpcUrl: 'https://api.testnet.minepi.com', // Horizon API (Stellar), not EVM JSON-RPC
+    rpcUrls: ['https://api.testnet.minepi.com'],
+    explorerUrl: 'https://blockexplorer.minepi.com',
+    explorerApiUrl: null,
+    dexScreenerChainId: 'pi',
+    geckoTerminalNetwork: 'pi',
+    dex: 'No DEX on Pi yet — contracts internal-only',
+    vaultContract: null,
+    status: 'coming-soon',
+    testnet: true,
+    active: true,
+    comingSoon: true,
+    pairedChainId: 'pi',
+  },
 ];
 
 export const DEFAULT_CHAIN = CHAINS.find((c) => c.isDefault) ?? CHAINS[0];
@@ -445,9 +586,24 @@ export const DEFAULT_CHAIN = CHAINS.find((c) => c.isDefault) ?? CHAINS[0];
  * (all six, as restored 2026-11-27). Every picker, token list,
  * fetcher and Discover filter must read this list (or isChainActive),
  * never CHAINS directly — CHAINS includes disabled entries kept only
- * so they can be re-enabled later.
+ * so they can be re-enabled later. Coming-soon chains ARE in this
+ * list (they are shown in the picker, disabled) — use USABLE_CHAINS
+ * for anything that actually does work on a chain.
  */
 export const ACTIVE_CHAINS: ChainConfig[] = CHAINS.filter((c) => c.active);
+
+/** A chain the wallet may actually USE for balances, swaps and locks:
+ *  active AND not coming-soon. A coming-soon chain is shown in the
+ *  picker (disabled) but can never become the active chain, so it
+ *  must never appear here. */
+export function isChainUsable(c: ChainConfig): boolean {
+  return c.active && !c.comingSoon;
+}
+
+/** Chains the wallet may do work on (balances, swaps, locks, Discover).
+ *  Plasma mainnet is usable; Plasma testnet and both Pi chains are
+ *  coming-soon and excluded until the admin marks them live. */
+export const USABLE_CHAINS: ChainConfig[] = CHAINS.filter(isChainUsable);
 
 /** True when the chain id is active. */
 export function isChainActive(id: string): boolean {
@@ -493,6 +649,10 @@ export const VAULT_ADDRESSES: Record<string, string | null> = {
   polygon: null,
   'polygon-amoy': null,
   solana: null, // Anchor program ID, not an EVM address
+  plasma: null,
+  'plasma-testnet': null,
+  pi: null, // Soroban program, not an EVM address — separate build
+  'pi-testnet': null,
 };
 
 export function getVaultAddress(chainId: string): string | null {
@@ -543,6 +703,10 @@ export const TOKEN_FACTORY_ADDRESSES: Record<string, string | null> = {
   ethereum: null,
   polygon: null,
   solana: null,
+  plasma: null,
+  'plasma-testnet': null,
+  pi: null, // no EVM factory on Pi
+  'pi-testnet': null,
 };
 
 export const LAUNCHPAD_ADDRESSES: Record<string, string | null> = {
@@ -553,6 +717,10 @@ export const LAUNCHPAD_ADDRESSES: Record<string, string | null> = {
   ethereum: null,
   polygon: null,
   solana: null,
+  plasma: null,
+  'plasma-testnet': null,
+  pi: null, // no EVM launchpad on Pi
+  'pi-testnet': null,
 };
 
 export type LaunchpadDeploymentStatus =

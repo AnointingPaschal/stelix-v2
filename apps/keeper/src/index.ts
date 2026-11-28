@@ -35,6 +35,9 @@ export interface Env {
   RPC_URL_BNB?: string
   VAULT_ADDRESS_BNB?: string
   KEEPER_PRIVATE_KEY?: string // Cloudflare secret; never logged
+  /** Shared secret the admin sends as `x-stelix-keeper-key` on /run.
+   *  Without it, manual runs are refused — /run must never be open. */
+  KEEPER_RUN_KEY?: string
 }
 
 interface ChainCtx {
@@ -191,8 +194,15 @@ export default {
   async fetch(req: Request, env: Env): Promise<Response> {
     const url = new URL(req.url)
     if (url.pathname === '/health') return Response.json({ ok: true, service: 'stelix-keeper' })
-    // Run Now (manual trigger from Keeper Monitor) — production: require admin auth.
+    // Run Now (manual trigger from Keeper Monitor) — requires the shared
+    // run key the admin sends as `x-stelix-keeper-key`. The key is a
+    // Cloudflare secret on BOTH workers (same value). Without it, /run
+    // is refused: anyone who finds the keeper URL must not be able to
+    // make it spend gas on trigger transactions.
     if (url.pathname === '/run' && req.method === 'POST') {
+      if (!env.KEEPER_RUN_KEY || req.headers.get('x-stelix-keeper-key') !== env.KEEPER_RUN_KEY) {
+        return Response.json({ ok: false, error: 'keeper run key missing or wrong' }, { status: 401 })
+      }
       if (await isKeeperPaused(env)) return Response.json({ ok: false, error: 'keeper is paused' }, { status: 409 })
       const result = await runKeeper(env, 'arc')
       return Response.json(result)

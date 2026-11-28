@@ -173,6 +173,50 @@ describe('mergeAdminChains', () => {
     expect(sol?.exitStablecoinAddress).toBe('Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB');
     expect(sol?.explorerUrl).toBe('https://solscan.io');
   });
+
+  it('carries the admin coming-soon flag (either spelling); admin wins, absent keeps the built-in', () => {
+    // Snake_case (D1 column) marks Plasma testnet coming-soon.
+    const snake = mergeAdminChains(CHAINS, [
+      row({ id: 'plasma-testnet', name: 'Plasma Testnet', chain_id: 9746, rpc_urls: 'https://testnet-rpc.plasma.to', explorer_url: 'https://testnet.plasmascan.to', native_token: 'XPL', native_decimals: 18, stablecoin: 'USDT', stablecoin_address: '', status: 'testnet', is_testnet: 1, active: 1, coming_soon: 1 }),
+    ]);
+    expect(snake.find((c) => c.id === 'plasma-testnet')?.comingSoon).toBe(true);
+    // CamelCase is only a defensive fallback (the sync serves raw
+    // snake_case rows) — it clears Plasma mainnet here.
+    const camel = mergeAdminChains(CHAINS, [
+      row({ id: 'plasma', name: 'Plasma', chain_id: 9745, rpc_urls: 'https://rpc.plasma.to', explorer_url: 'https://plasmascan.to', native_token: 'XPL', native_decimals: 18, stablecoin: 'USDT', stablecoin_address: '0xB8CE59FC3717ada4C02eaDF9682A9e934F625ebb', status: 'live', is_testnet: 0, active: 1, comingSoon: false }),
+    ]);
+    expect(camel.find((c) => c.id === 'plasma')?.comingSoon).toBe(false);
+    const silent = mergeAdminChains(CHAINS, [
+      row({ id: 'plasma-testnet', name: 'Plasma Testnet', chain_id: 9746, rpc_urls: 'https://testnet-rpc.plasma.to', explorer_url: 'https://testnet.plasmascan.to', native_token: 'XPL', native_decimals: 18, stablecoin: 'USDT', stablecoin_address: '', status: 'testnet', is_testnet: 1, active: 1 }),
+    ]);
+    expect(silent.find((c) => c.id === 'plasma-testnet')?.comingSoon).toBe(true);
+    // A coming-soon chain is NOT dropped by the merge — it stays in
+    // the list so the picker can show it disabled.
+    expect(snake.some((c) => c.id === 'plasma-testnet')).toBe(true);
+  });
+
+  it('keeps Pi non-EVM and always coming-soon, even if the admin row says otherwise', () => {
+    const merged = mergeAdminChains(CHAINS, [
+      row({ id: 'pi', name: 'Pi Network', chain_id: 1234, rpc_urls: 'https://api.mainnet.minepi.com', explorer_url: 'https://blockexplorer.minepi.com', native_token: 'PI', native_decimals: 7, stablecoin: 'USDT', stablecoin_address: '0xdAC17F958D2ee523a2206206994597C13D831ec7', status: 'live', is_testnet: 0, active: 1, comingSoon: false }),
+    ]);
+    const piChain = merged.find((c) => c.id === 'pi');
+    expect(piChain?.kind).toBe('pi');
+    expect(piChain?.chainId).toBeNull();
+    expect(piChain?.comingSoon).toBe(true);
+    // A 0x stablecoin address never lands on a non-EVM chain.
+    expect(piChain?.exitStablecoinAddress).toBeNull();
+  });
+
+  it('a remote-only Pi row is appended as kind pi, coming-soon, with no EVM id', () => {
+    const merged = mergeAdminChains([], [
+      row({ id: 'pi', name: 'Pi Network', chain_id: null, rpc_urls: 'https://api.mainnet.minepi.com', explorer_url: 'https://blockexplorer.minepi.com', native_token: 'PI', native_decimals: 7, stablecoin: 'USDT', stablecoin_address: '', status: 'coming-soon', is_testnet: 0, active: 1 }),
+    ]);
+    expect(merged).toHaveLength(1);
+    expect(merged[0].kind).toBe('pi');
+    expect(merged[0].chainId).toBeNull();
+    expect(merged[0].comingSoon).toBe(true);
+    expect(merged[0].fromAdmin).toBe(true);
+  });
 });
 
 describe('fetchAdminChains', () => {

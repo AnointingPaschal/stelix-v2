@@ -19,8 +19,8 @@
 // against an official source before mainnet was enabled here.
 // If no injected wallet is present, the Foundry command below is the
 // fallback — same contracts, same constructor args.
-import { useState } from 'react'
-import { BrowserProvider, ContractFactory, type InterfaceAbi } from 'ethers'
+import { useEffect, useState } from 'react'
+import { BrowserProvider, Contract, ContractFactory, isAddress, type InterfaceAbi } from 'ethers'
 import { BadgeCheck, ShieldAlert, Wallet } from 'lucide-react'
 import adaptersArtifact from '../contracts/adapters.artifact.json'
 import type { DeployNetwork } from '../lib/evmNetworks'
@@ -34,9 +34,13 @@ type Props = {
   network: DeployNetwork
   explorerUrl: string
   onDeployed: (feed: string, router: string, deployer: string) => void
+  /** Price-feed address already saved in the Deploy Preset for this
+   *  network (Contract Studio fills it) — pre-fills the Register Pool
+   *  card so a feed deployed in an earlier session can be used. */
+  feedAddressFromPreset?: string
 }
 
-export default function DeployAdapters({ network, explorerUrl, onDeployed }: Props) {
+export default function DeployAdapters({ network, explorerUrl, onDeployed, feedAddressFromPreset }: Props) {
   const [wallet, setWallet] = useState('')
   const [busy, setBusy] = useState(false)
   const [log, setLog] = useState<string[]>([])
@@ -45,6 +49,61 @@ export default function DeployAdapters({ network, explorerUrl, onDeployed }: Pro
   const [adapterAddress, setAdapterAddress] = useState('')
   const [feedTx, setFeedTx] = useState('')
   const [adapterTx, setAdapterTx] = useState('')
+
+  // ---- Register a token pool/pair on the price feed (owner only) ----
+  // A token with no pool has no price: its lock's target can never be
+  // read and its auto-sell reverts. The feed owner (the connected
+  // wallet) signs feed.setPool / setPair; after it confirms, the TWAP
+  // needs ~30 minutes of observations before it reads correctly.
+  // Arc Testnet defaults are prefilled — verified 2026-11-28: the
+  // USDC/EURC pool 0x6b15920Aec9700dFe3Ca2C25343059fbF91769A0 exists
+  // (22,142 bytes of code) and the owner holds 131 EURC, so EURC is the
+  // token the first testnet lock can use. Other networks start blank.
+  const isArcTestnet = network.id === 'arc' && network.env === 'testnet'
+  const [poolFeed, setPoolFeed] = useState('')
+  const [poolToken, setPoolToken] = useState(isArcTestnet ? '0x89B50855Aa3bE2F677cD6303Cec089B5F319D72a' : '')
+  const [poolAddress, setPoolAddress] = useState(isArcTestnet ? '0x6b15920Aec9700dFe3Ca2C25343059fbF91769A0' : '')
+  const [poolDecimals, setPoolDecimals] = useState('6')
+  const [poolBusy, setPoolBusy] = useState(false)
+  const [poolTx, setPoolTx] = useState('')
+  const [poolDone, setPoolDone] = useState('')
+  useEffect(() => {
+    // Fill the feed field from the preset (or a deploy in this session)
+    // until the user types their own value.
+    if (!poolFeed) setPoolFeed(feedAddressFromPreset ?? feedAddress ?? '')
+  }, [feedAddressFromPreset, feedAddress, poolFeed])
+
+  const registerPool = async () => {
+    setError(''); setPoolDone(''); setPoolTx('')
+    if (!wallet) { setError('Connect your wallet first.'); return }
+    if (!isAddress(poolFeed)) { setError('Price feed address is not a valid 0x address — it comes from the Deploy Preset, or paste it from the explorer.'); return }
+    if (!isAddress(poolToken)) { setError('Token address is not a valid 0x address.'); return }
+    if (!isAddress(poolAddress)) { setError('Pool/pair address is not a valid 0x address.'); return }
+    const decimals = Number(poolDecimals)
+    if (!Number.isInteger(decimals) || decimals < 0 || decimals > 18) { setError('Token decimals must be a whole number from 0 to 18.'); return }
+    setPoolBusy(true)
+    try {
+      const provider = new BrowserProvider(window.ethereum as never)
+      await provider.send('eth_requestAccounts', [])
+      await ensureNetwork(provider)
+      const signer = await provider.getSigner()
+      const signerAddress = await signer.getAddress()
+      if (signerAddress.toLowerCase() !== wallet.toLowerCase()) {
+        setError(`MetaMask is now on a different account (${signerAddress.slice(0, 6)}…${signerAddress.slice(-4)}) than the one you connected (${wallet.slice(0, 6)}…${wallet.slice(-4)}). Switch back to the connected account in MetaMask, then try again.`)
+        setPoolBusy(false)
+        return
+      }
+      const v2 = network.routerKind === 'v2'
+      const feed = new Contract(poolFeed, [v2 ? 'function setPair(address token, address pair, uint8 tokenDecimals)' : 'function setPool(address token, address pool, uint8 tokenDecimals)'], signer)
+      setPoolDone(`Registering ${poolToken.slice(0, 10)}… on the feed — sign the transaction in your wallet (feed owner only).`)
+      const tx = await (v2 ? feed.setPair(poolToken, poolAddress, decimals) : feed.setPool(poolToken, poolAddress, decimals))
+      setPoolTx(tx.hash as string)
+      setPoolDone(`Transaction sent: ${tx.hash as string} — waiting for confirmation…`)
+      await tx.wait()
+      setPoolDone(`Pool registered: token ${poolToken} → ${v2 ? 'pair' : 'pool'} ${poolAddress} (${decimals} decimals) on feed ${poolFeed}. Wait ~30 minutes before the TWAP reads work — the feed needs observations first. The token can now be locked with a price target.`)
+    } catch (e) { setError(friendlyError(e)) }
+    setPoolBusy(false)
+  }
 
   const isMainnet = network.env === 'mainnet'
   const hasWallet = typeof window !== 'undefined' && Boolean(window.ethereum)
@@ -247,6 +306,24 @@ export default function DeployAdapters({ network, explorerUrl, onDeployed }: Pro
           {network.routerKind === 'v3' ? <>Router adapter: <a href={`${explorerUrl.replace(/\/$/, '')}/address/${adapterAddress}`} target="_blank" rel="noreferrer">{adapterAddress}</a>{adapterTx ? ` (tx ${adapterTx})` : ''}</> : <>Router (V2, no adapter): <span className="kbd">{network.dexRouter}</span></>}
         </p>
       )}
+      <div style={{ marginTop: 16, borderTop: '1px solid #E5E7EB', paddingTop: 12 }}>
+        <h4 style={{ margin: '0 0 6px' }}>Register a pool on the price feed — feed.setPool / setPair (owner only)</h4>
+        <p className="muted">
+          A token with no token/{network.stablecoin} {network.routerKind === 'v2' ? 'pair' : 'pool'} has no price: it cannot be locked with a target and its auto-sell will revert. Register the {network.routerKind === 'v2' ? 'pair' : 'pool'} here with your wallet — you must be the feed owner. After it confirms, wait ~30 minutes before the TWAP reads work.
+        </p>
+        <label>Price feed address</label>
+        <input value={poolFeed} onChange={(e) => setPoolFeed(e.target.value)} placeholder="0x… (from the Deploy Preset, or paste from the explorer)" />
+        <label>Token address</label>
+        <input value={poolToken} onChange={(e) => setPoolToken(e.target.value)} placeholder="0x… token to lock (e.g. EURC on Arc Testnet)" />
+        <label>{network.routerKind === 'v2' ? 'Pair' : 'Pool'} address (token/{network.stablecoin})</label>
+        <input value={poolAddress} onChange={(e) => setPoolAddress(e.target.value)} placeholder="0x… the Uniswap pool / Pancake pair" />
+        <label>Token decimals</label>
+        <input value={poolDecimals} inputMode="numeric" onChange={(e) => setPoolDecimals(e.target.value)} placeholder="6" />
+        <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginTop: 10 }}>
+          <button className="btn mint" onClick={registerPool} disabled={poolBusy || !wallet}>{poolBusy ? 'Registering…' : 'Register pool on feed'}</button>
+        </div>
+        {poolDone && <p className="field-hint">{poolDone}{poolTx ? <> — tx <a href={`${explorerUrl.replace(/\/$/, '')}/tx/${poolTx}`} target="_blank" rel="noreferrer">{poolTx.slice(0, 18)}…</a></> : ''}</p>}
+      </div>
       <label style={{ marginTop: 12 }}>Or deploy with Foundry (same contracts, same args)</label>
       <pre>{foundryCmd}</pre>
       <p className="field-hint">After the feed is deployed, register a {network.routerKind === 'v2' ? 'pair on the feed for each token you want to lock (feed.setPair, owner only), then call update(token) and wait 30 minutes before the TWAP reads work' : 'pool on the price feed for each token you want to lock (feed.setPool, owner only)'} — a token with no token/{network.stablecoin} {network.routerKind === 'v2' ? 'pair' : 'pool'} has no price, and its auto-sell will revert. Then deploy the vault in Contract Studio below.</p>

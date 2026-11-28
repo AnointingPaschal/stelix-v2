@@ -33,6 +33,7 @@ type ChainRow = {
   launchpad_address?: string | null; token_factory_address?: string | null
   status: Chain['status']; is_default: number
   is_testnet?: number | null; active?: number | null; paired_chain_id?: string | null
+  coming_soon?: number | null
 }
 type KeeperRow = { id: number; started_at: string; chain_id: string; locks_checked: number; triggers: number; executed: number; retried: number; failed: number; status: KeeperRun['status'] }
 type AuditRow = { id: number; created_at: string; actor: string; action: string; detail: string | null }
@@ -53,6 +54,7 @@ const mapChain = (c: ChainRow): Chain => ({
   status: c.status, isDefault: c.is_default === 1,
   isTestnet: typeof c.is_testnet === 'number' ? c.is_testnet === 1 : c.status === 'testnet',
   active: typeof c.active === 'number' ? c.active === 1 : true,
+  comingSoon: typeof c.coming_soon === 'number' ? c.coming_soon === 1 : false,
   pairedChainId: c.paired_chain_id ?? null,
 })
 const mapKeeper = (r: KeeperRow): KeeperRun => ({
@@ -283,6 +285,12 @@ export const api = {
    *  picker/Discover/Swap on the next registry refresh — no app rebuild. */
   async setChainActive(id: string, active: boolean): Promise<{ ok: boolean; active: boolean }> {
     return patchJson<{ ok: boolean; active: boolean }>(`/api/admin/chains/${encodeURIComponent(id)}/active`, { active })
+  },
+  /** Mark a chain "coming soon" (or back to live). A coming-soon chain
+   *  stays visible in the wallet picker with a badge, but disabled —
+   *  it can never be selected or used. */
+  async setChainComingSoon(id: string, comingSoon: boolean): Promise<{ ok: boolean; comingSoon: boolean }> {
+    return patchJson<{ ok: boolean; comingSoon: boolean }>(`/api/admin/chains/${encodeURIComponent(id)}/coming-soon`, { comingSoon })
   },
   /** Delete a chain. Refused (409) when it is the default, has a vault
    *  deployed, has a recorded deployment, or still has registered tokens.

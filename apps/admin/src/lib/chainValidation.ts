@@ -48,6 +48,8 @@ export interface ChainInput {
   active: boolean
   isDefault: boolean
   pairedChainId: string | null
+  /** Shown in the wallet picker but disabled — never selectable. */
+  comingSoon?: boolean
 }
 
 export type ChainFieldErrors = Partial<Record<string, string>>
@@ -264,6 +266,12 @@ export function validateChainInput(input: unknown, opts?: { partial?: boolean })
     value.active = asBool(body.active, true)
   } else if (!partial) {
     value.active = true
+  }
+  // --- coming-soon flag (shown in the wallet picker, disabled) ---
+  if (present('comingSoon', 'coming_soon')) {
+    value.comingSoon = asBool(pick(body, 'comingSoon', 'coming_soon'), false)
+  } else if (!partial) {
+    value.comingSoon = false
   }
 
   // --- default chain ---

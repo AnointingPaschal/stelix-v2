@@ -149,7 +149,18 @@ export async function getUserLocksOnChain(
 ): Promise<OnChainLocksResult> {
   const chain = getChain(chainId);
   if (chain.kind !== 'evm' || chain.chainId === null) {
-    return { chainId, deployed: false, note: 'Solana vault is an Anchor program — not wired yet.', lockIds: [], locks: [] };
+    return {
+      chainId,
+      deployed: false,
+      note:
+        chain.kind === 'solana'
+          ? 'Solana vault is an Anchor program — not wired yet.'
+          : chain.kind === 'pi'
+            ? 'Pi vault needs a separate Soroban build — not wired yet.'
+            : `${chain.name} vault is not an EVM vault — not wired yet.`,
+      lockIds: [],
+      locks: [],
+    };
   }
   let vaultAddress: string;
   try {

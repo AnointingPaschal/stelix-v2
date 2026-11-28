@@ -10,6 +10,7 @@ const badge = (s: Chain['status']) => s === 'live' ? 'b-green' : s === 'testnet'
 const CHAIN_COLORS: Record<string, string> = {
   arc: '#2FD6A3', bnb: '#F0B90B', base: '#0052FF',
   ethereum: '#627EEA', polygon: '#8247E5', solana: '#9945FF',
+  plasma: '#0EC49A', 'plasma-testnet': '#0EC49A', pi: '#8A5CF6', 'pi-testnet': '#8A5CF6',
 }
 
 interface ChainFormState {
@@ -18,7 +19,7 @@ interface ChainFormState {
   stablecoin: string; stablecoinAddress: string; stablecoinDecimals: string
   gasToken: string; dexRouter: string; vaultAddress: string
   status: ChainStatus; isTestnet: boolean; active: boolean
-  pairedChainId: string; isDefault: boolean
+  pairedChainId: string; isDefault: boolean; comingSoon: boolean
 }
 
 const emptyForm: ChainFormState = {
@@ -27,7 +28,7 @@ const emptyForm: ChainFormState = {
   stablecoin: '', stablecoinAddress: '', stablecoinDecimals: '6',
   gasToken: '', dexRouter: '', vaultAddress: '',
   status: 'testnet', isTestnet: true, active: true,
-  pairedChainId: '', isDefault: false,
+  pairedChainId: '', isDefault: false, comingSoon: false,
 }
 
 const fromChain = (c: Chain): ChainFormState => ({
@@ -38,6 +39,7 @@ const fromChain = (c: Chain): ChainFormState => ({
   gasToken: c.gasToken, dexRouter: c.dexRouter, vaultAddress: c.vaultAddress ?? '',
   status: c.status, isTestnet: c.isTestnet, active: c.active,
   pairedChainId: c.pairedChainId ?? '', isDefault: c.isDefault ?? false,
+  comingSoon: c.comingSoon ?? false,
 })
 
 const toInput = (f: ChainFormState) => ({
@@ -59,6 +61,7 @@ const toInput = (f: ChainFormState) => ({
   active: f.active,
   pairedChainId: f.pairedChainId.trim(),
   isDefault: f.isDefault,
+  comingSoon: f.comingSoon,
 })
 
 const errStyle = { color: '#e5484d', fontSize: 12, margin: '4px 0 0' } as const
@@ -156,6 +159,17 @@ export default function Chains() {
     finally { setToggling('') }
   }
 
+  const toggleComingSoon = async (c: Chain) => {
+    setError('')
+    setToggling(c.id)
+    try {
+      await api.setChainComingSoon(c.id, !c.comingSoon)
+      setNotice(`Chain ${c.name} ${c.comingSoon ? 'is live now — the wallet picker lets users select it.' : 'marked coming soon — the wallet still shows it in the picker, with a badge, but disabled and never selectable.'}`)
+      load()
+    } catch (e) { setError(e instanceof Error ? e.message : 'Could not change coming-soon status.') }
+    finally { setToggling('') }
+  }
+
   const deleteChain = async (c: Chain) => {
     setError('')
     try {
@@ -250,6 +264,10 @@ export default function Chains() {
         Enabled — listed in the wallet (uncheck to hide it without deleting it)
       </label>
       <label className="check-row">
+        <input type="checkbox" checked={f.comingSoon} onChange={(e) => set({ comingSoon: e.target.checked }, which)} />
+        Coming soon — shown in the wallet picker with a badge, but disabled and never selectable
+      </label>
+      <label className="check-row">
         <input type="checkbox" checked={f.isDefault} onChange={(e) => set({ isDefault: e.target.checked }, which)} />
         Default chain in the wallet
       </label>
@@ -336,6 +354,7 @@ export default function Chains() {
                       <b className="chain-name">{c.name}</b>
                       {c.isDefault && <span className="badge b-mint">Default</span>}
                       {c.isTestnet && <span className="badge b-blue">Testnet</span>}
+                      {c.comingSoon && <span className="badge b-amber">Coming soon</span>}
                       {c.pairedChainId && <span className="muted small">↔ {c.pairedChainId}</span>}
                     </span>
                     <span className="muted small chain-url">{c.explorerUrl}</span>
@@ -358,6 +377,9 @@ export default function Chains() {
                       </button>
                       <button className="btn ghost" disabled={toggling === c.id} onClick={() => toggleActive(c)}>
                         {c.active ? 'Disable' : 'Enable'}
+                      </button>
+                      <button className="btn ghost" disabled={toggling === c.id} onClick={() => toggleComingSoon(c)} title="Coming soon: shown in the wallet picker with a badge, but disabled and never selectable">
+                        {c.comingSoon ? 'Make live' : 'Coming soon'}
                       </button>
                       <button className="btn ghost" onClick={() => setConfirmDelete(c)} title="Delete chain (refused when it is the default, has a vault, has a deployment, or still has registered tokens)">
                         <Trash2 />Delete

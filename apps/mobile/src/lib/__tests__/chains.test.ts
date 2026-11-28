@@ -7,6 +7,7 @@ import {
   ACTIVE_CHAINS,
   CHAINS,
   DEFAULT_CHAIN,
+  USABLE_CHAINS,
   VAULT_ADDRESSES,
   VAULT_NOT_DEPLOYED_MESSAGE,
   getChain,
@@ -14,6 +15,7 @@ import {
   getVaultAddress,
   getVaultDeploymentStatus,
   isChainActive,
+  isChainUsable,
   requireVaultAddress,
 } from '../chains';
 
@@ -29,11 +31,12 @@ describe('chain registry', () => {
     expect(DEFAULT_CHAIN.exitStablecoin).toBe('USDC');
   });
 
-  it('the active chain list is the six mainnets plus the four EVM testnets', () => {
+  it('the active chain list is the six mainnets plus the four EVM testnets, plus Plasma and Pi', () => {
     expect(ACTIVE_CHAINS.map((c) => c.id)).toEqual([
       'arc', 'bnb', 'bnb-testnet', 'base', 'base-sepolia', 'ethereum', 'ethereum-sepolia', 'polygon', 'polygon-amoy', 'solana',
+      'plasma', 'plasma-testnet', 'pi', 'pi-testnet',
     ]);
-    for (const id of ['arc', 'bnb', 'bnb-testnet', 'base', 'base-sepolia', 'ethereum', 'ethereum-sepolia', 'polygon', 'polygon-amoy', 'solana']) {
+    for (const id of ['arc', 'bnb', 'bnb-testnet', 'base', 'base-sepolia', 'ethereum', 'ethereum-sepolia', 'polygon', 'polygon-amoy', 'solana', 'plasma', 'plasma-testnet', 'pi', 'pi-testnet']) {
       expect(isChainActive(id)).toBe(true);
       expect(getChain(id).active).toBe(true);
     }
@@ -79,7 +82,75 @@ describe('chain registry', () => {
     for (const c of CHAINS) {
       expect(['USDT', 'USDC', 'BUSD']).toContain(c.exitStablecoin);
       expect(c.exitStablecoinLabel).toContain(c.exitStablecoin);
-      expect(c.exitStablecoinAddress).toBeTruthy();
+      // A usable chain must have a verified exit stablecoin address;
+      // a coming-soon chain honestly has none yet (null = not
+      // confirmed, never a guessed address). Inactive chains keep
+      // whatever address they already have.
+      if (isChainUsable(c)) {
+        expect(c.exitStablecoinAddress).toBeTruthy();
+      } else if (c.comingSoon) {
+        expect(c.exitStablecoinAddress).toBeNull();
+      }
+    }
+  });
+
+  it('Plasma mainnet has the verified router and stablecoins (checked 2026-11-28)', () => {
+    const p = getChain('plasma');
+    expect(p.kind).toBe('evm');
+    expect(p.chainId).toBe(9745);
+    expect(p.nativeSymbol).toBe('XPL');
+    expect(p.nativeDecimals).toBe(18);
+    expect(p.rpcUrl).toBe('https://rpc.plasma.to');
+    expect(p.explorerUrl).toBe('https://plasmascan.to');
+    expect(p.exitStablecoin).toBe('USDT');
+    expect(p.exitStablecoinAddress).toBe('0xB8CE59FC3717ada4C02eaDF9682A9e934F625ebb');
+    expect(p.uniswapV3Router).toBe('0x807F4E281B7A3B324825C64ca53c69F0b418dE40');
+    expect(p.vaultContract).toBeNull();
+    expect(p.comingSoon).toBe(false);
+    expect(isChainUsable(p)).toBe(true);
+    expect(getChainByEvmId(9745)?.id).toBe('plasma');
+    expect(getChainByEvmId(9746)?.id).toBe('plasma-testnet');
+  });
+
+  it('Plasma testnet is coming-soon with no verified router or stablecoin', () => {
+    const p = getChain('plasma-testnet');
+    expect(p.kind).toBe('evm');
+    expect(p.chainId).toBe(9746);
+    expect(p.rpcUrl).toBe('https://testnet-rpc.plasma.to');
+    expect(p.explorerUrl).toBe('https://testnet.plasmascan.to');
+    expect(p.exitStablecoinAddress).toBeNull();
+    expect(p.uniswapV3Router).toBeUndefined();
+    expect(p.vaultContract).toBeNull();
+    expect(p.comingSoon).toBe(true);
+    expect(p.testnet).toBe(true);
+    expect(isChainUsable(p)).toBe(false);
+  });
+
+  it('Pi is non-EVM (kind pi), no chain id, Horizon API — never an EVM RPC', () => {
+    for (const id of ['pi', 'pi-testnet']) {
+      const piChain = getChain(id);
+      expect(piChain.kind).toBe('pi');
+      expect(piChain.chainId).toBeNull();
+      expect(piChain.nativeSymbol).toBe('PI');
+      expect(piChain.nativeDecimals).toBe(7);
+      expect(piChain.exitStablecoinAddress).toBeNull();
+      expect(piChain.vaultContract).toBeNull();
+      expect(piChain.comingSoon).toBe(true);
+      expect(isChainUsable(piChain)).toBe(false);
+    }
+    expect(getChain('pi').rpcUrl).toBe('https://api.mainnet.minepi.com');
+    expect(getChain('pi-testnet').rpcUrl).toBe('https://api.testnet.minepi.com');
+    expect(getChain('pi-testnet').testnet).toBe(true);
+    // No EVM id resolves to Pi.
+    expect(getChainByEvmId(9745)?.id).toBe('plasma');
+  });
+
+  it('usable chains exclude every coming-soon chain', () => {
+    expect(USABLE_CHAINS.map((c) => c.id)).toEqual([
+      'arc', 'bnb', 'bnb-testnet', 'base', 'base-sepolia', 'ethereum', 'ethereum-sepolia', 'polygon', 'polygon-amoy', 'solana', 'plasma',
+    ]);
+    for (const id of ['plasma-testnet', 'pi', 'pi-testnet']) {
+      expect(USABLE_CHAINS.some((c) => c.id === id)).toBe(false);
     }
   });
 

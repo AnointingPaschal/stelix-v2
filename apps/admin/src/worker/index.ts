@@ -660,6 +660,8 @@ type ChainRow = {
   paired_chain_id?: string | null
   launchpad_address?: string | null
   token_factory_address?: string | null
+  /** 1 = "coming soon": the wallet shows the chain disabled in the picker. */
+  coming_soon?: number | null
 }
 
 async function getChains(env: Env): Promise<ChainRow[]> {
@@ -1275,12 +1277,13 @@ export default {
       const isDefault = chain.isDefault ? 1 : 0
       if (isDefault) await env.DB.prepare('UPDATE chains SET is_default = 0').run()
       await env.DB.prepare(
-        'INSERT INTO chains (id, name, chain_id, rpc_urls, explorer_url, native_token, native_decimals, stablecoin, stablecoin_address, stablecoin_decimals, gas_token, dex_router, vault_address, status, is_testnet, active, paired_chain_id, is_default) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
+        'INSERT INTO chains (id, name, chain_id, rpc_urls, explorer_url, native_token, native_decimals, stablecoin, stablecoin_address, stablecoin_decimals, gas_token, dex_router, vault_address, status, is_testnet, active, paired_chain_id, is_default, coming_soon) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
       ).bind(
         chain.id, chain.name, chain.chainId, chain.rpcUrls.join(','), chain.explorerUrl,
         chain.nativeToken, chain.nativeDecimals, chain.stablecoin, chain.stablecoinAddress,
         chain.stablecoinDecimals, chain.gasToken, chain.dexRouter, chain.vaultAddress,
         chain.status, chain.isTestnet ? 1 : 0, chain.active ? 1 : 0, chain.pairedChainId, isDefault,
+        chain.comingSoon ? 1 : 0,
       ).run()
       // Re-adding a slug that was previously deleted clears its tombstone.
       await env.DB.prepare('DELETE FROM deleted_chains WHERE id = ?').bind(chain.id).run()
@@ -1299,6 +1302,23 @@ export default {
       await bumpSync(env)
       await audit(env, authed, body.active ? 'chain.enable' : 'chain.disable', `chain ${id} ${body.active ? 'enabled' : 'disabled'} (active=${body.active})`)
       return json({ ok: true, id, active: body.active })
+    }
+    // Coming-soon toggle: same pattern as /active, but it only flips the
+    // badge — the chain stays listed in the wallet, shown disabled. A
+    // coming-soon chain can never be selected, so it can never be used
+    // for a balance, swap or lock. (No validateChainInput here, so Pi —
+    // chain_id 0, non-EVM — can be toggled too.)
+    const chainComingSoon = /^\/api\/admin\/chains\/([a-z0-9-]+)\/coming-soon$/.exec(path)
+    if (chainComingSoon && req.method === 'PATCH') {
+      const id = chainComingSoon[1]
+      const body = await readJson(req)
+      if (typeof body.comingSoon !== 'boolean') return json({ error: 'comingSoon must be true or false' }, 400)
+      const chain = await env.DB.prepare('SELECT * FROM chains WHERE id = ?').bind(id).first<ChainRow>()
+      if (!chain) return json({ error: 'chain not found' }, 404)
+      await env.DB.prepare("UPDATE chains SET coming_soon = ?, updated_at = datetime('now') WHERE id = ?").bind(body.comingSoon ? 1 : 0, id).run()
+      await bumpSync(env)
+      await audit(env, authed, body.comingSoon ? 'chain.coming_soon' : 'chain.coming_soon_off', `chain ${id} marked ${body.comingSoon ? 'coming soon' : 'live'} (coming_soon=${body.comingSoon})`)
+      return json({ ok: true, id, comingSoon: body.comingSoon })
     }
     const chainUpdate = /^\/api\/admin\/chains\/([a-z0-9-]+)$/.exec(path)
     if (chainUpdate && (req.method === 'POST' || req.method === 'PUT')) {
@@ -1782,6 +1802,7 @@ export default {
           stablecoinDecimals: c.stablecoin_decimals ?? 6, gasToken: c.gas_token ?? c.native_token,
           rpcUrls: c.rpc_urls ? c.rpc_urls.split(',').map((s) => s.trim()).filter(Boolean) : [],
           pairedChainId: c.paired_chain_id ?? null,
+          comingSoon: (c.coming_soon ?? 0) === 1,
         })),
         publishedAt: new Date().toISOString(),
       }

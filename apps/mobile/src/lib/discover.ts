@@ -41,14 +41,14 @@
  * manually — so a normal session stays far under the limit.
  *
  * Restored 2026-11-27: all chains active again. Results are still
- * filtered to ACTIVE_CHAINS (see lib/chains.ts) so a chain disabled
- * later (e.g. from admin) never appears, even when an upstream feed
- * returns it. See apps/mobile/SCOPE.md.
+ * filtered to USABLE_CHAINS (see lib/chains.ts) so a chain disabled
+ * later (e.g. from admin) — or marked coming-soon — never appears,
+ * even when an upstream feed returns it. See apps/mobile/SCOPE.md.
  *
  * No secrets, no keys. Pure helpers are unit-testable with an injected
  * fetch implementation.
  */
-import { ACTIVE_CHAINS, getChain, isChainActive } from './chains';
+import { getChain, isChainActive, USABLE_CHAINS } from './chains';
 import { normalizeChainId } from './tokenLogos';
 import type { TokenMarketData } from './prices';
 import { fetchTokenMarketData } from './prices';
@@ -134,15 +134,16 @@ function num(v: unknown): number | null {
   return null;
 }
 
-/** Stelix chain ids shown in the Discover chain filter. */
-export const DISCOVER_CHAINS: { id: string; label: string }[] = ACTIVE_CHAINS.map((c) => ({
+/** Stelix chain ids shown in the Discover chain filter — usable chains
+ *  only (a coming-soon chain has no prices or pairs to discover). */
+export const DISCOVER_CHAINS: { id: string; label: string }[] = USABLE_CHAINS.map((c) => ({
   id: c.id,
   label: c.id === 'bnb' ? 'BNB' : c.name,
 }));
 
 /** GeckoTerminal network slugs for the Stelix chains (from chains.ts). */
 export function discoverNetworks(chainId: string | 'all'): string[] {
-  if (chainId === 'all') return ACTIVE_CHAINS.map((c) => c.geckoTerminalNetwork);
+  if (chainId === 'all') return USABLE_CHAINS.map((c) => c.geckoTerminalNetwork);
   return [getChain(chainId).geckoTerminalNetwork];
 }
 
