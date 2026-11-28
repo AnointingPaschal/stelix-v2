@@ -90,3 +90,67 @@ describe('live token guard', () => {
     expect(BURN_PREFILLS).toHaveLength(2)
   })
 })
+
+describe('dead-address constant (security pin)', () => {
+  it('is exactly 0x000000000000000000000000000000000000dEaD in EIP-55 checksum — if this changes, the test fails', () => {
+    expect(DEAD_ADDRESS).toBe('0x000000000000000000000000000000000000dEaD')
+    expect(getAddress(DEAD_ADDRESS)).toBe(DEAD_ADDRESS)
+  })
+
+  it('is the only recipient buildBurnCalldata can ever encode', () => {
+    expect(burnCalldataRecipient(buildBurnCalldata(1n))).toBe(DEAD_ADDRESS)
+    expect(burnCalldataRecipient(buildBurnCalldata(10n ** 27n))).toBe(DEAD_ADDRESS)
+  })
+})
+
+describe('burn destination checks (defense in depth)', () => {
+  const ATTACKER = '0xCca907AE079DB7638A4d2D3e82defaea5FBDF383'
+
+  it('assertBurnDestination accepts the dead address and rejects any other address', () => {
+    expect(() => assertBurnDestination(DEAD_ADDRESS)).not.toThrow()
+    expect(() => assertBurnDestination(ATTACKER)).toThrow('verified dead address')
+    expect(() => assertBurnDestination('0x0000000000000000000000000000000000000000')).toThrow()
+  })
+
+  it('buildBurnTransaction targets the checksummed token and dead-address calldata', () => {
+    const tx = buildBurnTransaction('0xc4d720e630d8aec1f0718a1d30ab0e5a802f74e7', 10n ** 24n)
+    expect(tx.to).toBe('0xC4d720e630d8aeC1F0718a1d30Ab0e5A802F74e7')
+    expect(tx.value).toBe(0n)
+    expect(burnCalldataRecipient(tx.data)).toBe(DEAD_ADDRESS)
+  })
+
+  it('assertBurnCalldata passes for a genuine burn and refuses a swapped recipient (pre-sign check)', () => {
+    const good = buildBurnCalldata(10n ** 24n)
+    expect(() => assertBurnCalldata(good, 10n ** 24n)).not.toThrow()
+    const tampered = new Interface(['function transfer(address to, uint256 amount)'])
+      .encodeFunctionData('transfer', [ATTACKER, 10n ** 24n])
+    expect(() => assertBurnCalldata(tampered, 10n ** 24n)).toThrow('verified dead address')
+    expect(() => assertBurnCalldata(good, 999n)).toThrow('does not match')
+    expect(() => assertBurnCalldata('0xdeadbeef')).toThrow('not a valid ERC-20 transfer')
+  })
+})
+
+describe('token address validation', () => {
+  it('normalizes lowercase input to its EIP-55 checksum', () => {
+    expect(normalizeTokenAddress('0xc4d720e630d8aec1f0718a1d30ab0e5a802f74e7'))
+      .toBe('0xC4d720e630d8aeC1F0718a1d30Ab0e5A802F74e7')
+    expect(normalizeTokenAddress('0xC4d720e630d8aeC1F0718a1d30Ab0e5A802F74e7'))
+      .toBe('0xC4d720e630d8aeC1F0718a1d30Ab0e5A802F74e7')
+  })
+
+  it('rejects garbage and mixed-case addresses with a bad checksum', () => {
+    expect(() => normalizeTokenAddress('not-an-address')).toThrow()
+    expect(() => normalizeTokenAddress('0xC4d720e630d8aec1F0718a1d30Ab0e5A802F74e7')).toThrow()
+    expect(() => normalizeTokenAddress('')).toThrow()
+  })
+})
+
+describe('contract code check (no-code refusal)', () => {
+  it('treats empty eth_getCode results as "no contract here"', () => {
+    expect(isContractCode('0x')).toBe(false)
+    expect(isContractCode('')).toBe(false)
+    expect(isContractCode(null)).toBe(false)
+    expect(isContractCode(undefined)).toBe(false)
+    expect(isContractCode('0x608060405234801561001057600080fd5b50')).toBe(true)
+  })
+})
