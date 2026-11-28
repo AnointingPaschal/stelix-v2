@@ -28,7 +28,7 @@ const INPUT_SCREENS = [
   'src/app/(tabs)/swap.tsx',
   'src/app/settings.tsx',
   'src/app/unlock.tsx',
-  'src/app/(tabs)/discover.tsx',
+  'src/app/(tabs)/trade.tsx',
   'src/app/token/[symbol].tsx',
 ];
 

@@ -83,7 +83,7 @@ export default function Swap() {
   const toToken: SwapToken | undefined = merged.find((t) => t.symbol === toSymbol);
   const amt = parseFloat(amount) || 0;
 
-  // --- Prefill from Home / Token Detail / Discover -----------------------
+  // --- Prefill from Home / Token Detail / Trade -----------------------
   // ?from=BNB&to=USDT pre-fills that token as pay / receive. Only applied
   // when the symbol exists on the active chain — a token from another
   // chain never silently switches the network.

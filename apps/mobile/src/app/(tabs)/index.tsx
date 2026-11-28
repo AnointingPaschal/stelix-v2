@@ -1,7 +1,7 @@
 /** Screen 6 — Home / Portfolio (v1): shared AppHeader (wallet + chain
  *  pills), navy portfolio card with Today's P&L, 5 actions in a white
  *  card, My Assets list with Import, bottom tabs
- *  Home/Swap/Discover/History/Settings. Plus v2-only, in v1 style:
+ *  Home/Swap/Trade/History/Settings. Plus v2-only, in v1 style:
  *  Spendable vs Locked split inside the card. All figures come from
  *  the store — a new wallet shows $0.00 / 0 tokens.
  *

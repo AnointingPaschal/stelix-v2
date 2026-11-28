@@ -95,10 +95,10 @@ describe('safe-area audit: chrome around the screens', () => {
     expect(text).toMatch(/paddingBottom:\s*6 \+ insets\.bottom/);
   });
 
-  it('the tab bar is exactly Home, Swap, Discover, History, Settings (no launchpad)', () => {
+  it('the tab bar is exactly Home, Swap, Trade, History, Settings (no launchpad)', () => {
     const text = fs.readFileSync(path.join(APP, '(tabs)', '_layout.tsx'), 'utf8');
     const titles = [...text.matchAll(/title: '([^']+)'/g)].map((m) => m[1]);
-    expect(titles).toEqual(['Home', 'Swap', 'Discover', 'History', 'Settings']);
+    expect(titles).toEqual(['Home', 'Swap', 'Trade', 'History', 'Settings']);
   });
 });
 

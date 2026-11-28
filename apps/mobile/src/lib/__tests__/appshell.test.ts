@@ -67,10 +67,10 @@ describe('AppShell exports', () => {
 
   it('BottomNav has the same 5 tabs, icons, colours and height as the native tab bar', () => {
     const text = src(SHELL);
-    for (const label of ['Home', 'Swap', 'Discover', 'History', 'Settings']) {
+    for (const label of ['Home', 'Swap', 'Trade', 'History', 'Settings']) {
       expect(text).toContain(`label: '${label}'`);
     }
-    for (const icon of ['Home', 'ArrowLeftRight', 'Compass', 'History', 'Settings as SettingsIcon']) {
+    for (const icon of ['Home', 'ArrowLeftRight', 'TrendingUp', 'History', 'Settings as SettingsIcon']) {
       expect(text).toContain(icon);
     }
     expect(text).toMatch(/height:\s*60 \+ insets\.bottom/);

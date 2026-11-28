@@ -14,7 +14,7 @@ module.exports = {
     '^.+\\.tsx?$': 'ts-jest',
     '^.+\\.jsx?$': 'babel-jest',
   },
-  transformIgnorePatterns: ['/node_modules/(?!ed25519-hd-key|@noble|uuid)'],
+  transformIgnorePatterns: ['/node_modules/(?!ed25519-hd-key|@noble|uuid|@nktkas/hyperliquid|@nktkas/rews|decimal\\.js|valibot)'],
   moduleNameMapper: {
     '^uuid$': '<rootDir>/node_modules/uuid/dist/index.js',
   },
