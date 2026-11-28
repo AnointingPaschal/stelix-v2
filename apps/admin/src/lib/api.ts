@@ -336,6 +336,9 @@ export const api = {
   async getSecurityAudit(): Promise<{ checks: { id: string; label: string; status: 'pass' | 'warn' | 'fail'; detail: string }[] }> {
     return live('/api/admin/security-audit')
   },
+  async getLoginBrake(): Promise<{ failuresLast10Min: number; slowingAt: number; pauseAt: number; state: 'cool' | 'slowing' | 'paused' }> {
+    return live('/api/admin/login-brake')
+  },
   async getContractWatch(): Promise<{ contracts: { chainId: string; address: string; kind: string; env: string; hasCode: boolean | null; codeNote: string; recentTxCount: number | null; lastTxAt: string | null; txNote: string; checkedAt: string }[] }> {
     return live('/api/admin/contract-watch')
   },

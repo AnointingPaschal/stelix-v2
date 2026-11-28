@@ -275,6 +275,43 @@ async function blockIp(
   ).bind(ip, reason, blockedBy ?? '', expiresAt).run()
 }
 
+// ---- Global login brake (no new table; reads security_events) ----
+// Per-IP lockouts stop one address. A rotating attacker gets a fresh
+// address per attempt, so the brake counts failures ACROSS ALL IPs in a
+// rolling 10-minute window instead:
+//   >= 10 failures → every sign-in is slowed by 2s (the owner feels a
+//     short pause during an attack; a brute-force slows to a crawl).
+//   >= 25 failures → sign-in pauses entirely until the window slides
+//     past the failures (at most ~10 minutes; no new failures can be
+//     recorded while paused, so it always heals itself).
+// The brake never deletes anything and never locks anyone out
+// permanently — and a real owner almost never sees it (normal use is a
+// handful of sign-ins a day).
+export const LOGIN_BRAKE_SLOW_AT = 10
+export const LOGIN_BRAKE_PAUSE_AT = 25
+const LOGIN_BRAKE_WINDOW_MINUTES = 10
+
+async function getLoginFailuresLastWindow(env: Env): Promise<number> {
+  try {
+    const row = await env.DB.prepare(
+      "SELECT COUNT(*) AS n FROM security_events WHERE category = ? AND datetime(created_at) > datetime('now', ?)",
+    ).bind('login-failed', `-${LOGIN_BRAKE_WINDOW_MINUTES} minutes`).first<{ n: number }>()
+    return row?.n ?? 0
+  } catch {
+    // Fail open: if the feed table is missing, the per-IP lockout below
+    // still guards the login.
+    return 0
+  }
+}
+
+const sleep = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms))
+
+async function getLoginBrakeState(env: Env): Promise<{ failures: number; state: 'cool' | 'slowing' | 'paused' }> {
+  const failures = await getLoginFailuresLastWindow(env)
+  const state = failures >= LOGIN_BRAKE_PAUSE_AT ? 'paused' : failures >= LOGIN_BRAKE_SLOW_AT ? 'slowing' : 'cool'
+  return { failures, state }
+}
+
 // ---- Realtime sync version (migration 0007) ----
 // Monotonic counter the wallet polls via GET /api/sync. Bumped on every
 // admin write so an edit is visible within one poll interval. Best-effort:
@@ -723,6 +760,25 @@ async function handleLogin(req: Request, env: Env): Promise<Response> {
   const body = await readJson(req)
   const email = String(body.email ?? '').trim().toLowerCase()
   const password = String(body.password ?? '')
+
+  // Global brake first: it counts failures from EVERY IP, so a rotating
+  // attacker cannot dodge it by changing address. A paused login records
+  // no new failure, so the pause always heals as the window slides.
+  const brake = await getLoginBrakeState(env)
+  if (brake.state === 'paused') {
+    try {
+      const recent = await env.DB.prepare(
+        "SELECT COUNT(*) AS n FROM security_events WHERE category = ? AND datetime(created_at) > datetime('now', '-10 minutes')",
+      ).bind('login-brake').first<{ n: number }>()
+      if ((recent?.n ?? 0) === 0) {
+        await logSecurityEvent(env, req, 'login-brake', 'intercepted', `sign-in paused: ${brake.failures} failed sign-ins in 10 minutes`)
+      }
+    } catch { /* the pause stands even if the feed write fails */ }
+    return json({ error: 'Too many failed sign-ins across the system — sign-in is paused for a few minutes. Try again shortly.', brake: true }, 429)
+  }
+  if (brake.state === 'slowing') {
+    await sleep(2000)
+  }
 
   const row = await env.DB.prepare('SELECT attempts, locked_until FROM login_attempts WHERE ip = ?').bind(ip).first<{ attempts: number; locked_until: string | null }>()
   if (row?.locked_until && new Date(row.locked_until).getTime() > Date.now()) {
@@ -1454,6 +1510,12 @@ export default {
       await audit(env, authed, 'security.unblock', `block id ${id} lifted`)
       return json({ ok: true })
     }
+    // Login brake state for the Cyber page: failures across ALL IPs in
+    // the last 10 minutes, and whether sign-in is cool, slowing or paused.
+    if (path === '/api/admin/login-brake' && req.method === 'GET') {
+      const { failures, state } = await getLoginBrakeState(env)
+      return json({ failuresLast10Min: failures, slowingAt: LOGIN_BRAKE_SLOW_AT, pauseAt: LOGIN_BRAKE_PAUSE_AT, state })
+    }
     // Full security check: the live configuration, scored pass / warn /
     // fail. Nothing here is guessed — each check reads the real secret,
     // table or counter it names.
@@ -1483,6 +1545,20 @@ export default {
       } catch {
         push('failed-logins', 'Failed admin sign-ins (24h)', 'fail', 'security_events table missing — apply migration 0018.')
       }
+      // The global brake is the rotation-proof layer: it counts failures
+      // from every IP, not one address. A non-cool state means an attack
+      // is underway right now — the brake working, not a misconfiguration.
+      const brake = await getLoginBrakeState(env)
+      push(
+        'login-brake',
+        'Login brake (all IPs, 10 min)',
+        brake.state === 'cool' ? 'pass' : 'warn',
+        brake.state === 'cool'
+          ? `${brake.failures} failed sign-ins in the last 10 minutes — sign-in is running normally.`
+          : brake.state === 'slowing'
+            ? `${brake.failures} failed sign-ins in the last 10 minutes — sign-in is slowed by 2s per attempt.`
+            : `${brake.failures} failed sign-ins in the last 10 minutes — sign-in is PAUSED until the window slides past the failures.`,
+      )
       const maint = await getMaintenanceState(env)
       push('maintenance', 'Maintenance mode', maint.enabled ? 'warn' : 'pass', maint.enabled ? `Maintenance mode is ON (${maint.scope}) — the app shows the maintenance screen.` : 'Maintenance mode is off.')
       return json({ checks })

@@ -55,7 +55,7 @@ export default function Login() {
           </div>
         </form>
         <p className="muted login-foot">
-          Production sign-in: credentials are checked server-side against the owner&apos;s account. After 5 failed attempts this browser is locked out for 15 minutes.
+          Production sign-in: credentials are checked server-side against the owner&apos;s account. After 5 failed attempts this browser is locked out for 15 minutes, and 25 failed sign-ins from anywhere pause sign-in for a few minutes.
         </p>
       </div>
     </div>

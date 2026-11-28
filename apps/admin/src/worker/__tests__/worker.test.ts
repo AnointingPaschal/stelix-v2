@@ -1282,5 +1282,50 @@ describe('Worker API (live endpoints, no sample data)', () => {
       expect(rows.find((r) => r.id === idB)?.sort_order).toBe(0)
       expect(rows.find((r) => r.id === idA)?.sort_order).toBe(1)
     })
+
+    it('login brake: cool with no failures, slowing at 10', async () => {
+      const cool = await call(env, '/api/admin/login-brake', { token })
+      expect(cool.status).toBe(200)
+      expect(cool.body.state).toBe('cool')
+      expect(cool.body.failuresLast10Min).toBe(0)
+      expect(cool.body.slowingAt).toBe(10)
+      expect(cool.body.pauseAt).toBe(25)
+      for (let i = 0; i < 10; i++) {
+        db.tables.security_events.push({ id: 200 + i, category: 'login-failed', status: 'failed', ip: `203.0.113.${i + 1}`, country: '', user_agent: '', method: 'POST', path: '/api/admin/login', detail: 'failed admin sign-in', created_at: new Date().toISOString() })
+      }
+      const slowing = await call(env, '/api/admin/login-brake', { token })
+      expect(slowing.body.state).toBe('slowing')
+      expect(slowing.body.failuresLast10Min).toBe(10)
+    })
+
+    it('login brake: 25 failures from rotating IPs pause sign-in for everyone', async () => {
+      // Seed 24 failures as if from 24 rotating IPs — the feed already
+      // holds them, exactly as the live pen-test showed.
+      for (let i = 0; i < 24; i++) {
+        db.tables.security_events.push({ id: 100 + i, category: 'login-failed', status: 'failed', ip: `203.0.113.${i + 1}`, country: '', user_agent: '', method: 'POST', path: '/api/admin/login', detail: 'failed admin sign-in', created_at: new Date().toISOString() })
+      }
+      // The 25th failure is a real login attempt; the brake is now hot.
+      const last = await fromIp('203.0.113.25', '/api/admin/login', { method: 'POST', body: { email: 'ozoemenapaschal09@gmail.com', password: 'wrong-password' } })
+      expect(last.status).toBe(401)
+      // The 26th attempt — from yet another fresh IP — is paused, not a 401.
+      const paused = await fromIp('198.51.100.99', '/api/admin/login', { method: 'POST', body: { email: 'ozoemenapaschal09@gmail.com', password: 'wrong-password' } })
+      expect(paused.status).toBe(429)
+      expect(paused.body.brake).toBe(true)
+      // Even the correct password is paused: the brake cannot tell who
+      // is knocking, which is why the pause is short and self-healing.
+      const correct = await fromIp('198.51.100.100', '/api/admin/login', { method: 'POST', body: { email: 'ozoemenapaschal09@gmail.com', password: 'correct-horse' } })
+      expect(correct.status).toBe(429)
+      // The brake endpoint and the audit report the paused state, and
+      // the feed holds exactly one brake event (not one per blocked try).
+      const brake = await call(env, '/api/admin/login-brake', { token })
+      expect(brake.body.state).toBe('paused')
+      expect(brake.body.failuresLast10Min).toBe(25)
+      const auditRes = await call(env, '/api/admin/security-audit', { token })
+      const checks = auditRes.body.checks as { id: string; status: string }[]
+      expect(checks.find((c) => c.id === 'login-brake')?.status).toBe('warn')
+      const feed = await call(env, '/api/admin/security-events', { token })
+      const events = feed.body.events as { category: string }[]
+      expect(events.filter((e) => e.category === 'login-brake')).toHaveLength(1)
+    })
   })
 })

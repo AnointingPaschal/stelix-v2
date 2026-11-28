@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from 'react'
-import { Ban, Eye, Pause, Play, Radar, RefreshCw, ShieldAlert, ShieldCheck, ShieldX } from 'lucide-react'
+import { Ban, Eye, Pause, Play, Radar, RefreshCw, ShieldAlert, ShieldCheck, ShieldX, Timer } from 'lucide-react'
 import { api } from '../lib/api'
 import { LiveNote, PageHeader, SectionTitle, StatCard } from '../components/ui'
 import { AlertModal } from '../components/AlertModal'
@@ -8,6 +8,7 @@ type SecurityEvent = { id: number; category: string; status: string; ip: string;
 type SecurityBlock = { id: number; ip: string; reason: string; blocked_by: string; expires_at: string | null; created_at: string }
 type AuditCheck = { id: string; label: string; status: 'pass' | 'warn' | 'fail'; detail: string }
 type WatchedContract = { chainId: string; address: string; kind: string; env: string; hasCode: boolean | null; codeNote: string; recentTxCount: number | null; lastTxAt: string | null; txNote: string; checkedAt: string }
+type LoginBrake = { failuresLast10Min: number; slowingAt: number; pauseAt: number; state: 'cool' | 'slowing' | 'paused' }
 
 const statusBadge = (status: string) => {
   if (status === 'blocked') return <span className="badge b-red">Blocked</span>
@@ -26,6 +27,7 @@ export default function Cyber() {
   const [blocks, setBlocks] = useState<SecurityBlock[]>([])
   const [checks, setChecks] = useState<AuditCheck[]>([])
   const [contracts, setContracts] = useState<WatchedContract[]>([])
+  const [brake, setBrake] = useState<LoginBrake | null>(null)
   const [error, setError] = useState('')
   const [notice, setNotice] = useState('')
   const [live, setLive] = useState(true)
@@ -46,9 +48,10 @@ export default function Cyber() {
 
   const loadSlow = useCallback(async () => {
     try {
-      const [a, w] = await Promise.all([api.getSecurityAudit(), api.getContractWatch()])
+      const [a, w, b] = await Promise.all([api.getSecurityAudit(), api.getContractWatch(), api.getLoginBrake()])
       setChecks(a.checks)
       setContracts(w.contracts)
+      setBrake(b)
     } catch (err) { setError(err instanceof Error ? err.message : 'Could not load the security audit.') }
   }, [])
 
@@ -114,6 +117,27 @@ export default function Cyber() {
         <StatCard icon={<ShieldX />} label="Failed sign-ins (feed)" value={String(failedCount)} />
         <StatCard icon={<Ban />} label="Blocked hits (feed)" value={String(blockedCount)} />
         <StatCard icon={<Eye />} label="Intercepted probes (feed)" value={String(interceptedCount)} />
+      </div>
+
+      <div className="card">
+        <SectionTitle icon={<Timer />}>Login brake — the rotation-proof layer</SectionTitle>
+        {brake === null ? (
+          <p className="empty">Checking the brake…</p>
+        ) : (
+          <>
+            <p style={{ marginTop: 0 }}>
+              {brake.state === 'cool'
+                ? <span className="badge b-green">Cool — sign-in normal</span>
+                : brake.state === 'slowing'
+                  ? <span className="badge b-amber">Slowing — sign-in delayed 2s</span>
+                  : <span className="badge b-red">Paused — sign-in stopped</span>}
+              {' '}<b>{brake.failuresLast10Min}</b> failed sign-ins in the last 10 minutes, from all IPs combined.
+            </p>
+            <p className="muted" style={{ marginBottom: 0 }}>
+              IP blocks stop one address; this brake counts failures from everywhere. At {brake.slowingAt} failures in 10 minutes every sign-in is slowed by 2 seconds; at {brake.pauseAt} sign-in pauses until the window slides past the failures (at most ~10 minutes, then it heals itself). A real owner almost never sees it — normal use is a handful of sign-ins a day.
+            </p>
+          </>
+        )}
       </div>
 
       <div className="card">
