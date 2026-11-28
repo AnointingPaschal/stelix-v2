@@ -249,7 +249,7 @@ export default function Launchpad() {
       pricePerToken: String(Math.round((parseFloat(form.priceUsd) || 0) * 1_000_000)),
       softCap: String(Math.round((parseFloat(form.softCapUsd) || 0) * 1_000_000)),
       hardCap: String(Math.round((parseFloat(form.hardCapUsd) || 0) * 1_000_000)),
-      tokensForSale: String(Math.round(parseFloat(form.tokensForSale) || 0) * 10 ** decimals),
+      tokensForSale: (BigInt(Math.round(parseFloat(form.tokensForSale) || 0)) * 10n ** BigInt(decimals)).toString(),
       startTime,
       endTime,
       liquidityLockBps: Math.round((parseFloat(form.liquidityPct) || 0) * 100),
