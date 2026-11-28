@@ -7,6 +7,7 @@
 import {
   applyDiscoverFilters,
   dedupeDiscoverTokens,
+  fetchDiscoverPage,
   fetchDiscoverTab,
   fetchTokenProfilesNew,
   formatTokenAge,
@@ -238,6 +239,110 @@ const dexBatchBody = {
     },
   ],
 };
+
+describe('fetchDiscoverPage (mocked network, infinite scroll)', () => {
+  it('trending page 1: fetches only page 1 and reports hasMore when the page is full', async () => {
+    const pool = geckoPool();
+    const page1 = Array.from({ length: 20 }, (_, i) => geckoPool({
+      id: `bsc_0xpool${i}`,
+      attributes: {
+        ...(pool.attributes as Record<string, unknown>),
+        name: `TOK${i} / WBNB`,
+        address: `0xpool${i}`,
+      },
+      relationships: {
+        base_token: { data: { id: `bsc_0xtok${i}` } },
+        network: { data: { id: 'bsc' } },
+        dex: { data: { id: 'pancakeswap_v2' } },
+      },
+    }));
+    const fetchImpl = mockFetch([
+      ['trending_pools?page=1', { data: page1 }],
+      ['/latest/dex/tokens/', { pairs: [] }],
+    ]);
+    const res = await fetchDiscoverPage('trending', 'all', 1, fetchImpl as never);
+    expect(res.source).toBe('geckoterminal');
+    expect(res.error).toBeNull();
+    expect(res.tokens).toHaveLength(20);
+    expect(res.hasMore).toBe(true);
+  });
+
+  it('trending page 2: a short page reports hasMore false (scrolling stops)', async () => {
+    const fetchImpl = mockFetch([
+      ['trending_pools?page=2', { data: [geckoPool()] }],
+      ['/latest/dex/tokens/', { pairs: [] }],
+    ]);
+    const res = await fetchDiscoverPage('trending', 'all', 2, fetchImpl as never);
+    expect(res.tokens).toHaveLength(1);
+    expect(res.hasMore).toBe(false);
+  });
+
+  it('trending: an empty page is unavailable with hasMore false', async () => {
+    const fetchImpl = mockFetch([['trending_pools?page=3', { data: [] }]]);
+    const res = await fetchDiscoverPage('trending', 'all', 3, fetchImpl as never);
+    expect(res.tokens).toHaveLength(0);
+    expect(res.hasMore).toBe(false);
+    expect(res.source).toBe('unavailable');
+    expect(res.error).toMatch(/unavailable|failed/i);
+  });
+
+  it('new: pages new_pools per network and dedupes across pages', async () => {
+    const fetchImpl = mockFetch([
+      ['networks/bsc/new_pools?page=2', { data: [geckoPool()] }],
+      ['networks/solana/new_pools?page=2', { data: [] }],
+      ['/latest/dex/tokens/', { pairs: [] }],
+    ]);
+    const res = await fetchDiscoverPage('new', 'all', 2, fetchImpl as never);
+    expect(res.source).toBe('geckoterminal');
+    expect(res.tokens).toHaveLength(1);
+    expect(res.tokens[0].symbol).toBe('PONS');
+    expect(res.hasMore).toBe(false);
+  });
+
+  it('new: a full page on any network reports hasMore true', async () => {
+    const pool = geckoPool();
+    const full = Array.from({ length: 20 }, (_, i) => geckoPool({
+      id: `bsc_0xpool${i}`,
+      attributes: { ...(pool.attributes as Record<string, unknown>), name: `TOK${i} / WBNB`, address: `0xpool${i}` },
+      relationships: {
+        base_token: { data: { id: `bsc_0xtok${i}` } },
+        network: { data: { id: 'bsc' } },
+        dex: { data: { id: 'pancakeswap_v2' } },
+      },
+    }));
+    const fetchImpl = mockFetch([
+      ['networks/bsc/new_pools?page=1', { data: full }],
+      ['/latest/dex/tokens/', { pairs: [] }],
+    ]);
+    const res = await fetchDiscoverPage('new', 'bnb', 1, fetchImpl as never);
+    expect(res.tokens).toHaveLength(20);
+    expect(res.hasMore).toBe(true);
+  });
+
+  it('gainers: ranks the page by 24h change', async () => {
+    const pool = geckoPool();
+    const mk = (sym: string, chg: string) => geckoPool({
+      id: `bsc_0x${sym}`,
+      attributes: {
+        ...(pool.attributes as Record<string, unknown>),
+        name: `${sym} / WBNB`,
+        address: `0x${sym}`,
+        price_change_percentage: { h24: chg, h1: '0' },
+      },
+      relationships: {
+        base_token: { data: { id: `bsc_0x${sym}tok` } },
+        network: { data: { id: 'bsc' } },
+        dex: { data: { id: 'pancakeswap_v2' } },
+      },
+    });
+    const fetchImpl = mockFetch([
+      ['trending_pools?page=1', { data: [mk('LOW', '2.5'), mk('HIGH', '99.1')] }],
+      ['/latest/dex/tokens/', { pairs: [] }],
+    ]);
+    const res = await fetchDiscoverPage('gainers', 'all', 1, fetchImpl as never);
+    expect(res.tokens.map((t) => t.symbol)).toEqual(['HIGH', 'LOW']);
+  });
+});
 
 describe('fetchDiscoverTab (mocked network)', () => {
   it('trending: dedupes GeckoTerminal pools, enriches logo+name from DexScreener', async () => {

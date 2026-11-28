@@ -66,6 +66,7 @@ function RootNavigator() {
       <Stack.Screen name="notifications" />
       <Stack.Screen name="settings" />
       <Stack.Screen name="discipline" />
+      <Stack.Screen name="import-token" options={{ presentation: 'modal' }} />
     </Stack>
   );
 }

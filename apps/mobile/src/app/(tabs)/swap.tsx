@@ -43,7 +43,8 @@ import {
 } from '../../lib/swap';
 import { getSignerForChain } from '../../lib/signer';
 import { mergeSwapTokens, swapButtonState, type SwapToken } from '../../lib/swapTokens';
-import { BottomSheet, Btn, Card, NetworkSheet, RiskNote } from '../../components/ui';
+import { BottomSheet, Btn, Card } from '../../components/ui';
+import { AppHeader } from '../../components/AppShell';
 import { TokenLogo } from '../../components/TokenLogo';
 import { PriceChart } from '../../components/PriceChart';
 import {
@@ -71,7 +72,6 @@ export default function Swap() {
   const [slippage, setSlippage] = useState('1.5');
   const [customSlip, setCustomSlip] = useState('');
   const [slipOpen, setSlipOpen] = useState(false);
-  const [netOpen, setNetOpen] = useState(false);
   const [pickSide, setPickSide] = useState<'from' | 'to' | null>(null);
   const [pickQuery, setPickQuery] = useState('');
   const [executing, setExecuting] = useState(false);
@@ -479,19 +479,14 @@ export default function Swap() {
           },
         ]}
       >
+        <AppHeader />
         <View style={styles.head}>
           <View style={styles.headSide} />
           <Text style={styles.title} numberOfLines={1} adjustsFontSizeToFit minimumFontScale={0.85}>Swap Assets</Text>
           <View style={styles.headRight}>
-            <Pressable onPress={() => setSlipOpen(true)} style={styles.gear} hitSlop={6}>
-              <Settings size={18} color={COLORS.navy} />
-              <View style={styles.slipBadge}>
-                <Text style={styles.slipBadgeText}>{slippage}%</Text>
-              </View>
-            </Pressable>
-            <Pressable style={styles.chainBtn} onPress={() => setNetOpen(true)}>
-              <Text style={styles.chainText}>{chain.id === 'bnb' ? 'BSC' : chain.name}</Text>
-              <ChevronDown size={14} color={COLORS.textMuted} />
+            <Pressable onPress={() => setSlipOpen(true)} style={styles.slipPill} hitSlop={6}>
+              <Settings size={16} color={COLORS.navy} />
+              <Text style={styles.slipPillText}>Slippage {slippage}%</Text>
             </Pressable>
           </View>
         </View>
@@ -649,18 +644,6 @@ export default function Swap() {
 
         <View style={styles.spacer} />
         <Btn label={btn.label} variant={btn.disabled ? 'secondary' : 'primary'} onPress={() => void review()} disabled={btn.disabled} />
-        <Text style={styles.execNote}>
-          {chain.id === 'arc'
-            ? 'Arc swaps are unavailable — no DEX router has been verified on Arc testnet yet.'
-            : chain.kind !== 'evm'
-              ? 'Swap execution is wired for EVM chains only.'
-              : chain.id === 'bnb'
-                ? 'Executes on PancakeSwap V2 with the quoted minimum-receive and a 20-minute deadline.'
-                : 'Executes via 1inch when the API key is set; otherwise the swap is refused, never faked.'}
-        </Text>
-        <RiskNote />
-
-        <NetworkSheet visible={netOpen} onClose={() => setNetOpen(false)} />
 
         <BottomSheet visible={slipOpen} onClose={() => setSlipOpen(false)} title="Slippage tolerance">
           <View style={styles.slipRow}>
@@ -767,17 +750,6 @@ const styles = StyleSheet.create({
   bal: { color: COLORS.textMuted, fontSize: 12 },
   cardHead: { alignItems: 'center', flexDirection: 'row', justifyContent: 'space-between' },
   cardLabel: { color: COLORS.textMuted, fontSize: 12, fontWeight: '700' },
-  chainBtn: {
-    alignItems: 'center',
-    borderColor: COLORS.border,
-    borderRadius: 12,
-    borderWidth: 1,
-    flexDirection: 'row',
-    gap: 2,
-    paddingHorizontal: 8,
-    paddingVertical: 6,
-  },
-  chainText: { color: COLORS.text, fontSize: 12, fontWeight: '700' },
   changeDown: { color: COLORS.red },
   changeText: { fontSize: 12, fontWeight: '700' },
   changeUp: { color: COLORS.mintDark },
@@ -792,7 +764,6 @@ const styles = StyleSheet.create({
     paddingVertical: 10,
   },
   emptyBody: { color: COLORS.textMuted, fontSize: 12, lineHeight: 17, marginTop: 4 },
-  execNote: { color: COLORS.textMuted, fontSize: 11, lineHeight: 16, marginTop: 8, textAlign: 'center' },
   flipBtn: {
     alignItems: 'center',
     backgroundColor: COLORS.bg,
@@ -805,7 +776,6 @@ const styles = StyleSheet.create({
   },
   flipWrap: { alignItems: 'center', marginVertical: -8, zIndex: 1 },
   formError: { color: COLORS.red, fontSize: 12, fontWeight: '700', lineHeight: 17, marginTop: 8 },
-  gear: { position: 'relative' },
   head: { alignItems: 'center', flexDirection: 'row', justifyContent: 'space-between' },
   headRight: { alignItems: 'center', flexDirection: 'row', flexShrink: 0, gap: 10 },
   headSide: { width: 32 },
@@ -841,16 +811,17 @@ const styles = StyleSheet.create({
     paddingVertical: 8,
   },
   sentLine: { color: COLORS.mintDark, fontSize: 12, fontWeight: '700', lineHeight: 17, marginTop: 8 },
-  slipBadge: {
+  slipPill: {
     alignItems: 'center',
-    backgroundColor: COLORS.navy,
+    borderColor: COLORS.border,
     borderRadius: 999,
-    paddingHorizontal: 4,
-    position: 'absolute',
-    right: -6,
-    top: -6,
+    borderWidth: 1,
+    flexDirection: 'row',
+    gap: 5,
+    paddingHorizontal: 10,
+    paddingVertical: 6,
   },
-  slipBadgeText: { color: '#fff', fontSize: 9, fontWeight: '800' },
+  slipPillText: { color: COLORS.text, fontSize: 12, fontWeight: '700' },
   slipBtn: { flex: 1, minHeight: 36 },
   slipHint: { color: COLORS.textMuted, fontSize: 12, lineHeight: 17, marginTop: 12 },
   slipRow: { flexDirection: 'row', gap: 8, marginTop: 12 },

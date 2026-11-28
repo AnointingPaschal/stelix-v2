@@ -410,6 +410,25 @@ async function getPublicAnnouncements(env: Env): Promise<unknown[]> {
   return results ?? []
 }
 
+/** Latest published app release, or null until the first one is
+ *  published. Served in /api/sync as `appUpdate` — the wallet shows it
+ *  as an update prompt when it is newer than the running version. */
+async function getLatestAppRelease(env: Env): Promise<{
+  version: string
+  notes: string | null
+  url: string | null
+  force: boolean
+} | null> {
+  const row = await env.DB.prepare('SELECT * FROM app_releases ORDER BY id DESC LIMIT 1').first<{
+    version: string
+    notes: string | null
+    url: string | null
+    force: number
+  }>()
+  if (!row) return null
+  return { version: row.version, notes: row.notes, url: row.url, force: row.force === 1 }
+}
+
 async function getSignedConfig(env: Env): Promise<{
   version: string
   payload: unknown
@@ -942,6 +961,7 @@ export default {
       const { results: tokens } = await env.DB.prepare('SELECT * FROM tokens ORDER BY chain_id, sort_order, symbol').all()
       const maintenance = await getMaintenanceState(env)
       const networkMode = await getNetworkMode(env)
+      const appUpdate = await getLatestAppRelease(env)
       return json({
         version,
         chains,
@@ -954,6 +974,7 @@ export default {
         tokens: tokens ?? [],
         maintenance,
         networkMode,
+        appUpdate,
       })
     }
 
@@ -1702,6 +1723,34 @@ export default {
       await bumpSync(env)
       await audit(env, authed, 'announcement.delete', `announcement id ${id} deleted`)
       return json({ ok: true })
+    }
+
+    // ---- App Releases ----
+    // POST publishes a new app version; the wallet shows it as an update
+    // prompt on its next sync (/api/sync carries the latest row as
+    // `appUpdate`). force = users cannot dismiss the prompt. The URL is
+    // the download link (EAS build / store link) — the wallet opens it,
+    // it never downloads in-app.
+    if (path === '/api/admin/releases' && req.method === 'GET') {
+      const { results } = await env.DB.prepare('SELECT * FROM app_releases ORDER BY id DESC LIMIT 50').all()
+      return json({ releases: results ?? [] })
+    }
+    if (path === '/api/admin/releases' && req.method === 'POST') {
+      const body = await readJson(req)
+      const version = String(body.version ?? '').trim()
+      const notes = String(body.notes ?? '').trim()
+      const url = String(body.url ?? '').trim()
+      const force = body.force === true || body.force === 1
+      if (!/^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/.test(version)) return json({ error: 'version must look like X.Y.Z (e.g. 2.1.0)' }, 400)
+      if (!/^https?:\/\/.+/.test(url)) return json({ error: 'url must be an http(s) URL' }, 400)
+      if (notes.length > 2000) return json({ error: 'notes must be 2000 characters or fewer' }, 400)
+      const run = await env.DB.prepare(
+        'INSERT INTO app_releases (version, notes, url, force) VALUES (?, ?, ?, ?)',
+      ).bind(version, notes || null, url, force ? 1 : 0).run()
+      await bumpSync(env)
+      await audit(env, authed, 'release.publish', `app release ${version} published${force ? ' (forced)' : ''}`)
+      const id = (run as unknown as { meta?: { last_row_id?: number } }).meta?.last_row_id ?? null
+      return json({ ok: true, id }, 201)
     }
 
     // ---- Maintenance Mode ----

@@ -100,17 +100,55 @@ describe('every on-chain screen signs through the shared modal', () => {
 describe('SignTransactionModal guarantees', () => {
   const modal = () => read('components/SignTransactionModal.tsx');
 
-  it('offers biometrics as an alternative to typing the password', () => {
-    expect(modal()).toContain('Sign with biometrics instead');
-    expect(modal()).toContain('readBiometricSessionPassword');
+  it('review phase shows NO auth UI — no password field, label, hint, biometric button or secure note before the action tap', () => {
+    const src = modal();
+    expect(src).not.toContain('>Authenticate to sign<');
+    expect(src).not.toContain('authLabel');
+    expect(src).not.toContain('Your password decrypts the wallet on this device');
+    expect(src).not.toContain('Sign with biometrics instead');
+    expect(src).not.toContain('Closing this sheet cancels — nothing is sent.');
+    // The password field only exists behind the authVisible gate, which
+    // flips on only after the action button is tapped.
+    expect(src).toContain('{authVisible ? (');
+    expect(src).toContain('setAuthVisible(true)');
+  });
+
+  it('tapping the action button uses ONE biometric prompt: the SecureStore read IS the scanner — no separate authenticateAsync() call', () => {
+    const src = modal();
+    expect(src).toContain('handleActionPress');
+    // Capability check only (no prompt): hardware + enrolment.
+    expect(src).toContain('LocalAuthentication.hasHardwareAsync');
+    expect(src).toContain('LocalAuthentication.isEnrolledAsync');
+    // The single prompt: the biometric-gated SecureStore read.
+    expect(src).toContain('readBiometricSessionPassword');
+    expect(src).toContain('signWith(stored, true)');
+    // No explicit scanner call — it used to run back-to-back with the
+    // SecureStore prompt, giving the user two fingerprint prompts.
+    expect(src).not.toContain('LocalAuthentication.authenticateAsync');
+    expect(src).not.toContain('Authenticate to sign this transaction');
+    // The action button drives the flow; there is no separate biometric
+    // button any more.
+    expect(src).not.toContain('signWithBiometrics');
+  });
+
+  it('a missing stored password or a failed/cancelled scan (read returns null) falls through to the password field — never a dead-end error', () => {
+    const src = modal();
+    expect(src).not.toContain('Biometrics unavailable or cancelled');
+    expect(src).toContain('Enter your password once to enable fingerprint signing');
+  });
+
+  it('a typed-password sign saves the password behind biometrics for next time', () => {
+    expect(modal()).toContain('saveBiometricSessionPassword(passwordValue)');
   });
 
   it('shows a wrong-password error inline and sends nothing', () => {
     expect(modal()).toContain('Wrong password — nothing was sent. Try again.');
   });
 
-  it('closing cancels with nothing sent', () => {
-    expect(modal()).toContain('Closing this sheet cancels — nothing is sent.');
+  it('closing cancels with nothing sent and cannot dismiss mid-send', () => {
+    const src = modal();
+    expect(src).toContain("if (phase === 'signing') return; // never dismiss mid-send");
+    expect(src).toContain('onClose()');
   });
 
   it('shows success with the tx hash and an explorer link', () => {
@@ -126,6 +164,18 @@ describe('SignTransactionModal guarantees', () => {
   it('clears the password from state on close and on success', () => {
     const occurrences = modal().split("setPassword('')").length - 1;
     expect(occurrences).toBeGreaterThanOrEqual(2);
+  });
+
+  it('maintenance gate is unchanged — signing stays blocked with the admin message and a Close button', () => {
+    const src = modal();
+    expect(src).toContain('Maintenance is on — signing is paused. Nothing can be sent right now.');
+    expect(src).toContain('Maintenance is on — signing is paused. Nothing was sent.');
+  });
+
+  it('a biometric sign does not re-save the already-stored password (no second biometric prompt)', () => {
+    const src = modal();
+    expect(src).toContain('signWith(stored, true)');
+    expect(src).toContain('!viaBiometrics');
   });
 });
 

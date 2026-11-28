@@ -19,7 +19,8 @@ import { isValidEvmAddress } from '../lib/wallet';
 import { getSignerForChain } from '../lib/signer';
 import { displaySavedAddress, loadAddressBook, type SavedAddress } from '../lib/addressBook';
 import { estimateSendFee, sendToken, type SendEstimate, type SendResult } from '../lib/send';
-import { BottomSheet, Btn, OptionSheet, RiskNote, ScreenHeader, centeredContent } from '../components/ui';
+import { BottomSheet, Btn, OptionSheet, ScreenHeader, centeredContent } from '../components/ui';
+import { AppHeader, BottomNav } from '../components/AppShell';
 import { TokenLogo } from '../components/TokenLogo';
 import {
   SignTransactionModal,
@@ -119,7 +120,6 @@ export default function Send() {
           },
           { label: 'Gas limit', value: est.gasLimit.toString() },
         ],
-        warning: 'New-address warning: always double-check the first and last characters. Wrong-chain sends may be lost permanently.',
         explorerBase: chain.explorerUrl,
       });
     } catch (e) {
@@ -168,22 +168,28 @@ export default function Send() {
 
   if (spendable.length === 0) {
     return (
-      <View style={[styles.root, centeredContent, { paddingTop: 12 + insets.top, paddingBottom: 24 + insets.bottom }]}>
-        <ScreenHeader title="Transfer Assets" onBack={() => router.back()} />
-        <View style={styles.inner}>
-          <Text style={styles.emptyTitle}>Nothing to send yet</Text>
-          <Text style={styles.emptyBody}>You have no tokens on {chain.name}. Receive funds first.</Text>
-          <Btn label="Back to Home" variant="ghost" onPress={() => router.replace('/(tabs)')} style={styles.emptyBtn} />
+      <View style={styles.shell}>
+        <View style={[styles.root, centeredContent, { paddingTop: 12 + insets.top, paddingBottom: 24 + insets.bottom }]}>
+          <AppHeader showBack />
+          <ScreenHeader title="Transfer Assets" />
+          <View style={styles.inner}>
+            <Text style={styles.emptyTitle}>Nothing to send yet</Text>
+            <Text style={styles.emptyBody}>You have no tokens on {chain.name}. Receive funds first.</Text>
+            <Btn label="Back to Home" variant="ghost" onPress={() => router.replace('/(tabs)')} style={styles.emptyBtn} />
+          </View>
         </View>
+        <BottomNav />
       </View>
     );
   }
 
   return (
+    <View style={styles.shell}>
     <KeyboardAvoidingView style={styles.root} behavior={Platform.OS === 'ios' ? 'padding' : 'height'} keyboardVerticalOffset={insets.top}>
       <ScrollView style={{ flex: 1 }}
         keyboardShouldPersistTaps="handled" contentContainerStyle={[styles.inner, centeredContent, { paddingTop: 12 + insets.top, paddingBottom: 32 + insets.bottom }]}>
-        <ScreenHeader title="Transfer Assets" onBack={() => router.back()} />
+        <AppHeader showBack />
+        <ScreenHeader title="Transfer Assets" />
 
         <View style={styles.chainPill}>
           <View style={styles.netDot} />
@@ -274,8 +280,6 @@ export default function Send() {
           onPress={() => void review()}
           disabled={!valid || estimating}
         />
-        <RiskNote />
-
         <SignTransactionModal
           visible={signModal !== null}
           request={signModal}
@@ -318,6 +322,8 @@ export default function Send() {
         </BottomSheet>
       </ScrollView>
     </KeyboardAvoidingView>
+    <BottomNav />
+    </View>
   );
 }
 
@@ -402,5 +408,6 @@ const styles = StyleSheet.create({
   root: { backgroundColor: COLORS.bg, flex: 1 },
   savedBtn: { backgroundColor: COLORS.bgMuted, borderRadius: 8, paddingHorizontal: 10, paddingVertical: 5 },
   savedText: { color: COLORS.navy, fontSize: 12, fontWeight: '800' },
+  shell: { backgroundColor: COLORS.bg, flex: 1 },
   spacer: { flex: 1, minHeight: 24 },
 });

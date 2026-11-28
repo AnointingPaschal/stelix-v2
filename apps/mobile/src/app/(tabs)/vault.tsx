@@ -11,7 +11,8 @@ import { COLORS } from '../../theme';
 import { useApp } from '../../store/AppContext';
 import { fmtNum, fmtUsd } from '../../lib/format';
 import { tokenDetailRoute } from '../../lib/tokenResolve';
-import { Btn, BottomSheet, Card, EmptyState, RiskNote, SectionTitle, centeredContent } from '../../components/ui';
+import { Btn, BottomSheet, Card, EmptyState, SectionTitle, centeredContent } from '../../components/ui';
+import { AppHeader } from '../../components/AppShell';
 import { LockCard } from '../../components/TokenRow';
 
 export default function VaultHub() {
@@ -53,6 +54,7 @@ export default function VaultHub() {
 
   return (
     <ScrollView style={styles.root} contentContainerStyle={[styles.inner, centeredContent, { paddingTop: 12 + insets.top, paddingBottom: 24 + insets.bottom }]}>
+      <AppHeader />
       <View style={styles.head}>
         <View style={styles.headSide} />
         <Text style={styles.title}>Vault</Text>
@@ -132,7 +134,6 @@ export default function VaultHub() {
       )}
       <Btn label="Create Lock" variant="mint" onPress={() => setPickerOpen(true)} style={styles.createBtn} />
       {vaultNote ? <Text style={styles.vaultNote}>{vaultNote}</Text> : null}
-      <RiskNote />
 
       <BottomSheet visible={pickerOpen} onClose={() => setPickerOpen(false)} title="Choose a token to lock">
         {lockableTokens.length === 0 ? (

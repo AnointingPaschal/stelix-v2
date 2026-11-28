@@ -24,7 +24,7 @@ import { Animated, KeyboardAvoidingView, Platform, Pressable, ScrollView, StyleS
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { router, useLocalSearchParams } from 'expo-router';
 import * as Clipboard from 'expo-clipboard';
-import { ChevronLeft, Lock, RefreshCw, Star } from 'lucide-react-native';
+import { Lock, RefreshCw, Star } from 'lucide-react-native';
 import { COLORS } from '../../theme';
 import { useApp } from '../../store/AppContext';
 import { isWatched, toggleWatchlist, watchKey as buildWatchKey } from '../../lib/watchlist';
@@ -69,7 +69,8 @@ import {
   type SignTxResult,
 } from '../../components/SignTransactionModal';
 import { fmtDate, fmtNum, fmtPct, fmtPrice, fmtUsd } from '../../lib/format';
-import { Btn, BottomSheet, Card, Chip, RiskNote, SectionTitle } from '../../components/ui';
+import { Btn, BottomSheet, Card, Chip, SectionTitle } from '../../components/ui';
+import { AppHeader, BottomNav } from '../../components/AppShell';
 import { PriceChart, type ChartType } from '../../components/PriceChart';
 import { SafetyScoreCard } from '../../components/SafetyScoreCard';
 import { TokenLogo } from '../../components/TokenLogo';
@@ -788,10 +789,16 @@ export default function TokenDetail() {
 
   if (!ref.found) {
     return (
-      <View style={[styles.missing, { paddingTop: 12 + insets.top, paddingBottom: 24 + insets.bottom }]}>
-        <Text style={styles.title}>Token not found</Text>
-        <Text style={styles.missingBody}>This token is not in your wallet and no contract address was given.</Text>
-        <Btn label="Back" onPress={() => router.back()} />
+      <View style={styles.shell}>
+        <View style={[styles.missing, { paddingTop: 12 + insets.top, paddingBottom: 24 + insets.bottom }]}>
+          <AppHeader showBack />
+          <View style={styles.missingInner}>
+            <Text style={styles.title}>Token not found</Text>
+            <Text style={styles.missingBody}>This token is not in your wallet and no contract address was given.</Text>
+            <Btn label="Back" onPress={() => router.back()} />
+          </View>
+        </View>
+        <BottomNav />
       </View>
     );
   }
@@ -805,6 +812,7 @@ export default function TokenDetail() {
         : 'Live data unavailable — showing last known price';
 
   return (
+    <View style={styles.shell}>
     <KeyboardAvoidingView style={styles.root} behavior={Platform.OS === 'ios' ? 'padding' : 'height'} keyboardVerticalOffset={insets.top}>
       <ScrollView
         style={{ flex: 1 }}
@@ -818,10 +826,8 @@ export default function TokenDetail() {
           },
         ]}
       >
+        <AppHeader showBack />
         <View style={styles.head}>
-          <Pressable onPress={() => router.back()} hitSlop={8}>
-            <ChevronLeft size={22} color={COLORS.text} />
-          </Pressable>
           <View style={styles.headToken}>
             <TokenLogo chainId={chainId} address={address} symbol={sym} size={36} logoUrl={storeToken?.logoUrl} />
             <View style={styles.headTokenText}>
@@ -1062,7 +1068,7 @@ export default function TokenDetail() {
               <Text style={styles.discLabel}>On target hit</Text>
               <View style={styles.chips}>
                 <Pressable onPress={() => setAutoSell(true)} style={[styles.chipBtn, autoSell && autoSellAllowed && styles.chipBtnOn]}>
-                  <Text style={[styles.chipBtnText, autoSell && autoSellAllowed && styles.chipBtnTextOn]}>auto-sell to {exitLabel} (auto-sell)</Text>
+                  <Text style={[styles.chipBtnText, autoSell && autoSellAllowed && styles.chipBtnTextOn]}>{exitLabel} (auto-sell)</Text>
                 </Pressable>
                 <Pressable onPress={() => setAutoSell(false)} style={[styles.chipBtn, !autoSell && styles.chipBtnOn]}>
                   <Text style={[styles.chipBtnText, !autoSell && styles.chipBtnTextOn]}>Unlock to wallet (manual)</Text>
@@ -1210,7 +1216,6 @@ export default function TokenDetail() {
             <Text style={styles.iconLabel}>{watched ? 'Watching' : 'Watchlist'}</Text>
           </Pressable>
         </View>
-        <RiskNote />
 
         {/* Review sheet — opens from "Review & Lock". Confirming here
             opens the signing modal below (or the Circle PIN UI on Arc). */}
@@ -1264,6 +1269,8 @@ export default function TokenDetail() {
         />
       </ScrollView>
     </KeyboardAvoidingView>
+    <BottomNav />
+    </View>
   );
 }
 
@@ -1374,8 +1381,9 @@ const styles = StyleSheet.create({
   liveDot: { borderRadius: 999, height: 8, width: 8 },
   liveNote: { color: COLORS.textMuted, fontSize: 11, marginTop: 8 },
   liveNoteWarn: { color: COLORS.amber },
-  missing: { backgroundColor: COLORS.bg, flex: 1, gap: 12, justifyContent: 'center', padding: 16 },
+  missing: { backgroundColor: COLORS.bg, flex: 1, padding: 16 },
   missingBody: { color: COLORS.textMuted, fontSize: 12, lineHeight: 17 },
+  missingInner: { flex: 1, gap: 12, justifyContent: 'center' },
   mismatch: {
     backgroundColor: COLORS.amberSoft,
     borderRadius: 12,
@@ -1412,6 +1420,7 @@ const styles = StyleSheet.create({
   reviewValue: { color: '#fff', flexShrink: 1, fontSize: 12, fontWeight: '700', marginLeft: 12, textAlign: 'right' },
   root: { backgroundColor: COLORS.bg, flex: 1 },
   rsiLabel: { color: COLORS.textMuted, fontSize: 12, fontWeight: '700' },
+  shell: { backgroundColor: COLORS.bg, flex: 1 },
   sentence: { color: COLORS.text, fontSize: 14, fontWeight: '700', lineHeight: 20, marginTop: 14 },
   rsiRow: { alignItems: 'center', borderTopColor: COLORS.border, borderTopWidth: 1, flexDirection: 'row', justifyContent: 'space-between', marginTop: 8, paddingTop: 8 },
   rsiValue: { color: COLORS.text, fontSize: 12, fontWeight: '700' },

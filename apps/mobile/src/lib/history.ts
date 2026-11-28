@@ -12,7 +12,8 @@
  *     this, because the old code only knew the Etherscan path.
  *  2. Etherscan-family explorer APIs (BscScan / Etherscan / BaseScan /
  *     PolygonScan) for the other EVM chains. They need an API key —
- *     read ONLY from EXPO_PUBLIC_EXPLORER_API_KEY. Without a key the
+ *     the bundled EXPO_PUBLIC_EXPLORER_API_KEY, or a free key saved
+ *     on-device in Settings (getExplorerApiKeyAsync). Without a key the
  *     function returns an empty list with status 'no-key' and a clear
  *     message, NOT invented transactions. Etherscan API v2
  *     (`api.etherscan.io/v2/api?chainid=...`) is the documented
@@ -27,6 +28,7 @@
 import { getChain, type ChainConfig } from './chains';
 import { fetchSolanaHistory } from './solana';
 import { fetchDexScreenerToken } from './prices';
+import { kvGet } from './storage';
 
 export type TxKind = 'sent' | 'received' | 'swap' | 'lock' | 'unlock' | 'autosell' | 'other';
 export type TxStatus = 'confirmed' | 'pending' | 'failed';
@@ -191,6 +193,34 @@ export function getExplorerApiKey(): string | null {
   return v && v.length > 0 ? v : null;
 }
 
+/** On-device storage key for a user-saved Etherscan API key (Settings
+ *  writes it, getExplorerApiKeyAsync reads it). The key never leaves
+ *  the device and is never logged. */
+export const EXPLORER_API_KEY_STORAGE_KEY = 'stelix_explorer_api_key_v1';
+
+/** The explorer key, wherever it lives: the bundled
+ *  EXPO_PUBLIC_EXPLORER_API_KEY wins, then a key saved on-device in
+ *  Settings, then null. A stored key unlocks history on BNB, Base,
+ *  Ethereum and Polygon without a rebuild. */
+export async function getExplorerApiKeyAsync(): Promise<string | null> {
+  const env = getExplorerApiKey();
+  if (env) return env;
+  try {
+    const stored = await kvGet(EXPLORER_API_KEY_STORAGE_KEY);
+    const trimmed = stored?.trim();
+    return trimmed ? trimmed : null;
+  } catch {
+    return null;
+  }
+}
+
+/** True when an error string is the "no explorer key" failure from
+ *  fetchHistory — the History screen uses this to show the friendly
+ *  "add a key in Settings" hint instead of the bare error text. */
+export function isNoExplorerKeyError(error: string | null): boolean {
+  return !!error && error.startsWith('No explorer API key');
+}
+
 async function fetchWithTimeout(url: string, ms = 10_000): Promise<Response> {
   const ctrl = new AbortController();
   const t = setTimeout(() => ctrl.abort(), ms);
@@ -341,7 +371,7 @@ export async function fetchHistory(
       // below is tried next. Otherwise the Blockscout error is reported.
     }
   }
-  const apiKey = getExplorerApiKey();
+  const apiKey = await getExplorerApiKeyAsync();
   if (!apiKey) {
     return {
       chain,
@@ -350,7 +380,7 @@ export async function fetchHistory(
       status: lastBlockscoutError ? 'error' : 'no-key',
       error:
         lastBlockscoutError ??
-        `No explorer API key configured (EXPO_PUBLIC_EXPLORER_API_KEY). History on ${chain.name} needs a free Etherscan API key — no sample transactions are shown.`,
+        `No explorer API key configured. Add a free Etherscan API key in Settings to unlock transaction history on ${chain.name} — no sample transactions are shown.`,
       updatedAt: startedAt,
     };
   }

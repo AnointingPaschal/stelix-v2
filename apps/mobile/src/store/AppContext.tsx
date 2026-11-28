@@ -43,6 +43,14 @@ import {
 } from '../lib/wallet';
 import { kvGet, kvSet } from '../lib/storage';
 import { parseStoredSettings, SETTINGS_KEY, type AppSettings } from '../lib/settings';
+import {
+  getRunningVersion,
+  isNewerVersion,
+  shouldShowUpdate,
+  UPDATE_LAST_SHOWN_KEY,
+  type AppUpdate,
+} from '../lib/appUpdate';
+import UpdateModal from '../components/UpdateModal';
 
 /** Re-exported for screens that type against the store's settings. */
 export type { AppSettings };
@@ -230,6 +238,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
   const [adminSyncVersion, setAdminSyncVersion] = useState<number | null>(null);
   const [dismissedIds, setDismissedIds] = useState<number[]>([]);
   const [networkMode, setNetworkMode] = useState<NetworkMode>(null);
+  const [appUpdate, setAppUpdate] = useState<AppUpdate | null>(null);
   const [transactionActive, setTransactionActiveState] = useState(false);
   const chainRef = useRef(chain);
   useEffect(() => {
@@ -247,6 +256,33 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
   const setTransactionActive = useCallback((v: boolean) => {
     transactionActiveRef.current = v;
     setTransactionActiveState(v);
+  }, []);
+
+  /**
+   * App update prompt — on each new admin sync, if the sync carries a
+   * release newer than the running version, show the update modal per
+   * the throttle (at most once per 24h unless forced; see
+   * lib/appUpdate.ts). Fire-and-forget: a failure here must never break
+   * the sync. Dismissing records the show time, so the prompt stays
+   * quiet for 24h.
+   */
+  const maybeShowUpdate = useCallback(async (latest: AppUpdate | null) => {
+    if (!latest) return;
+    try {
+      const running = await getRunningVersion();
+      if (!isNewerVersion(running, latest.version)) return;
+      const raw = await kvGet(UPDATE_LAST_SHOWN_KEY);
+      const lastShown = raw !== null && raw !== '' && Number.isFinite(Number(raw)) ? Number(raw) : null;
+      if (!shouldShowUpdate(running, latest, lastShown)) return;
+      setAppUpdate(latest);
+    } catch {
+      // Never break the sync over the update prompt.
+    }
+  }, []);
+
+  const dismissUpdate = useCallback(() => {
+    void kvSet(UPDATE_LAST_SHOWN_KEY, String(Date.now()));
+    setAppUpdate(null);
   }, []);
 
   /**
@@ -281,6 +317,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
       setAdminTokens(data.tokens);
       setAdminTokensSynced(true);
       setMaintenance(data.maintenance);
+      void maybeShowUpdate(data.appUpdate);
       // Network mode (admin-controlled testnet/mainnet switch). A flip
       // while a transaction is in progress is DEFERRED — the mode and
       // the chain switch wait until the flow finishes or is cancelled
@@ -340,7 +377,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     } catch {
       // Persistence read failed — keep the current chain list as-is.
     }
-  }, []);
+  }, [maybeShowUpdate]);
 
   /** Manual refresh / network-picker open: same sync, now. */
   const refreshChains = useCallback(async () => {
@@ -762,7 +799,12 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
      refreshBalances, refreshLocks, refreshAll, resetState],
   );
 
-  return <Ctx.Provider value={value}>{children}</Ctx.Provider>;
+  return (
+    <Ctx.Provider value={value}>
+      {children}
+      <UpdateModal update={appUpdate} onDismiss={dismissUpdate} />
+    </Ctx.Provider>
+  );
 }
 
 export function useApp(): AppState {

@@ -17,6 +17,13 @@
  * - Prices come from prices.ts (DexScreener/CoinGecko) and are labelled
  *   with source + timestamp; a token with no live price has priceUsd null
  *   and contributes $0 to the displayed total (it is still listed).
+ *   The same sources populate TokenBalance.change24h (DexScreener h24 /
+ *   CoinGecko usd_24h_change); null when unknown, never invented.
+ * - Default stablecoins (chain.stablecoins: USDT + USDC, verified
+ *   addresses only) are listed alongside native + imported, 0-balance
+ *   rows included, like registry rows. On-chain holdings the user never
+ *   imported are auto-discovered (Blockscout on Arc, Etherscan tokenlist
+ *   elsewhere) and persisted as `discovered` imports.
  * - Solana: SOL + SPL tokens via @solana/web3.js (see lib/solana.ts).
  *   The caller passes the wallet's derived Solana address (stored in the
  *   wallet meta) as `address`; the EVM address is meaningless on Solana.
@@ -26,6 +33,8 @@ import { ethers } from 'ethers';
 import { EVM_NATIVE_RPC_DECIMALS, getChain, type ChainConfig } from './chains';
 import { fetchDexScreenerToken, fetchMajorPrices } from './prices';
 import { fetchSolanaBalances } from './solana';
+import { getExplorerApiKeyAsync } from './history';
+import { isTokenHidden, loadHiddenTokens } from './importToken';
 import { kvDelete, kvGet, kvSet } from './storage';
 
 export const ERC20_MIN_ABI = [
@@ -47,6 +56,10 @@ export interface ImportedToken {
   /** True when this row came from the admin token registry and the admin
    *  marked it verified — My Assets shows the verified badge. */
   verified?: boolean;
+  /** True when this row was auto-discovered on-chain (see discoverTokens)
+   *  rather than imported by the user — it persists in the imported list
+   *  so it can be toggled off in the import modal like any import. */
+  discovered?: boolean;
   /** Admin-set display order (registry rows only); user-imported rows
    *  have none and sort after registry rows, in their saved order. */
   sortOrder?: number;
@@ -64,6 +77,12 @@ export interface TokenBalance {
   priceUsd: number | null;
   /** Alias of priceUsd, kept so existing callers reading `.price` keep working. */
   price: number | null;
+  /** 24h price change in percent, from the same source as the price
+   *  (DexScreener h24 / CoinGecko usd_24h_change). Null = unknown —
+   *  never invented. Optional (not required) so existing TokenBalance
+   *  literals in other suites keep compiling; fetchBalances always
+   *  sets it (null when no source reports a change). */
+  change24h?: number | null;
   priceSource: 'dexscreener' | 'coingecko' | 'unavailable';
   priceUpdatedAt: number | null;
   coingeckoId?: string;
@@ -122,6 +141,303 @@ export function mergeRegistryTokens(
     if (!byAddress.has(key)) byAddress.set(key, t);
   }
   return [...byAddress.values()];
+}
+
+/** P&L on a holding's current value from its 24h change.
+ *  value = balance * price; the position 24h ago was worth
+ *  value / (1 + change/100), so P&L = value − value/(1+change/100)
+ *  = value * change / (100 + change). Null when the change is unknown
+ *  or the -100% edge would divide by zero — never an invented number. */
+export function calcPnl(valueUsd: number, change24h: number | null | undefined): number | null {
+  if (change24h === null || change24h === undefined || !Number.isFinite(change24h)) return null;
+  if (100 + change24h === 0) return null;
+  return (valueUsd * change24h) / (100 + change24h);
+}
+
+/** One holding for the portfolio P&L total: its current USD value, or
+ *  null when it has no live price (it cannot contribute a P&L). */
+export interface PnlHolding {
+  valueUsd: number | null;
+  change24h: number | null | undefined;
+}
+
+/** Today's P&L for the whole portfolio: the sum of calcPnl over every
+ *  holding with a price and a 24h change, plus the return on the
+ *  starting value of exactly those holdings — pnl / (value − pnl).
+ *  Null pnl/pct when no holding has price data; never an invented
+ *  number. Pure, unit-tested. */
+export function calcPortfolioPnl(holdings: PnlHolding[]): { pnl: number | null; pct: number | null } {
+  let pnl = 0;
+  let value = 0;
+  let any = false;
+  for (const h of holdings) {
+    if (h.valueUsd === null) continue;
+    const p = calcPnl(h.valueUsd, h.change24h);
+    if (p === null) continue;
+    any = true;
+    pnl += p;
+    value += h.valueUsd;
+  }
+  if (!any) return { pnl: null, pct: null };
+  const start = value - pnl;
+  return { pnl, pct: start === 0 ? null : (pnl / start) * 100 };
+}
+
+// ---------------------------------------------------------------------------
+// Auto-discovery — on-chain holdings the user never imported.
+// Silent by design: no key / endpoint down / non-EVM chain returns []
+// with no error and no user-facing text.
+// ---------------------------------------------------------------------------
+
+/** A token found on-chain that the user never imported. */
+export interface DiscoveredToken {
+  chainId: string;
+  address: string;
+  symbol: string;
+  name: string;
+  decimals: number;
+  logoUrl?: string | null;
+}
+
+/** Merge discovered tokens into an already-merged (registry + imported)
+ *  list for one chain. Precedence: registry wins, then imported, then
+ *  discovered — a discovered address already listed is dropped, never
+ *  duplicated. Discovered rows are marked `discovered: true` so they
+ *  persist in the imported list and can be toggled off. Pure, unit-tested. */
+export function mergeDiscoveredTokens(
+  imported: ImportedToken[],
+  discovered: DiscoveredToken[],
+  chainId: string,
+): ImportedToken[] {
+  const out = [...imported];
+  const seen = new Set(
+    imported.filter((t) => t.chainId === chainId).map((t) => t.address.toLowerCase()),
+  );
+  for (const d of discovered) {
+    if (d.chainId !== chainId) continue;
+    const key = d.address.toLowerCase();
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push({
+      chainId,
+      address: d.address,
+      symbol: d.symbol,
+      name: d.name,
+      decimals: d.decimals,
+      logoUrl: d.logoUrl ?? null,
+      discovered: true,
+    });
+  }
+  return out;
+}
+
+async function fetchWithTimeout(url: string, ms = 8000): Promise<Response> {
+  const ctrl = new AbortController();
+  const t = setTimeout(() => ctrl.abort(), ms);
+  try {
+    return await fetch(url, { signal: ctrl.signal });
+  } finally {
+    clearTimeout(t);
+  }
+}
+
+/** Pure parser for a Blockscout v2 `/tokens?type=ERC-20` response:
+ *  items are { token: { address, symbol, name, decimals }, value }
+ *  where value is the raw (unscaled) balance — only balance > 0 rows
+ *  are returned. */
+export function parseBlockscoutTokenList(json: unknown): DiscoveredToken[] {
+  const items: unknown[] = Array.isArray((json as { items?: unknown } | null)?.items)
+    ? ((json as { items: unknown[] }).items as unknown[])
+    : [];
+  const out: DiscoveredToken[] = [];
+  for (const item of items) {
+    const raw = item as {
+      token?: { address?: string; symbol?: string; name?: string; decimals?: string | number };
+      value?: string;
+    };
+    const address = raw?.token?.address;
+    if (!address || !/^0x[0-9a-fA-F]{40}$/.test(address)) continue;
+    let balanceRaw = 0n;
+    try {
+      balanceRaw = BigInt(raw?.value ?? '0');
+    } catch {
+      continue;
+    }
+    if (balanceRaw <= 0n) continue;
+    const symbol = raw.token?.symbol ?? `${address.slice(0, 4)}…${address.slice(-4)}`;
+    out.push({
+      chainId: '',
+      address,
+      symbol,
+      name: raw.token?.name ?? symbol,
+      decimals: Number(raw.token?.decimals ?? 18),
+    });
+  }
+  return out;
+}
+
+/** Pure parser for an Etherscan-family `tokenlist` response: the
+ *  contracts the wallet holds, with their on-chain metadata. Balance
+ *  is confirmed separately (balanceOf) — the list alone is not proof
+ *  of a current holding. */
+export function parseEtherscanTokenList(json: unknown): Omit<DiscoveredToken, 'chainId'>[] {
+  const result: unknown[] = Array.isArray((json as { result?: unknown } | null)?.result)
+    ? ((json as { result: unknown[] }).result as unknown[])
+    : [];
+  const seen = new Set<string>();
+  const out: Omit<DiscoveredToken, 'chainId'>[] = [];
+  for (const r of result) {
+    const row = r as {
+      contractAddress?: string;
+      tokenSymbol?: string;
+      tokenName?: string;
+      tokenDecimal?: string;
+    };
+    const address = row?.contractAddress;
+    if (!address || !/^0x[0-9a-fA-F]{40}$/.test(address)) continue;
+    const key = address.toLowerCase();
+    if (seen.has(key)) continue;
+    seen.add(key);
+    const symbol = row.tokenSymbol ?? `${address.slice(0, 4)}…${address.slice(-4)}`;
+    out.push({
+      address,
+      symbol,
+      name: row.tokenName ?? symbol,
+      decimals: Number(row.tokenDecimal ?? 18),
+    });
+  }
+  return out;
+}
+
+/** Pure parser for an Etherscan-family `tokentx` response: the unique
+ *  token contracts the wallet has ever transacted with (a token sold
+ *  to zero still appears here — balanceOf filters it out later). */
+export function parseEtherscanTokenTx(json: unknown): string[] {
+  const result: unknown[] = Array.isArray((json as { result?: unknown } | null)?.result)
+    ? ((json as { result: unknown[] }).result as unknown[])
+    : [];
+  const seen = new Set<string>();
+  const out: string[] = [];
+  for (const r of result) {
+    const address = (r as { contractAddress?: string })?.contractAddress;
+    if (!address || !/^0x[0-9a-fA-F]{40}$/.test(address)) continue;
+    const key = address.toLowerCase();
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push(address);
+  }
+  return out;
+}
+
+export interface DiscoveryDeps {
+  fetchFn?: (url: string, ms?: number) => Promise<Response>;
+  getApiKey?: () => Promise<string | null>;
+  balanceOf?: (tokenAddress: string) => Promise<bigint>;
+  resolveMetadata?: (tokenAddress: string) => Promise<{ symbol: string; name: string; decimals: number }>;
+}
+
+/** Discover on-chain ERC-20 holdings the user never imported.
+ *  Blockscout v2 (keyless) for Arc testnet/mainnet; Etherscan-family
+ *  `tokenlist` (fallback: `tokentx` → unique contracts → balanceOf)
+ *  for other EVM chains, using the explorer key from
+ *  getExplorerApiKeyAsync(). Only balance > 0. Returns [] on any
+ *  failure, missing key, or non-EVM chain — never throws. */
+export async function discoverTokens(
+  chain: ChainConfig,
+  address: string,
+  deps: DiscoveryDeps = {},
+): Promise<DiscoveredToken[]> {
+  if (chain.kind !== 'evm' || chain.chainId === null || !ethers.isAddress(address)) return [];
+  const fetchFn = deps.fetchFn ?? fetchWithTimeout;
+  try {
+    if (chain.id === 'arc' || chain.id === 'arc-mainnet') {
+      const res = await fetchFn(
+        `${chain.explorerUrl.replace(/\/$/, '')}/api/v2/addresses/${address}/tokens?type=ERC-20`,
+      );
+      if (!res.ok) return [];
+      return parseBlockscoutTokenList(await res.json()).map((t) => ({ ...t, chainId: chain.id }));
+    }
+    const apiKey = deps.getApiKey ? await deps.getApiKey() : await getExplorerApiKeyAsync();
+    if (!apiKey || !chain.explorerApiUrl) return [];
+    const provider = getProvider(chain);
+    const balanceOf =
+      deps.balanceOf ??
+      (async (tokenAddress: string) => {
+        const contract = new ethers.Contract(tokenAddress, ERC20_MIN_ABI, provider);
+        return (await contract.balanceOf(address)) as bigint;
+      });
+    const listRes = await fetchFn(
+      `${chain.explorerApiUrl}?module=account&action=tokenlist&address=${address}&apikey=${apiKey}`,
+    );
+    if (listRes.ok) {
+      const candidates = parseEtherscanTokenList(await listRes.json());
+      if (candidates.length > 0) {
+        const out: DiscoveredToken[] = [];
+        for (const c of candidates) {
+          try {
+            if ((await balanceOf(c.address)) > 0n) out.push({ ...c, chainId: chain.id });
+          } catch {
+            continue;
+          }
+        }
+        return out;
+      }
+      // tokenlist answered but listed nothing usable — fall through to tokentx.
+    }
+    const txRes = await fetchFn(
+      `${chain.explorerApiUrl}?module=account&action=tokentx&address=${address}&page=1&offset=100&sort=desc&apikey=${apiKey}`,
+    );
+    if (!txRes.ok) return [];
+    const contracts = parseEtherscanTokenTx(await txRes.json());
+    const resolve = deps.resolveMetadata ?? ((a: string) => resolveTokenMetadata(chain, a));
+    const out: DiscoveredToken[] = [];
+    for (const contract of contracts) {
+      try {
+        if ((await balanceOf(contract)) <= 0n) continue;
+        const meta = await resolve(contract);
+        out.push({ chainId: chain.id, address: contract, symbol: meta.symbol, name: meta.name, decimals: meta.decimals });
+      } catch {
+        continue;
+      }
+    }
+    return out;
+  } catch {
+    return [];
+  }
+}
+
+/** Default stablecoins for a chain (chain.stablecoins, all addresses
+ *  verified — see chains.ts), resolved on-chain for symbol/name/decimals
+ *  so a wrong registry entry can never invent a row. Skipped when the
+ *  token is already listed, when its metadata cannot be read, or when
+ *  it IS the native asset (Arc: the native row already is USDC).
+ *  Rows are marked verified (the address was verified). */
+export async function resolveDefaultStables(
+  chain: ChainConfig,
+  already: ImportedToken[],
+): Promise<ImportedToken[]> {
+  const stables = chain.stablecoins;
+  if (!stables) return [];
+  const out: ImportedToken[] = [];
+  for (const addr of [stables.USDT, stables.USDC]) {
+    if (!addr) continue;
+    if (already.some((t) => t.address.toLowerCase() === addr.toLowerCase())) continue;
+    try {
+      const meta = await resolveTokenMetadata(chain, addr);
+      if (meta.symbol === chain.nativeSymbol) continue;
+      out.push({
+        chainId: chain.id,
+        address: addr,
+        symbol: meta.symbol,
+        name: meta.name,
+        decimals: meta.decimals,
+        verified: true,
+      });
+    } catch {
+      continue; // unreadable stable: skipped, never zero-filled with guessed metadata
+    }
+  }
+  return out;
 }
 
 export interface BalancesResult {
@@ -394,6 +710,7 @@ async function fetchNativeBalance(
     locked: 0,
     priceUsd: null,
     price: null,
+    change24h: null,
     priceSource: 'unavailable',
     priceUpdatedAt: null,
     isSpam: false,
@@ -419,6 +736,7 @@ async function fetchErc20Balance(
     locked: 0,
     priceUsd: null,
     price: null,
+    change24h: null,
     priceSource: 'unavailable',
     priceUpdatedAt: null,
     coingeckoId: token.coingeckoId,
@@ -472,7 +790,8 @@ export async function fetchBalances(
     try {
       const sol = await fetchSolanaBalances(address);
       const tokens: TokenBalance[] = [];
-      const solPrice = (await fetchMajorPrices(['solana']))?.solana?.price ?? null;
+      const solCg = (await fetchMajorPrices(['solana']))?.solana;
+      const solPrice = solCg?.price ?? null;
       tokens.push({
         symbol: chain.nativeSymbol,
         name: chain.nativeName,
@@ -484,6 +803,7 @@ export async function fetchBalances(
         locked: 0,
         priceUsd: solPrice,
         price: solPrice,
+        change24h: solCg?.change24h ?? null,
         priceSource: solPrice !== null ? 'coingecko' : 'unavailable',
         priceUpdatedAt: solPrice !== null ? Date.now() : null,
         isSpam: false,
@@ -504,6 +824,7 @@ export async function fetchBalances(
             locked: 0,
             priceUsd: ds?.priceUsd ?? null,
             price: ds?.priceUsd ?? null,
+            change24h: ds?.change24h ?? null,
             priceSource: ds?.priceUsd ? 'dexscreener' : 'unavailable',
             priceUpdatedAt: ds?.updatedAt ?? null,
             logoUrl: null,
@@ -533,11 +854,41 @@ export async function fetchBalances(
     return { chain, address, tokens: [], totalUsd: 0, loading: false, error: 'Invalid wallet address.', updatedAt: startedAt };
   }
   const provider = getProvider(chain);
-  const imported = mergeRegistryTokens(
-    importedTokens ?? (await loadImportedTokens(address)),
-    registryTokens ?? [],
-    chain.id,
+  const rawImported = importedTokens ?? (await loadImportedTokens(address));
+  const imported = mergeRegistryTokens(rawImported, registryTokens ?? [], chain.id);
+  // Default stablecoins (USDT + USDC, verified addresses only) and
+  // auto-discovery run BEFORE balances are read, so the new rows get
+  // balances and prices in the same pass. Both are silent on failure.
+  const stables = await resolveDefaultStables(chain, imported);
+  const withStables = [...imported, ...stables];
+  // Hidden-set hook (the ONLY discovery-path change): a token the user
+  // toggled off in the import screen is skipped here, so it cannot
+  // reappear on the next refresh. Derived rows (registry, default
+  // stables) never reach this path — they cannot be hidden.
+  const hidden = await loadHiddenTokens(address);
+  const discovered = (await discoverTokens(chain, address)).filter(
+    (d) => !isTokenHidden(hidden, d.chainId, d.address),
   );
+  const allImported = mergeDiscoveredTokens(withStables, discovered, chain.id);
+  // Persist newly discovered tokens in the per-wallet imported list so
+  // they survive reloads and can be toggled off in the import modal.
+  // Registry rows and default stables are NOT persisted — they are
+  // derived on every load from the registry / chain config.
+  const newlyDiscovered = allImported.filter(
+    (t) =>
+      t.discovered &&
+      !rawImported.some(
+        (r) => r.chainId === chain.id && r.address.toLowerCase() === t.address.toLowerCase(),
+      ),
+  );
+  if (newlyDiscovered.length > 0) {
+    try {
+      await saveImportedTokens([...rawImported, ...newlyDiscovered], address);
+    } catch {
+      // Best-effort: the rows are still shown this load.
+    }
+  }
+  const importedList = allImported;
   let native: TokenBalance;
   try {
     native = await fetchNativeBalance(chain, provider, address);
@@ -553,7 +904,7 @@ export async function fetchBalances(
     };
   }
   const erc20 = await Promise.all(
-    imported.map(async (t) => {
+    importedList.map(async (t) => {
       try {
         return await fetchErc20Balance(chain, provider, address, t);
       } catch {
@@ -576,6 +927,7 @@ export async function fetchBalances(
         if (ds?.priceUsd) {
           t.priceUsd = ds.priceUsd;
           t.price = ds.priceUsd;
+          t.change24h = ds.change24h ?? null;
           t.priceSource = 'dexscreener';
           t.priceUpdatedAt = ds.updatedAt;
           return;
@@ -584,8 +936,11 @@ export async function fetchBalances(
       if (cgId && cg[cgId]?.price !== null) {
         t.priceUsd = cg[cgId].price;
         t.price = cg[cgId].price;
+        t.change24h = cg[cgId].change24h ?? null;
         t.priceSource = 'coingecko';
         t.priceUpdatedAt = cg[cgId].updatedAt;
+      } else {
+        t.change24h = null;
       }
     }),
   );

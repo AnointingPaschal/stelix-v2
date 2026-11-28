@@ -71,6 +71,13 @@ export type ChainKind = 'evm' | 'solana' | 'pi';
  */
 export const EVM_NATIVE_RPC_DECIMALS = 18;
 
+export interface ChainStablecoins {
+  /** USDT contract address on this chain (null = no verified USDT here). */
+  USDT: string | null;
+  /** USDC contract address on this chain (null = no verified USDC here). */
+  USDC: string | null;
+}
+
 export interface ChainConfig {
   id: string;
   name: string;
@@ -89,6 +96,13 @@ export interface ChainConfig {
   exitStablecoinLabel: string; // exact in-app label, e.g. "auto-sell to USDT"
   /** Exit stablecoin contract address on this chain (null = confirm before use). */
   exitStablecoinAddress: string | null;
+  /** Default stablecoins shown in My Assets (USDT + USDC) on this chain.
+   *  Every address here was verified on the official explorer (symbol +
+   *  decimals read on-chain or from the explorer token page) — null =
+   *  no verified contract on this chain, never a guessed address.
+   *  Absent = not applicable (non-EVM chains: Solana auto-discovers SPL
+   *  tokens from the wallet's token accounts; Pi has no stablecoins). */
+  stablecoins?: ChainStablecoins;
   rpcUrl: string;
   rpcUrls: string[];
   explorerUrl: string;
@@ -177,6 +191,9 @@ export const CHAINS: ChainConfig[] = [
     // native-USDC precompile address reported in Arc testnet guides;
     // TO-CONFIRM on explorer.testnet.arc.io before any mainnet use.
     exitStablecoinAddress: '0x3600000000000000000000000000000000000000',
+    // No verified USDT on Arc testnet; USDC is the native gas asset
+    // (same 0x3600… precompile as the exit stablecoin).
+    stablecoins: { USDT: null, USDC: '0x3600000000000000000000000000000000000000' },
     rpcUrl: rpcFromEnv('arc', 'https://rpc.testnet.arc.io'),
     rpcUrls: [
       'https://rpc.testnet.arc.io',
@@ -212,6 +229,8 @@ export const CHAINS: ChainConfig[] = [
     // Arc mainnet USDC — same well-known native-USDC precompile address
     // as testnet (0x3600...0000).
     exitStablecoinAddress: '0x3600000000000000000000000000000000000000',
+    // No verified USDT on Arc mainnet; USDC is the native gas asset.
+    stablecoins: { USDT: null, USDC: '0x3600000000000000000000000000000000000000' },
     rpcUrl: rpcFromEnv('arc-mainnet', 'https://rpc.mainnet.arc.io', 'arc_mainnet'),
     rpcUrls: ['https://rpc.mainnet.arc.io'],
     explorerUrl: 'https://explorer.arc.io',
@@ -245,6 +264,9 @@ export const CHAINS: ChainConfig[] = [
     exitStablecoin: 'USDT',
     exitStablecoinLabel: 'auto-sell to USDT',
     exitStablecoinAddress: '0x55d398326f99059fF775485246999027B3197955',
+    // BNB USDT (18 dec) + USDC (18 dec) — re-verified on-chain 2026-11-28
+    // (symbol()/decimals() via eth_call on bsc-dataseed).
+    stablecoins: { USDT: '0x55d398326f99059fF775485246999027B3197955', USDC: '0x8AC76a51cc950d9822D68b83fE1Ad97B32Cd580d' },
     rpcUrl: rpcFromEnv('bnb', 'https://bsc-dataseed.bnbchain.org'),
     rpcUrls: [
       'https://bsc-dataseed.bnbchain.org',
@@ -273,6 +295,8 @@ export const CHAINS: ChainConfig[] = [
     // BUSD test token on BNB Testnet — verified on testnet BscScan
     // 2026-11-27, 18 decimals. A test token, not issuer-backed BUSD.
     exitStablecoinAddress: '0x78867BbEeF44f2326bF8DDd1941a4439382EF2A7',
+    // No official USDT/USDC on BNB Testnet (exit is the BUSD test token).
+    stablecoins: { USDT: null, USDC: null },
     rpcUrl: 'https://bsc-testnet-dataseed.bnbchain.org',
     rpcUrls: ['https://bsc-testnet-dataseed.bnbchain.org', 'https://bsc-testnet.bnbchain.org'],
     explorerUrl: 'https://testnet.bscscan.com',
@@ -304,6 +328,9 @@ export const CHAINS: ChainConfig[] = [
     // The old value …bd029029 differs in the last 7 chars and is not a
     // real contract — never use it.
     exitStablecoinAddress: '0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913',
+    // Base native USDC — verified on Basescan (USDC, 6 dec). No verified
+    // native USDT address on Base — null, never a guessed bridged address.
+    stablecoins: { USDT: null, USDC: '0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913' },
     rpcUrl: rpcFromEnv('base', 'https://mainnet.base.org'),
     rpcUrls: ['https://mainnet.base.org', 'https://base.llamarpc.com'],
     explorerUrl: 'https://basescan.org',
@@ -326,6 +353,8 @@ export const CHAINS: ChainConfig[] = [
     exitStablecoin: 'USDC',
     exitStablecoinLabel: 'auto-sell to USDC',
     exitStablecoinAddress: '0x036CbD53842c5426634e7929541eC2318f3dCF7e',
+    // Base Sepolia USDC — verified 2026-11-27 on sepolia.basescan.org (6 dec).
+    stablecoins: { USDT: null, USDC: '0x036CbD53842c5426634e7929541eC2318f3dCF7e' },
     rpcUrl: 'https://sepolia.base.org',
     rpcUrls: ['https://sepolia.base.org', 'https://base-sepolia-rpc.publicnode.com'],
     explorerUrl: 'https://sepolia.basescan.org',
@@ -351,6 +380,8 @@ export const CHAINS: ChainConfig[] = [
     exitStablecoin: 'USDT',
     exitStablecoinLabel: 'auto-sell to USDT',
     exitStablecoinAddress: '0xdAC17F958D2ee523a2206206994597C13D831ec7',
+    // ETH USDT (6 dec, TetherToken on Etherscan) + USDC (6 dec).
+    stablecoins: { USDT: '0xdAC17F958D2ee523a2206206994597C13D831ec7', USDC: '0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48' },
     rpcUrl: rpcFromEnv('ethereum', 'https://eth.llamarpc.com'),
     rpcUrls: ['https://eth.llamarpc.com', 'https://ethereum.publicnode.com'],
     explorerUrl: 'https://etherscan.io',
@@ -373,6 +404,8 @@ export const CHAINS: ChainConfig[] = [
     exitStablecoin: 'USDC',
     exitStablecoinLabel: 'auto-sell to USDC',
     exitStablecoinAddress: '0x1c7D4B196Cb0C7B01d743Fbc6116a902379C7238',
+    // Ethereum Sepolia USDC — verified 2026-11-27 (6 dec). No USDT on Sepolia.
+    stablecoins: { USDT: null, USDC: '0x1c7D4B196Cb0C7B01d743Fbc6116a902379C7238' },
     rpcUrl: 'https://rpc.sepolia.org',
     rpcUrls: ['https://rpc.sepolia.org', 'https://ethereum-sepolia-rpc.publicnode.com'],
     explorerUrl: 'https://sepolia.etherscan.io',
@@ -401,6 +434,8 @@ export const CHAINS: ChainConfig[] = [
     exitStablecoin: 'USDT',
     exitStablecoinLabel: 'auto-sell to USDT',
     exitStablecoinAddress: '0xc2132D05D31c914a87C6611C10748AEb04B58e8F',
+    // Polygon USDT + USDC — verified 2026-11-27 on Polygonscan (both 6 dec).
+    stablecoins: { USDT: '0xc2132D05D31c914a87C6611C10748AEb04B58e8F', USDC: '0x3c499c542cEF5E3811e1192ce70d8cC03d5c3359' },
     rpcUrl: rpcFromEnv('polygon', 'https://polygon-rpc.com'),
     rpcUrls: ['https://polygon-rpc.com', 'https://polygon.llamarpc.com'],
     explorerUrl: 'https://polygonscan.com',
@@ -423,6 +458,8 @@ export const CHAINS: ChainConfig[] = [
     exitStablecoin: 'USDC',
     exitStablecoinLabel: 'auto-sell to USDC',
     exitStablecoinAddress: '0x41E94Eb019C0762f9Bfcf9Fb1E58725BfB0e7582',
+    // Polygon Amoy USDC — verified 2026-11-27 (6 dec). No USDT on Amoy.
+    stablecoins: { USDT: null, USDC: '0x41E94Eb019C0762f9Bfcf9Fb1E58725BfB0e7582' },
     rpcUrl: 'https://rpc-amoy.polygon.technology',
     rpcUrls: ['https://rpc-amoy.polygon.technology', 'https://polygon-amoy.drpc.org'],
     explorerUrl: 'https://amoy.polygonscan.com',
@@ -472,6 +509,10 @@ export const CHAINS: ChainConfig[] = [
     // https://rpc.plasma.to (symbol USDT0, 6 decimals). USDC is the
     // second verified stablecoin (token0 of the USDC/USDT0 pool).
     exitStablecoinAddress: '0xB8CE59FC3717ada4C02eaDF9682A9e934F625ebb',
+    // Plasma USDT0 (symbol USDT0, 6 dec) + USDC (6 dec) — re-verified
+    // on-chain 2026-11-28 (symbol()/decimals() via eth_call on rpc.plasma.to).
+    // The USDT slot holds USDT0: Tether's Plasma stablecoin, not plain USDT.
+    stablecoins: { USDT: '0xB8CE59FC3717ada4C02eaDF9682A9e934F625ebb', USDC: '0x2d661c89d812261039af9764eceaaee884f5f67f' },
     rpcUrl: rpcFromEnv('plasma', 'https://rpc.plasma.to'),
     rpcUrls: ['https://rpc.plasma.to'],
     explorerUrl: 'https://plasmascan.to',
@@ -507,6 +548,8 @@ export const CHAINS: ChainConfig[] = [
     // on testnet.plasmascan.to. Same for the router: no verified
     // Uniswap router on testnet yet.
     exitStablecoinAddress: null,
+    // No verified stablecoin on Plasma testnet yet.
+    stablecoins: { USDT: null, USDC: null },
     rpcUrl: 'https://testnet-rpc.plasma.to',
     rpcUrls: ['https://testnet-rpc.plasma.to'],
     explorerUrl: 'https://testnet.plasmascan.to',

@@ -3,7 +3,7 @@
     "android": {
       "adaptiveIcon": {
         "backgroundColor": "#0B1220",
-        "foregroundImage": "./assets/icon.png"
+        "foregroundImage": "./assets/adaptive-icon.png"
       },
       "package": "app.stelix.wallet",
       "predictiveBackGestureEnabled": false
@@ -11,7 +11,7 @@
     "experiments": {
       "typedRoutes": true
     },
-    "icon": "./assets/icon.png",
+    "icon": "./assets/adaptive-icon.png",
     "ios": {
       "bundleIdentifier": "app.stelix.wallet",
       "supportsTablet": true

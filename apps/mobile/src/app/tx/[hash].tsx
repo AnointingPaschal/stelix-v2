@@ -11,10 +11,11 @@
 import { useEffect, useMemo, useState } from 'react';
 import { Linking, Pressable, ScrollView, StyleSheet, Text, View, useWindowDimensions } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
-import { router, useLocalSearchParams } from 'expo-router';
+import { useLocalSearchParams } from 'expo-router';
 import * as Clipboard from 'expo-clipboard';
-import { ArrowDown, ArrowUp, Check, ChevronLeft, Copy, ExternalLink } from 'lucide-react-native';
+import { ArrowDown, ArrowUp, Check, Copy, ExternalLink } from 'lucide-react-native';
 import { COLORS } from '../../theme';
+import { AppHeader, BottomNav } from '../../components/AppShell';
 import { useApp } from '../../store/AppContext';
 import { EVM_NATIVE_RPC_DECIMALS, getChain } from '../../lib/chains';
 import { fmtDateTime, fmtNum, fmtUsd, shortAddress } from '../../lib/format';
@@ -137,6 +138,7 @@ export default function TransactionDetail() {
   }
 
   return (
+    <View style={styles.shell}>
     <ScrollView
       style={styles.root}
       contentContainerStyle={[
@@ -148,10 +150,9 @@ export default function TransactionDetail() {
         },
       ]}
     >
+      <AppHeader showBack />
       <View style={styles.head}>
-        <Pressable onPress={() => router.back()} hitSlop={8} accessibilityLabel="Back">
-          <ChevronLeft size={22} color={COLORS.text} />
-        </Pressable>
+        <View style={{ width: 22 }} />
         <Text style={styles.title} numberOfLines={1} adjustsFontSizeToFit minimumFontScale={0.85}>
           Transaction Details
         </Text>
@@ -246,6 +247,8 @@ export default function TransactionDetail() {
         <Text style={styles.copyBtnText}>{copied === 'hash' ? 'Hash copied' : 'Copy transaction hash'}</Text>
       </Pressable>
     </ScrollView>
+    <BottomNav />
+    </View>
   );
 }
 
@@ -308,6 +311,7 @@ const styles = StyleSheet.create({
     gap: 10,
     paddingVertical: 13,
   },
+  shell: { backgroundColor: COLORS.bg, flex: 1 },
   title: { color: COLORS.text, fontSize: 18, fontWeight: '800' },
   usd: { color: COLORS.textMuted, fontSize: 14, marginTop: 4 },
   value: { color: COLORS.text, fontSize: 13, fontWeight: '600', textAlign: 'right' },

@@ -457,6 +457,15 @@ export const api = {
   async publishAnnouncement(data: { title: string; message: string; audience: string; expiresAt?: string | null }): Promise<{ ok: boolean; id: number | null }> {
     return post('/api/admin/announcements', data)
   },
+  /** App releases — the latest published row is served to the wallet in
+   *  /api/sync as `appUpdate` and shown as an update prompt. force =
+   *  users cannot dismiss the prompt. */
+  async getReleases(): Promise<{ releases: { id: number; version: string; notes: string | null; url: string | null; force: number; created_at: string }[] }> {
+    return live('/api/admin/releases')
+  },
+  async publishRelease(data: { version: string; notes?: string | null; url: string; force: boolean }): Promise<{ ok: boolean; id: number | null }> {
+    return post('/api/admin/releases', data)
+  },
   async deleteAnnouncement(id: number): Promise<{ ok: boolean }> {
     const r = await fetch(`/api/admin/announcements?id=${id}`, { method: 'DELETE', credentials: 'same-origin' })
     if (!r.ok) throw new Error(`Delete failed: ${r.status}`)

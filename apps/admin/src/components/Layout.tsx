@@ -2,7 +2,7 @@ import { useEffect, useState } from 'react'
 import { NavLink, Outlet, useLocation, useNavigate } from 'react-router-dom'
 import {
   Activity, ChevronsLeft, ChevronsRight, Coins, KeyRound, LayoutDashboard, Link2, LogOut,
-  Megaphone, Menu, Percent, Code2, Radar, Rocket, ScrollText, Search, Settings, Settings2, ShieldCheck, Users, Wallet, Wrench, X,
+  Megaphone, Menu, Package, Percent, Code2, Radar, Rocket, ScrollText, Search, Settings, Settings2, ShieldCheck, Users, Wallet, Wrench, X,
 } from 'lucide-react'
 import type { LucideIcon } from 'lucide-react'
 import { api } from '../lib/api'
@@ -19,6 +19,7 @@ const links: { to: string; label: string; icon: LucideIcon }[] = [
   { to: '/keeper', label: 'Keeper Monitor', icon: Activity },
   { to: '/fees', label: 'Fees and Limits', icon: Percent },
   { to: '/announcements', label: 'Announcements', icon: Megaphone },
+  { to: '/releases', label: 'Releases', icon: Package },
   { to: '/config', label: 'App Config and Releases', icon: Settings },
   { to: '/maintenance', label: 'Maintenance Mode', icon: Wrench },
   { to: '/support', label: 'Support Lookup', icon: Search },

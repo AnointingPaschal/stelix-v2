@@ -6,12 +6,13 @@
  *       GET https://api.geckoterminal.com/api/v2/networks/trending_pools?page=N
  *     Global feed, one pool per row, with network id, price, FDV /
  *     market_cap_usd, h24 change, h24 volume, reserve (liquidity),
- *     pool_created_at and dex id. Drives Trending / Gainers / Top by MC
- *     (same live feed, different ranking — see sortDiscoverTokens).
+ *     pool_created_at and dex id. Drives Trending / Gainers (same live
+ *     feed, different ranking — see sortDiscoverTokens) and is paged
+ *     through fetchDiscoverPage for infinite scroll.
  *   - GeckoTerminal new pools (per network):
- *       GET https://api.geckoterminal.com/api/v2/networks/<network>/new_pools
+ *       GET https://api.geckoterminal.com/api/v2/networks/<network>/new_pools?page=N
  *     Verified for bsc, eth, base, polygon_pos, solana AND arc (Arc uses
- *     Uniswap V4 on GeckoTerminal). Drives the New Pairs tab.
+ *     Uniswap V4 on GeckoTerminal). Drives the New Pairs tab, also paged.
  *   - DexScreener search:
  *       GET https://api.dexscreener.com/latest/dex/search?q=<query>
  *     Drives search by symbol / name / contract address.
@@ -35,7 +36,7 @@
  * lists); the letter circle only appears when no source has a logo.
  *
  * Rate limits: GeckoTerminal free tier is 30 calls/min, DexScreener
- * 300/min. A tab load makes 2 (trending) or up to 6 (new, all chains)
+ * 300/min. A page load makes 1 (trending) or up to 6 (new, all chains)
  * GeckoTerminal calls plus one DexScreener batch call per chain present
  * (usually 1-3). There is no auto-refresh polling — the user refreshes
  * manually — so a normal session stays far under the limit.
@@ -88,7 +89,7 @@ export interface DiscoverResult {
   updatedAt: number;
 }
 
-export type DiscoverTab = 'trending' | 'gainers' | 'new' | 'top';
+export type DiscoverTab = 'trending' | 'gainers' | 'new';
 export type DiscoverSort = 'trending' | 'volume' | 'marketcap' | 'newest' | 'gainers';
 
 export interface DiscoverFilters {
@@ -108,8 +109,12 @@ type FetchImpl = (url: string, init?: RequestInit) => Promise<Response>;
 
 const FETCH_TIMEOUT_MS = 8000;
 const MAX_BATCH_ADDRESSES = 30;
-/** GeckoTerminal trending pages fetched per Trending/Gainers/Top load. */
+/** GeckoTerminal trending pages fetched per Trending/Gainers load. */
 const TRENDING_PAGES = 2;
+/** GeckoTerminal default page size for trending_pools / new_pools.
+ *  A page that returns this many pools is treated as full — there may
+ *  be another page after it. */
+const GECKO_PAGE_SIZE = 20;
 
 async function fetchWithTimeout(
   url: string,
@@ -470,7 +475,7 @@ async function fetchGeckoPools(
   return pools.map(mapGeckoPool).filter((t) => t.symbol && t.address);
 }
 
-/** Trending / Gainers / Top by MC from GeckoTerminal trending pools. */
+/** Trending / Gainers from GeckoTerminal trending pools. */
 async function fetchTrendingPools(fetchImpl: FetchImpl): Promise<DiscoverToken[]> {
   const pages = await Promise.all(
     Array.from({ length: TRENDING_PAGES }, (_, i) =>
@@ -607,12 +612,96 @@ const TAB_SORT: Record<DiscoverTab, DiscoverSort> = {
   trending: 'trending',
   gainers: 'gainers',
   new: 'newest',
-  top: 'marketcap',
 };
+
+export interface DiscoverPageResult {
+  /** This page's tokens, deduped by chain+address. */
+  tokens: DiscoverToken[];
+  /** True when the upstream page came back full — a next page may exist.
+   *  False when the page was empty or short: the screen stops paging. */
+  hasMore: boolean;
+  source: DiscoverResult['source'];
+  error: string | null;
+  updatedAt: number;
+}
+
+/**
+ * Load ONE page of a Discover tab (infinite scroll).
+ * Trending / Gainers read GeckoTerminal trending_pools?page=N; New Pairs
+ * reads new_pools?page=N per network. DexScreener has no list-all
+ * endpoint, so GeckoTerminal pages are the honest source of thousands
+ * of tokens. Rows are deduped by chain+address, enriched with
+ * DexScreener logos/names, filtered to the chain and ranked per tab.
+ * No DexScreener fallback here — a failed page reports unavailable
+ * rather than fabricating rows (fetchDiscoverTab keeps the fallback
+ * for its single-shot callers).
+ */
+export async function fetchDiscoverPage(
+  tab: DiscoverTab,
+  chainId: string | 'all' = 'all',
+  page = 1,
+  fetchImpl: FetchImpl = fetch,
+): Promise<DiscoverPageResult> {
+  const safePage = Math.max(1, Math.floor(page));
+  try {
+    let tokens: DiscoverToken[] = [];
+    let hasMore = false;
+    if (tab === 'new') {
+      const networks = discoverNetworks(chainId);
+      const perNetwork = await Promise.all(
+        networks.map((n) =>
+          fetchGeckoPools(
+            `https://api.geckoterminal.com/api/v2/networks/${encodeURIComponent(n)}/new_pools?page=${safePage}`,
+            fetchImpl,
+          ).catch(() => [] as DiscoverToken[]),
+        ),
+      );
+      tokens = perNetwork.flat();
+      // Any network page that came back full may have another page.
+      hasMore = perNetwork.some((p) => p.length >= GECKO_PAGE_SIZE);
+    } else {
+      tokens = await fetchGeckoPools(
+        `https://api.geckoterminal.com/api/v2/networks/trending_pools?page=${safePage}`,
+        fetchImpl,
+      );
+      hasMore = tokens.length >= GECKO_PAGE_SIZE;
+    }
+    if (tokens.length === 0) {
+      return {
+        tokens: [],
+        hasMore: false,
+        source: 'unavailable',
+        error:
+          tab === 'new'
+            ? 'New pools are unavailable right now — no data was fabricated.'
+            : 'Trending pools are unavailable right now — no data was fabricated.',
+        updatedAt: Date.now(),
+      };
+    }
+    const deduped = dedupeDiscoverTokens(tokens);
+    const enriched = await enrichWithDexScreener(deduped, fetchImpl);
+    const filtered = applyDiscoverFilters(enriched, { chainId });
+    return {
+      tokens: sortDiscoverTokens(filtered, TAB_SORT[tab]),
+      hasMore,
+      source: 'geckoterminal',
+      error: null,
+      updatedAt: Date.now(),
+    };
+  } catch (e) {
+    return {
+      tokens: [],
+      hasMore: false,
+      source: 'unavailable',
+      error: `Discover failed: ${e instanceof Error ? e.message : String(e)}`,
+      updatedAt: Date.now(),
+    };
+  }
+}
 
 /**
  * Load one Discover tab. `chainId` is a Stelix chain id or 'all'.
- * Trending / Gainers / Top share the GeckoTerminal trending feed with
+ * Trending / Gainers share the GeckoTerminal trending feed with
  * different rankings; New uses GeckoTerminal new pools per network.
  * Each tab has a DexScreener fallback when its primary feed fails.
  */

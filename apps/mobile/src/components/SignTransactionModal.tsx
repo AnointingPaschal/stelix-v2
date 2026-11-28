@@ -7,14 +7,25 @@
  * on the page, taps Review/Confirm, and this bottom sheet opens.
  *
  * Flow:
- *   1. Review — full confirmation: action, from address, to (recipient
- *      or contract), token + amount, live USD value, network + fee,
- *      slippage / min-receive where relevant, and a warning when
- *      anything is unusual.
- *   2. Authenticate INSIDE the modal only — session password field, or
- *      biometrics when enabled in Settings and available on the device
- *      (the password is released from the OS keychain only after a
- *      biometric check — see lib/wallet.ts save/readBiometricSessionPassword).
+ *   1. Review — full confirmation ONLY: action, from address, to
+ *      (recipient or contract), token + amount, live USD value, network
+ *      + fee, slippage / min-receive where relevant, and a warning when
+ *      anything is unusual. No auth UI here — just Cancel and the action
+ *      button (e.g. "Sign & Send").
+ *   2. Auth, on tapping the action button — if biometrics are enabled in
+ *      Settings and the device has enrolled biometrics, the password
+ *      stored behind the biometric gate is read straight from the OS
+ *      keychain (see lib/wallet.ts save/readBiometricSessionPassword).
+ *      That SecureStore read itself prompts for the fingerprint — it IS
+ *      the scanner, so there is exactly ONE biometric prompt and no
+ *      separate authenticateAsync() call before it
+ *      (the two used to run back-to-back). If no password is stored yet
+ *      (the keychain copy only exists after one successful password
+ *      sign), or biometrics fail / are cancelled, the password field is
+ *      revealed inline instead — never a dead-end "Biometrics
+ *      unavailable" error. Signing with the typed password saves it
+ *      behind biometrics, so the next signing can use the scanner. When
+ *      biometrics are off, the password field is revealed directly.
  *   3. Sign & Send — the transaction is signed and sent; the modal shows
  *      sending, then success with the tx hash + explorer link, or a clear
  *      error. A wrong password sends nothing and shows an inline error.
@@ -28,7 +39,7 @@
 import { useEffect, useState } from 'react';
 import { Linking, Pressable, StyleSheet, Text, TextInput, View } from 'react-native';
 import * as LocalAuthentication from 'expo-local-authentication';
-import { AlertTriangle, CheckCircle2, ExternalLink, Fingerprint, ShieldCheck } from 'lucide-react-native';
+import { AlertTriangle, CheckCircle2, ExternalLink } from 'lucide-react-native';
 import { COLORS } from '../theme';
 import { BottomSheet, Btn } from './ui';
 import { isWrongPasswordError, shortAddr, validateSignPassword } from '../lib/signing';
@@ -102,6 +113,9 @@ export function SignTransactionModal({
   const [result, setResult] = useState<SignTxResult | null>(null);
   const [biometricsAvailable, setBiometricsAvailable] = useState(false);
   const [bioBusy, setBioBusy] = useState(false);
+  // The password field stays hidden until the user taps the action
+  // button — the review phase shows the transaction summary only.
+  const [authVisible, setAuthVisible] = useState(false);
 
   // Maintenance Mode: the ONE signing gate in the wallet. While the admin
   // has maintenance on, no transaction may be signed — the password form
@@ -130,6 +144,7 @@ export function SignTransactionModal({
       setError('');
       setResult(null);
       setBioBusy(false);
+      setAuthVisible(false);
       if (biometricsEnabled) {
         void (async () => {
           try {
@@ -152,10 +167,11 @@ export function SignTransactionModal({
     if (phase === 'signing') return; // never dismiss mid-send
     setPassword('');
     setError('');
+    setAuthVisible(false);
     onClose();
   }
 
-  async function signWith(passwordValue: string) {
+  async function signWith(passwordValue: string, viaBiometrics = false) {
     if (!request) return;
     // Defence in depth: even if a caller opened the modal while
     // maintenance was off and it switched on mid-review, signing refuses.
@@ -173,15 +189,20 @@ export function SignTransactionModal({
     try {
       const res = await onSign(passwordValue);
       await onSigned(res);
-      // Remember the password behind the biometric gate so the next
-      // signing can use biometrics instead of typing. Best-effort and
-      // native-only; a failure here never blocks the success screen.
-      if (biometricsEnabled) void saveBiometricSessionPassword(passwordValue);
+      // A typed-password sign stores the password behind the biometric
+      // gate, so the next signing can use the fingerprint scanner. A
+      // biometric sign skips this — the password is already stored, and
+      // re-saving it would prompt for biometrics a second time.
+      if (biometricsEnabled && !viaBiometrics) void saveBiometricSessionPassword(passwordValue);
       setPassword('');
       setResult(res);
       setPhase('success');
     } catch (e) {
       setPhase('review');
+      // A stored password that no longer decrypts must still leave the
+      // user somewhere useful: reveal the password field so the error is
+      // visible and typing the password works.
+      if (viaBiometrics) setAuthVisible(true);
       setError(
         isWrongPasswordError(e)
           ? 'Wrong password — nothing was sent. Try again.'
@@ -192,19 +213,45 @@ export function SignTransactionModal({
     }
   }
 
-  async function signWithBiometrics() {
-    setError('');
-    setBioBusy(true);
-    try {
-      const stored = await readBiometricSessionPassword();
-      if (!stored) {
-        setError('Biometrics unavailable or cancelled — enter your session password instead.');
-        return;
-      }
-      await signWith(stored);
-    } finally {
-      setBioBusy(false);
+  /**
+   * The action button's one job: get the user authenticated, then sign.
+   * Biometrics (enabled in Settings + enrolled on the device) read the
+   * stored password straight from the OS keychain — that SecureStore
+   * read prompts for the fingerprint itself, so it is the single
+   * biometric prompt. A missing stored password, or a failed/cancelled
+   * scan, falls through to the password field — never a dead-end error.
+   */
+  async function handleActionPress() {
+    if (!request || phase === 'signing' || bioBusy) return;
+    // Password field already revealed: the button signs with it.
+    if (authVisible) {
+      await signWith(password);
+      return;
     }
+    if (biometricsEnabled && biometricsAvailable) {
+      setBioBusy(true);
+      try {
+        // Single prompt: readBiometricSessionPassword()'s SecureStore
+        // read (requireAuthentication) IS the fingerprint scanner — do
+        // NOT call authenticateAsync() first, or
+        // the user sees two OS fingerprint prompts back-to-back.
+        const stored = await readBiometricSessionPassword();
+        if (stored) {
+          await signWith(stored, true);
+          return;
+        }
+        // Nothing stored yet — the keychain copy only exists after one
+        // successful password sign — or the scan was cancelled/failed
+        // (read returns null): reveal the password field instead of a
+        // dead-end error.
+        setAuthVisible(true);
+      } finally {
+        setBioBusy(false);
+      }
+      return;
+    }
+    // Biometrics off or unavailable on this device: password field.
+    setAuthVisible(true);
   }
 
   return (
@@ -270,54 +317,48 @@ export function SignTransactionModal({
               </>
             ) : (
               <>
-            <Text style={styles.authLabel}>Authenticate to sign</Text>
-            {/* Keyboard avoidance lives in BottomSheet (KeyboardAvoidingView
-                + sheet shrinks by keyboard height + ScrollView scrolls to
-                the end on keyboard show), so this input and the Sign button
-                below it stay above the keyboard. */}
-            <TextInput
-              style={styles.passwordInput}
-              secureTextEntry
-              placeholder="Session password"
-              placeholderTextColor={COLORS.textMuted}
-              value={password}
-              onChangeText={(v) => {
-                setPassword(v);
-                if (error) setError('');
-              }}
-              autoCapitalize="none"
-              autoCorrect={false}
-              returnKeyType="go"
-              editable={phase !== 'signing'}
-              onSubmitEditing={() => void signWith(password)}
-            />
-            <Text style={styles.authHint}>
-              Your password decrypts the wallet on this device to sign once. It is never stored on this page.
-            </Text>
-            {error ? <Text style={styles.error}>{error}</Text> : null}
+                {authVisible ? (
+                  <>
+                    {/* Keyboard avoidance lives in BottomSheet (KeyboardAvoidingView
+                        + sheet shrinks by keyboard height + ScrollView scrolls to
+                        the end on keyboard show), so this input and the Sign button
+                        below it stay above the keyboard. */}
+                    <TextInput
+                      style={styles.passwordInput}
+                      secureTextEntry
+                      placeholder="Session password"
+                      placeholderTextColor={COLORS.textMuted}
+                      value={password}
+                      onChangeText={(v) => {
+                        setPassword(v);
+                        if (error) setError('');
+                      }}
+                      autoCapitalize="none"
+                      autoCorrect={false}
+                      returnKeyType="go"
+                      editable={phase !== 'signing'}
+                      onSubmitEditing={() => void signWith(password)}
+                    />
+                    {biometricsEnabled && biometricsAvailable ? (
+                      <Text style={styles.enrollNote}>
+                        Enter your password once to enable fingerprint signing
+                      </Text>
+                    ) : null}
+                  </>
+                ) : null}
+                {error ? <Text style={styles.error}>{error}</Text> : null}
 
-            {biometricsAvailable ? (
-              <Pressable style={styles.bioBtn} onPress={() => void signWithBiometrics()} disabled={phase === 'signing' || bioBusy}>
-                <Fingerprint size={18} color={COLORS.navy} />
-                <Text style={styles.bioText}>{bioBusy ? 'Waiting for biometrics…' : 'Sign with biometrics instead'}</Text>
-              </Pressable>
-            ) : null}
-
-            <View style={styles.actions}>
-              <Btn label="Cancel" variant="ghost" onPress={close} disabled={phase === 'signing'} style={styles.actionBtn} />
-              <Btn
-                label={phase === 'signing' ? 'Signing…' : request.actionLabel}
-                variant="primary"
-                onPress={() => void signWith(password)}
-                disabled={phase === 'signing'}
-                loading={phase === 'signing'}
-                style={styles.actionBtn}
-              />
-            </View>
-            <View style={styles.secureNote}>
-              <ShieldCheck size={14} color={COLORS.textMuted} />
-              <Text style={styles.secureText}>Closing this sheet cancels — nothing is sent.</Text>
-            </View>
+                <View style={styles.actions}>
+                  <Btn label="Cancel" variant="ghost" onPress={close} disabled={phase === 'signing' || bioBusy} style={styles.actionBtn} />
+                  <Btn
+                    label={bioBusy ? 'Waiting for biometrics…' : phase === 'signing' ? 'Signing…' : request.actionLabel}
+                    variant="primary"
+                    onPress={() => void handleActionPress()}
+                    disabled={phase === 'signing' || bioBusy}
+                    loading={phase === 'signing'}
+                    style={styles.actionBtn}
+                  />
+                </View>
               </>
             )}
           </>
@@ -348,21 +389,8 @@ const styles = StyleSheet.create({
   addrLabel: { color: COLORS.textMuted, fontSize: 12 },
   addrRow: { flexDirection: 'row', justifyContent: 'space-between', paddingVertical: 3 },
   addrValue: { color: COLORS.text, fontSize: 12, fontWeight: '700' },
-  authHint: { color: COLORS.textMuted, fontSize: 12, lineHeight: 17, marginTop: 6 },
-  authLabel: { color: COLORS.textMuted, fontSize: 11, fontWeight: '700', letterSpacing: 1, marginTop: 16 },
-  bioBtn: {
-    alignItems: 'center',
-    borderColor: COLORS.border,
-    borderRadius: 12,
-    borderWidth: 1,
-    flexDirection: 'row',
-    gap: 8,
-    justifyContent: 'center',
-    marginTop: 12,
-    paddingVertical: 10,
-  },
-  bioText: { color: COLORS.navy, fontSize: 13, fontWeight: '700' },
   doneBtn: { marginTop: 16, width: '100%' },
+  enrollNote: { color: COLORS.textMuted, fontSize: 12, lineHeight: 17, marginTop: 6 },
   error: { color: COLORS.red, fontSize: 12, fontWeight: '700', lineHeight: 17, marginTop: 8 },
   explorerBtn: { alignItems: 'center', flexDirection: 'row', gap: 6, marginTop: 12 },
   explorerText: { color: COLORS.navy, fontSize: 13, fontWeight: '700' },
@@ -379,8 +407,6 @@ const styles = StyleSheet.create({
   rowDanger: { color: COLORS.red },
   rowLabel: { color: COLORS.textMuted, fontSize: 12 },
   rowValue: { color: COLORS.text, fontSize: 12, fontWeight: '700', textAlign: 'right' },
-  secureNote: { alignItems: 'center', flexDirection: 'row', gap: 6, justifyContent: 'center', marginTop: 12 },
-  secureText: { color: COLORS.textMuted, fontSize: 11 },
   successHash: { color: COLORS.text, fontSize: 13, fontWeight: '700', marginTop: 8 },
   successSub: { color: COLORS.textMuted, fontSize: 12, marginTop: 4 },
   successTitle: { color: COLORS.text, fontSize: 16, fontWeight: '800', marginTop: 10 },

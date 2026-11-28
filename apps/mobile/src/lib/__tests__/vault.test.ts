@@ -392,6 +392,31 @@ describe('on-chain vault — not deployed yet', () => {
     expect(ok.ladderStages[0].sellBps).toBe(2500);
     expect(ok.ladderStages[1].sellBps).toBe(7500);
   });
+
+  it('toOnChainCreateLockParams keeps sub-cent prices (WKC $0.0000003908 must not round to zero)', () => {
+    const base = {
+      chainId: 'bnb',
+      tokenAddress: '0xabc',
+      tokenDecimals: 18,
+      stablecoinAddress: '0xdef',
+      amount: 100,
+      unlockTime: NOW + 30 * 86_400_000,
+      entryPriceUsd: 0.0000003908,
+      trailingStopBps: null,
+      breakMode: 'immutable' as const,
+      penaltyBps: 0,
+      autoSell: true,
+      slippageBps: 150,
+      minReceiveUsd: 0.5,
+    };
+    const t = toOnChainCreateLockParams({ ...base, ladder: [{ multiple: 10, percent: 100 }] });
+    // Regression: toFixed(6) used to round this entry price to 0, and
+    // createLock reverts InvalidParams when a ladder exists and
+    // entryPrice == 0 (BNB mainnet, 2026-11-28).
+    expect(t.entryPrice).toBe(390800000000n);
+    expect(t.ladderStages[0].targetPrice).toBe(3908000000000n);
+    expect(t.minReceivePerStage).toBe(500000000000000000n);
+  });
 });
 
 describe('on-chain vault — all calls refuse while nothing is deployed', () => {

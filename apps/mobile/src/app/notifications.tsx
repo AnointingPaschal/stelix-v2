@@ -17,6 +17,7 @@ import { fmtDateTime } from '../lib/format';
 import { deriveLockNotifications } from '../lib/notifications';
 import { kvGet, kvSet } from '../lib/storage';
 import { Btn, EmptyState, centeredContent } from '../components/ui';
+import { AppHeader, BottomNav } from '../components/AppShell';
 
 const READ_DERIVED_KEY = 'stelix_read_derived_notifications_v1';
 
@@ -87,7 +88,9 @@ export default function Notifications() {
   }, [markNotificationsRead, derived, readDerived]);
 
   return (
+    <View style={styles.shell}>
     <ScrollView style={styles.root} contentContainerStyle={[styles.inner, centeredContent, { paddingTop: 12 + insets.top, paddingBottom: 24 + insets.bottom }]}>
+      <AppHeader showBack />
       <Text style={styles.title}>Notifications</Text>
       {rows.length > 0 && unreadCount > 0 ? (
         <Btn label={`Mark all read (${unreadCount})`} variant="ghost" onPress={markAllRead} style={styles.markBtn} />
@@ -119,6 +122,8 @@ export default function Notifications() {
         the app is closed.
       </Text>
     </ScrollView>
+    <BottomNav />
+    </View>
   );
 }
 
@@ -141,6 +146,7 @@ const styles = StyleSheet.create({
     gap: 10,
     paddingVertical: 12,
   },
+  shell: { backgroundColor: COLORS.bg, flex: 1 },
   title: { color: COLORS.text, fontSize: 18, fontWeight: '800' },
   unread: { backgroundColor: COLORS.mintSoft, borderRadius: 12, marginHorizontal: -8, paddingHorizontal: 8 },
 });

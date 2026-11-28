@@ -223,6 +223,15 @@ export interface CreateLockOnChainParams {
   minReceiveUsd: number;
 }
 
+/** USD price -> 18-decimal wei. Prices used to be rounded with
+ *  toFixed(6), which turned sub-cent prices (e.g. WKC $0.0000003908)
+ *  into zero — and createLock reverts InvalidParams when a ladder
+ *  exists and entryPrice == 0. toFixed(18) keeps the float's full
+ *  precision, so tiny prices encode correctly. */
+function usdToWei(n: number): bigint {
+  return ethers.parseUnits(n.toFixed(18), 18);
+}
+
 /** Build the on-chain CreateLockParams tuple from real lock parameters.
  *  Throws when the ladder totals over 100% (contract rule) or when a
  *  Penalty lock is outside 5–10% (contract rule). */
@@ -250,14 +259,14 @@ export function toOnChainCreateLockParams(
   if (p.breakMode !== 'penalty' && p.penaltyBps !== 0) {
     throw new Error('Only Penalty locks carry a penaltyBps value.');
   }
-  const entryPrice = ethers.parseUnits(p.entryPriceUsd.toFixed(6), 18);
+  const entryPrice = usdToWei(p.entryPriceUsd);
   return {
     token: p.tokenAddress,
     amount: ethers.parseUnits(p.amount.toString(), p.tokenDecimals),
     unlockTime: BigInt(Math.floor(p.unlockTime / 1000)),
     entryPrice,
     ladderStages: p.ladder.map((s) => ({
-      targetPrice: ethers.parseUnits((p.entryPriceUsd * s.multiple).toFixed(6), 18),
+      targetPrice: usdToWei(p.entryPriceUsd * s.multiple),
       sellBps: Math.round(s.percent * 100),
       sold: false,
     })),
@@ -267,7 +276,7 @@ export function toOnChainCreateLockParams(
     autoSell: p.autoSell,
     stablecoin: p.stablecoinAddress,
     slippageBps: p.slippageBps,
-    minReceivePerStage: ethers.parseUnits(p.minReceiveUsd.toFixed(6), 18),
+    minReceivePerStage: usdToWei(p.minReceiveUsd),
   };
 }
 

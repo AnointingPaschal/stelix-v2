@@ -13,7 +13,7 @@
  *  - About expands inline. Password change / wipe confirm inline. */
 import { useEffect, useState } from 'react';
 import { KeyboardAvoidingView, Platform, Pressable, ScrollView, StyleSheet, Switch, Text, TextInput, View } from 'react-native';
-import { router } from 'expo-router';
+import { router, usePathname } from 'expo-router';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import {
   Bell,
@@ -41,7 +41,9 @@ import {
   type SavedAddress,
 } from '../lib/addressBook';
 import { clearLogoCache } from '../lib/tokenLogos';
-import { wipeLocalData } from '../lib/storage';
+import { wipeLocalData, kvDelete, kvGet, kvSet } from '../lib/storage';
+import { EXPLORER_API_KEY_STORAGE_KEY } from '../lib/history';
+import { AppHeader, BottomNav } from '../components/AppShell';
 import * as Clipboard from 'expo-clipboard';
 import { Btn, Card, NetworkSheet, RiskNote, centeredContent } from '../components/ui';
 
@@ -49,8 +51,13 @@ const AUTO_LOCK_OPTIONS = [0, 1, 5, 15];
 const autoLockLabel = (m: number) => (m === 0 ? 'Immediately' : `${m} min`);
 
 export default function Settings() {
-  const { settings, updateSettings, chain, resetState } = useApp();
+  const { settings, updateSettings, chain, resetState, refreshAll } = useApp();
   const insets = useSafeAreaInsets();
+  // This screen is both the Settings tab (re-exported by
+  // (tabs)/settings.tsx) and the /settings stack route: in the tab the
+  // native tab bar is already showing, so no back chevron and no
+  // BottomNav; as a stack screen it gets both.
+  const inTabs = usePathname().includes('(tabs)');
 
   const [netOpen, setNetOpen] = useState(false);
   const [wipeText, setWipeText] = useState('');
@@ -82,6 +89,66 @@ export default function Settings() {
   // Clear cache / About — inline confirmation, no Alert.
   const [cacheMsg, setCacheMsg] = useState('');
   const [aboutOpen, setAboutOpen] = useState(false);
+  // Explorer API key — a free Etherscan key unlocks transaction history
+  // on BNB, Base, Ethereum and Polygon (Arc needs none). Saved
+  // on-device only, under EXPLORER_API_KEY_STORAGE_KEY; the bundled
+  // EXPO_PUBLIC_EXPLORER_API_KEY, if set, takes precedence.
+  const [keyOpen, setKeyOpen] = useState(false);
+  const [keyInput, setKeyInput] = useState('');
+  const [keySaved, setKeySaved] = useState(false);
+  const [keyMsg, setKeyMsg] = useState('');
+  const [keyOk, setKeyOk] = useState(false);
+  const [keyBusy, setKeyBusy] = useState(false);
+
+  useEffect(() => {
+    void kvGet(EXPLORER_API_KEY_STORAGE_KEY).then((v) => {
+      setKeyInput(v ?? '');
+      setKeySaved(!!v);
+    });
+  }, []);
+
+  async function submitExplorerKey() {
+    const value = keyInput.trim();
+    if (!value) {
+      setKeyOk(false);
+      setKeyMsg('Paste a key first — get a free one at etherscan.io.');
+      return;
+    }
+    setKeyBusy(true);
+    setKeyMsg('');
+    setKeyOk(false);
+    try {
+      await kvSet(EXPLORER_API_KEY_STORAGE_KEY, value);
+      setKeySaved(true);
+      setKeyOk(true);
+      setKeyMsg('Key saved — transaction history is now unlocked on BNB, Base, Ethereum and Polygon.');
+      await refreshAll();
+    } catch (e) {
+      setKeyOk(false);
+      setKeyMsg(e instanceof Error ? e.message : String(e));
+    } finally {
+      setKeyBusy(false);
+    }
+  }
+
+  async function clearExplorerKey() {
+    setKeyBusy(true);
+    setKeyMsg('');
+    setKeyOk(false);
+    try {
+      await kvDelete(EXPLORER_API_KEY_STORAGE_KEY);
+      setKeyInput('');
+      setKeySaved(false);
+      setKeyOk(true);
+      setKeyMsg('Key removed.');
+      await refreshAll();
+    } catch (e) {
+      setKeyOk(false);
+      setKeyMsg(e instanceof Error ? e.message : String(e));
+    } finally {
+      setKeyBusy(false);
+    }
+  }
 
   useEffect(() => {
     if (bookOpen) void loadAddressBook().then(setContacts);
@@ -175,9 +242,11 @@ export default function Settings() {
   }
 
   return (
+    <View style={styles.shell}>
     <KeyboardAvoidingView style={styles.root} behavior={Platform.OS === 'ios' ? 'padding' : 'height'} keyboardVerticalOffset={insets.top}>
       <ScrollView style={{ flex: 1 }}
         keyboardShouldPersistTaps="handled" contentContainerStyle={[styles.inner, centeredContent, { paddingTop: 12 + insets.top, paddingBottom: 32 + insets.bottom }]}>
+        <AppHeader showBack={!inTabs} />
         <Text style={styles.title}>Advanced Settings</Text>
 
         <Text style={styles.section}>SECURITY & BACKUP</Text>
@@ -255,7 +324,25 @@ export default function Settings() {
         <Text style={styles.section}>NETWORK & WEB3</Text>
         <Card style={styles.group}>
           <Row icon={<Globe size={18} color={COLORS.text} />} title="Active Network" sub={`${chain.name}${chain.testnet ? ' · Testnet' : ''}`} onPress={() => setNetOpen(true)} />
+          <Divider />
+          <Row
+            icon={<KeyRound size={18} color={COLORS.text} />}
+            title="Explorer API key"
+            sub={keySaved ? 'Saved — history unlocked on BNB, Base, Ethereum, Polygon' : 'Unlocks transaction history on BNB, Base, Ethereum and Polygon'}
+            onPress={() => setKeyOpen((v) => !v)}
+          />
         </Card>
+
+        {keyOpen ? (
+          <Card style={styles.formCard}>
+            <Text style={styles.formTitle}>Explorer API key</Text>
+            <Text style={styles.formHint}>Get a free key at etherscan.io and paste it here. It stays on this device and unlocks transaction history on BNB, Base, Ethereum and Polygon. Arc history works without one.</Text>
+            <TextInput style={styles.formInput} placeholder="Etherscan API key" secureTextEntry value={keyInput} onChangeText={setKeyInput} autoCapitalize="none" autoCorrect={false} />
+            {keyMsg ? <Text style={keyOk ? styles.formOk : styles.formErr}>{keyMsg}</Text> : null}
+            <Btn label={keyBusy ? 'Saving…' : 'Save Key'} onPress={() => void submitExplorerKey()} disabled={keyBusy || !keyInput.trim()} />
+            {keySaved ? <Btn label="Clear Key" variant="ghost" onPress={() => void clearExplorerKey()} disabled={keyBusy} /> : null}
+          </Card>
+        ) : null}
 
         <Text style={styles.section}>APP PREFERENCES</Text>
         <Card style={styles.group}>
@@ -346,6 +433,8 @@ export default function Settings() {
         <NetworkSheet visible={netOpen} onClose={() => setNetOpen(false)} />
       </ScrollView>
     </KeyboardAvoidingView>
+    {!inTabs ? <BottomNav /> : null}
+    </View>
   );
 }
 
@@ -411,6 +500,7 @@ const styles = StyleSheet.create({
   rowTitle: { color: COLORS.text, fontSize: 14, fontWeight: '700' },
   secret: { backgroundColor: COLORS.bgMuted, borderRadius: 12, color: COLORS.text, fontSize: 12, lineHeight: 18, padding: 12 },
   section: { color: COLORS.textMuted, fontSize: 11, fontWeight: '700', letterSpacing: 1, marginBottom: 8, marginTop: 18 },
+  shell: { backgroundColor: COLORS.bg, flex: 1 },
   title: { color: COLORS.text, fontSize: 18, fontWeight: '800', textAlign: 'center' },
   wipeBtn: {
     alignItems: 'center',

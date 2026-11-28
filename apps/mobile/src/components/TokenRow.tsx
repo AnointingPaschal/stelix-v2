@@ -5,8 +5,9 @@ import React from 'react';
 import { Pressable, StyleSheet, Text, View } from 'react-native';
 import { BadgeCheck, ChevronRight, Lock } from 'lucide-react-native';
 import { COLORS } from '../theme';
-import { fmtNum, fmtPrice, fmtUsd, timeLeft } from '../lib/format';
+import { fmtNum, fmtPct, fmtPrice, fmtUsd, timeLeft } from '../lib/format';
 import type { TokenBalance } from '../lib/balances';
+import { calcPnl } from '../lib/balances';
 import type { BullLock } from '../lib/vault';
 import { targetProgress } from '../lib/vault';
 import { Chip, ProgressBar } from './ui';
@@ -19,9 +20,11 @@ export function TokenRow({
   token: TokenBalance;
   onPress: () => void;
 }) {
-  // TokenBalance carries no 24h change — the row shows the live price
-  // (or "—" when no live price is available) and never an invented move.
+  // P&L vs 24h ago, from the token's live 24h change (never invented:
+  // change24h null — or no live price — shows "—").
   const value = token.balance * (token.price ?? 0);
+  const change = token.change24h ?? null;
+  const pnl = token.price === null ? null : calcPnl(value, change);
   return (
     <Pressable onPress={onPress} style={({ pressed }) => [styles.row, pressed && { opacity: 0.7 }]}>
       <TokenLogo chainId={token.chainId} address={token.address} symbol={token.symbol} size={44} logoUrl={token.logoUrl} />
@@ -39,6 +42,17 @@ export function TokenRow({
         <Text style={styles.value} numberOfLines={1}>{fmtUsd(value)}</Text>
         <Text style={styles.balance} numberOfLines={1}>
           {fmtNum(token.balance, 4)} {token.symbol}
+        </Text>
+        <Text
+          style={[
+            styles.pnl,
+            { color: pnl === null ? COLORS.textMuted : pnl >= 0 ? COLORS.mintDark : COLORS.red },
+          ]}
+          numberOfLines={1}
+        >
+          {pnl === null || change === null
+            ? '—'
+            : `${pnl >= 0 ? '+' : '-'}${fmtUsd(Math.abs(pnl))} (${fmtPct(change)})`}
         </Text>
       </View>
     </Pressable>
@@ -134,6 +148,7 @@ const styles = StyleSheet.create({
   mid: { flex: 1, minWidth: 0 },
   name: { color: COLORS.text, fontSize: 14, fontWeight: '700' },
   nameRow: { alignItems: 'center', flexDirection: 'row', gap: 6 },
+  pnl: { fontSize: 11, marginTop: 2, textAlign: 'right' },
   price: { color: COLORS.textMuted, fontSize: 12 },
   priceRow: { alignItems: 'center', flexDirection: 'row', gap: 6, marginTop: 2 },
   progressLabel: { color: COLORS.textMuted, fontSize: 11, marginTop: 6 },

@@ -14,13 +14,16 @@ import { router } from 'expo-router';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { KeyRound, Plus } from 'lucide-react-native';
 import { COLORS } from '../theme';
-import { Btn, Card, RiskNote, ScreenHeader, centeredContent } from '../components/ui';
+import { Btn, Card, ScreenHeader, centeredContent } from '../components/ui';
+import { AppHeader, BottomNav } from '../components/AppShell';
 
 export default function WalletSetup() {
   const insets = useSafeAreaInsets();
   return (
-    <View style={[styles.root, centeredContent, { paddingTop: 12 + insets.top, paddingBottom: 24 + insets.bottom }]}>
-      <ScreenHeader title="Import / Create wallet" onBack={() => router.back()} />
+    <View style={styles.shell}>
+      <View style={[styles.root, centeredContent, { paddingTop: 12 + insets.top, paddingBottom: 24 + insets.bottom }]}>
+      <AppHeader showBack />
+      <ScreenHeader title="Import / Create wallet" />
       <Text style={styles.body}>
         Choose how to set up a wallet on this device.
       </Text>
@@ -53,7 +56,8 @@ export default function WalletSetup() {
       <Text style={styles.warn}>
         New wallets are added alongside your existing ones — nothing is replaced. Removing a wallet later deletes it from this device, so back up its seed phrase first.
       </Text>
-      <RiskNote />
+      </View>
+      <BottomNav />
     </View>
   );
 }
@@ -75,5 +79,6 @@ const styles = StyleSheet.create({
     width: 32,
   },
   root: { backgroundColor: COLORS.bg, flex: 1, padding: 12 },
+  shell: { backgroundColor: COLORS.bg, flex: 1 },
   warn: { color: COLORS.textMuted, fontSize: 12, lineHeight: 17, marginTop: 12 },
 });

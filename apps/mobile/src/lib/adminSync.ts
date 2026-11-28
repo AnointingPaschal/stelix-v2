@@ -28,6 +28,9 @@
  *   on the server, so the wallet cannot verify the HMAC itself.
  * - tokens: the Token/DEX registry (allow/verified list).
  * - maintenance: maintenance mode (see isMaintenanceBlocking).
+ * - appUpdate: the latest published app release, or null until the
+ *   first one is published — the wallet shows it as an update prompt
+ *   when it is newer than the running version (see lib/appUpdate.ts).
  *
  * fetchAdminSync() never throws: on ANY failure it returns null and the
  * wallet keeps its last-known state. It keeps only an in-flight dedup —
@@ -37,6 +40,7 @@
 import { getAdminApiBase, mergeAdminChains, type AdminChainRow } from './adminChains';
 import { VAULT_DEFAULTS, isChainUsable, type ChainConfig } from './chains';
 import { kvGet, kvSet } from './storage';
+import type { AppUpdate } from './appUpdate';
 
 export const ADMIN_POLL_INTERVAL_MS = 45_000;
 const FETCH_TIMEOUT_MS = 8000;
@@ -135,6 +139,10 @@ export interface AdminSyncData {
   maintenance: MaintenanceState;
   /** Admin's global testnet/mainnet switch (null = never set). */
   networkMode: NetworkMode;
+  /** Latest published app release, or null until the first one is
+   *  published — the wallet shows it as an update prompt when it is
+   *  newer than the running version (see lib/appUpdate.ts). */
+  appUpdate: AppUpdate | null;
 }
 
 /** Last-seen tombstones / disabled ids, for the API-down fallback. */
@@ -260,6 +268,21 @@ function parseMaintenance(v: unknown): MaintenanceState {
   };
 }
 
+/** Latest published app release (null when none published yet). The
+ *  version must be present; notes / url / force fall back to null /
+ *  null / false so an older server shape still parses. */
+function parseAppUpdate(v: unknown): AppUpdate | null {
+  if (!isRecord(v)) return null;
+  const version = asString(v.version);
+  if (!version) return null;
+  return {
+    version,
+    notes: asString(v.notes),
+    url: asString(v.url),
+    force: asBool(v.force, false),
+  };
+}
+
 /**
  * Parse a GET /api/sync body. Returns null when the shape is wrong —
  * the caller then keeps its last-known state.
@@ -289,6 +312,7 @@ export function parseAdminSync(body: unknown): AdminSyncData | null {
       : [],
     maintenance: parseMaintenance(body.maintenance),
     networkMode: body.networkMode === 'mainnet' ? 'mainnet' : body.networkMode === 'testnet' ? 'testnet' : null,
+    appUpdate: parseAppUpdate(body.appUpdate),
   };
 }
 

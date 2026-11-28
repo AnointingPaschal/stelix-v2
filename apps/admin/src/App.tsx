@@ -11,6 +11,7 @@ import Tokens from './pages/Tokens'
 import Keeper from './pages/Keeper'
 import Fees from './pages/Fees'
 import Announcements from './pages/Announcements'
+import Releases from './pages/Releases'
 import Config from './pages/Config'
 import Support from './pages/Support'
 import ContractAudit from './pages/ContractAudit'
@@ -33,6 +34,7 @@ export default function App() {
       <Route path="/keeper" element={<Keeper />} />
       <Route path="/fees" element={<Fees />} />
       <Route path="/announcements" element={<Announcements />} />
+      <Route path="/releases" element={<Releases />} />
       <Route path="/config" element={<Config />} />
       <Route path="/maintenance" element={<Maintenance />} />
       <Route path="/security" element={<Security />} />

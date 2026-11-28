@@ -17,7 +17,9 @@ import { ArrowDown, ArrowUp, RefreshCw } from 'lucide-react-native';
 import { COLORS } from '../../theme';
 import { useApp } from '../../store/AppContext';
 import { fmtNum, shortAddress } from '../../lib/format';
-import { EmptyState } from '../../components/ui';
+import { isNoExplorerKeyError } from '../../lib/history';
+import { AppHeader } from '../../components/AppShell';
+import { Btn, EmptyState } from '../../components/ui';
 
 export default function History() {
   const { history, allHistory, historyError, showDust, setShowDust, refreshAll } = useApp();
@@ -33,6 +35,10 @@ export default function History() {
   // store, so it actually reveals the hidden transfers.
   const list = history;
   const spamCount = allHistory.filter((t) => t.isSpam).length;
+  // No-key is not an error to shout about — it just means history on
+  // this chain needs a free Etherscan key, added in Settings. Other
+  // errors still show as red text.
+  const isNoKey = isNoExplorerKeyError(historyError);
 
   // Real refresh: re-fetches balances, locks AND history from the store
   // (refreshAll), so the spinner means new on-chain data, not a timer.
@@ -59,6 +65,7 @@ export default function History() {
       ]}
       refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} />}
     >
+      <AppHeader />
       <View style={styles.head}>
         <View style={styles.headSide} />
         <View style={styles.headMid}>
@@ -72,7 +79,17 @@ export default function History() {
         </Pressable>
       </View>
 
-      {historyError ? <Text style={styles.error}>{historyError}</Text> : null}
+      {isNoKey ? (
+        <View style={styles.noKeyCard}>
+          <Text style={styles.noKeyTitle}>History needs an explorer API key</Text>
+          <Text style={styles.noKeyBody}>
+            A free key from etherscan.io unlocks transaction history on BNB, Base, Ethereum and Polygon. It stays on this device.
+          </Text>
+          <Btn label="Add key in Settings" variant="secondary" onPress={() => router.push('/(tabs)/settings')} style={styles.noKeyBtn} />
+        </View>
+      ) : historyError ? (
+        <Text style={styles.error}>{historyError}</Text>
+      ) : null}
 
       {list.length === 0 ? (
         <EmptyState title="No transactions yet" body="Sends, receives, swaps and lock events will appear here." />
@@ -147,6 +164,17 @@ const styles = StyleSheet.create({
   iconIn: { backgroundColor: COLORS.mintSoft },
   iconOut: { backgroundColor: COLORS.bgMuted },
   mid: { flex: 1, minWidth: 0 },
+  noKeyBody: { color: COLORS.textMuted, fontSize: 12, lineHeight: 17, marginTop: 4 },
+  noKeyBtn: { marginTop: 12 },
+  noKeyCard: {
+    backgroundColor: COLORS.bgMuted,
+    borderColor: COLORS.border,
+    borderRadius: 12,
+    borderWidth: 1,
+    marginTop: 10,
+    padding: 14,
+  },
+  noKeyTitle: { color: COLORS.text, fontSize: 14, fontWeight: '800' },
   party: { color: COLORS.textMuted, fontSize: 12, marginTop: 2 },
   right: { alignItems: 'flex-end', flexShrink: 1, minWidth: 0 },
   root: { backgroundColor: COLORS.bg, flex: 1 },

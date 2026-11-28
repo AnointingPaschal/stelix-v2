@@ -1,12 +1,17 @@
 /** Screen 11 — Discover: a full DEX browser (DexScreener-style).
  *
- * Tabs: Trending / Gainers / New Pairs / Top by Market Cap, plus a chain
+ * Tabs: Trending / Gainers / New Pairs, plus a chain
  * filter (All, Arc, BNB, Base, Ethereum, Polygon, Solana). Data is LIVE:
- * GeckoTerminal trending pools (Trending/Gainers/Top — same feed, ranked
+ * GeckoTerminal trending pools (Trending/Gainers — same feed, ranked
  * differently) and new pools per network (New Pairs), DexScreener search
  * for symbol/name/address, DexScreener batch lookup enriching each row
  * with its real logo, full name and market cap. DexScreener boosts /
  * profiles are the fallbacks when a primary feed fails.
+ *
+ * Infinite scroll: page 1 loads on tab / chain / search change, then
+ * the next GeckoTerminal page is fetched as the user scrolls near the
+ * bottom, appending and deduping, until a page comes back empty or
+ * short. Search is not paged (DexScreener search path).
  *
  * One row per token (deduplicated on the highest-liquidity pair, DEX
  * noted in the row). Every row shows the real logo (letter circle only
@@ -18,16 +23,17 @@
  * No auto-refresh polling (GeckoTerminal free tier is 30 calls/min) —
  * the user refreshes manually. */
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { KeyboardAvoidingView, Platform, Pressable, ScrollView, StyleSheet, Text, TextInput, View, useWindowDimensions } from 'react-native';
+import { KeyboardAvoidingView, NativeScrollEvent, NativeSyntheticEvent, Platform, Pressable, ScrollView, StyleSheet, Text, TextInput, View, useWindowDimensions } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { router } from 'expo-router';
-import { Flame, Landmark, RefreshCw, Search, SlidersHorizontal, Sparkles, TrendingUp, X } from 'lucide-react-native';
+import { Flame, RefreshCw, Search, SlidersHorizontal, Sparkles, TrendingUp, X } from 'lucide-react-native';
 import { COLORS } from '../../theme';
 import { fmtPct, fmtPrice } from '../../lib/format';
 import {
   DISCOVER_CHAINS,
   applyDiscoverFilters,
-  fetchDiscoverTab,
+  dedupeDiscoverTokens,
+  fetchDiscoverPage,
   formatTokenAge,
   prettyDexId,
   searchTokens,
@@ -39,19 +45,18 @@ import {
 import { tokenDetailRoute } from '../../lib/tokenResolve';
 import { EmptyState } from '../../components/ui';
 import { TokenLogo } from '../../components/TokenLogo';
+import { AppHeader } from '../../components/AppShell';
 
 const TABS: { key: DiscoverTab; label: string; icon: React.ReactNode }[] = [
   { key: 'trending', label: 'Trending', icon: <Flame size={14} color={COLORS.amber} /> },
   { key: 'gainers', label: 'Gainers', icon: <TrendingUp size={14} color={COLORS.textMuted} /> },
   { key: 'new', label: 'New Pairs', icon: <Sparkles size={14} color={COLORS.textMuted} /> },
-  { key: 'top', label: 'Top by MC', icon: <Landmark size={14} color={COLORS.textMuted} /> },
 ];
 
 const TAB_DEFAULT_SORT: Record<DiscoverTab, DiscoverSort> = {
   trending: 'trending',
   gainers: 'gainers',
   new: 'newest',
-  top: 'marketcap',
 };
 
 const SORTS: { key: DiscoverSort; label: string }[] = [
@@ -91,6 +96,8 @@ export default function Discover() {
   const [sort, setSort] = useState<DiscoverSort | null>(null);
   const [tokens, setTokens] = useState<DiscoverToken[]>([]);
   const [loading, setLoading] = useState(false);
+  const [loadingMore, setLoadingMore] = useState(false);
+  const [hasMore, setHasMore] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [source, setSource] = useState<string | null>(null);
   const [updatedAt, setUpdatedAt] = useState<number | null>(null);
@@ -102,30 +109,87 @@ export default function Discover() {
   const [newOnly, setNewOnly] = useState(false);
   const [dexFilter, setDexFilter] = useState<string | null>(null);
   const reqId = useRef(0);
+  const pageRef = useRef(1);
+  const hasMoreRef = useRef(false);
   const { width } = useWindowDimensions();
   const insets = useSafeAreaInsets();
   const isWide = width >= 768;
 
+  /** Page 1 load (tab / chain / search change, manual refresh).
+   *  Search is not paged — it uses the DexScreener search path. */
   const load = useCallback(async (tabV: DiscoverTab, chainV: string, q: string) => {
     const id = ++reqId.current;
     setLoading(true);
+    setLoadingMore(false);
     setError(null);
     try {
-      const res = q.trim()
-        ? await searchTokens(q.trim())
-        : await fetchDiscoverTab(tabV, chainV === 'all' ? 'all' : chainV, 30);
-      if (id !== reqId.current) return; // a newer load superseded this one
-      setTokens(res.tokens);
-      setSource(res.source);
-      setError(res.error);
-      setUpdatedAt(res.updatedAt);
+      const searching = q.trim() !== '';
+      if (searching) {
+        const res = await searchTokens(q.trim());
+        if (id !== reqId.current) return; // a newer load superseded this one
+        setTokens(res.tokens);
+        setSource(res.source);
+        setError(res.error);
+        setUpdatedAt(res.updatedAt);
+        pageRef.current = 1;
+        hasMoreRef.current = false; // search results are a single page
+        setHasMore(false);
+      } else {
+        const res = await fetchDiscoverPage(tabV, chainV === 'all' ? 'all' : chainV, 1);
+        if (id !== reqId.current) return; // a newer load superseded this one
+        setTokens(res.tokens);
+        setSource(res.source);
+        setError(res.error);
+        setUpdatedAt(res.updatedAt);
+        pageRef.current = 1;
+        hasMoreRef.current = res.hasMore;
+        setHasMore(res.hasMore);
+      }
     } catch (e) {
       if (id !== reqId.current) return;
       setTokens([]);
       setSource(null);
       setError(e instanceof Error ? e.message : String(e));
+      hasMoreRef.current = false;
+      setHasMore(false);
     } finally {
       if (id === reqId.current) setLoading(false);
+    }
+  }, []);
+
+  /** Append the next page when the user scrolls near the bottom.
+   *  Guarded by refs so a stale onScroll closure cannot double-fetch;
+   *  stops when a page comes back empty or short (hasMore false). */
+  const loadMore = useCallback(async () => {
+    if (loading || loadingMore || !hasMoreRef.current || debouncedQuery.trim()) return;
+    const id = reqId.current;
+    const nextPage = pageRef.current + 1;
+    setLoadingMore(true);
+    try {
+      const res = await fetchDiscoverPage(tab, chainFilter === 'all' ? 'all' : chainFilter, nextPage);
+      if (id !== reqId.current) return; // a fresh page-1 load superseded this
+      setTokens((prev) => dedupeDiscoverTokens([...prev, ...res.tokens]));
+      pageRef.current = nextPage;
+      hasMoreRef.current = res.hasMore;
+      setHasMore(res.hasMore);
+      setSource(res.source);
+      setUpdatedAt(res.updatedAt);
+    } catch {
+      // A failed page is not fatal — the loaded rows stay, and the
+      // user can scroll again to retry.
+    } finally {
+      if (id === reqId.current) setLoadingMore(false);
+    }
+  }, [loading, loadingMore, tab, chainFilter, debouncedQuery]);
+
+  // onScroll reads the latest loadMore without re-binding the handler.
+  const loadMoreRef = useRef(loadMore);
+  loadMoreRef.current = loadMore;
+
+  const handleScroll = useCallback((e: NativeSyntheticEvent<NativeScrollEvent>) => {
+    const { layoutMeasurement, contentOffset, contentSize } = e.nativeEvent;
+    if (layoutMeasurement.height + contentOffset.y >= contentSize.height - 400) {
+      void loadMoreRef.current();
     }
   }, []);
 
@@ -176,15 +240,13 @@ export default function Discover() {
   const showsFdvMc = useMemo(() => visible.some((t) => t.marketCapSource === 'fdv'), [visible]);
 
   const tabTitle =
-    tab === 'trending' ? 'Trending' : tab === 'gainers' ? 'Gainers' : tab === 'new' ? 'New Pairs' : 'Top by Market Cap';
+    tab === 'trending' ? 'Trending' : tab === 'gainers' ? 'Gainers' : 'New Pairs';
   const tabSub =
     tab === 'trending'
       ? 'Most active DEX pools right now'
       : tab === 'gainers'
         ? 'Biggest 24h movers'
-        : tab === 'new'
-          ? 'Newest pairs listed on DEXes'
-          : 'Largest tokens by market cap';
+        : 'Newest pairs listed on DEXes';
 
   const changeTab = (next: DiscoverTab) => {
     setTab(next);
@@ -206,6 +268,8 @@ export default function Discover() {
       <ScrollView
         style={{ flex: 1 }}
         keyboardShouldPersistTaps="handled"
+        onScroll={handleScroll}
+        scrollEventThrottle={16}
         contentContainerStyle={[
           styles.inner,
           {
@@ -215,6 +279,7 @@ export default function Discover() {
           },
         ]}
       >
+        <AppHeader />
         <View style={styles.head}>
           <View style={styles.headSide} />
           <Text style={styles.title} numberOfLines={1} adjustsFontSizeToFit minimumFontScale={0.85}>Discover</Text>
@@ -471,6 +536,7 @@ export default function Discover() {
             </Pressable>
           ))
         )}
+        {loadingMore ? <Text style={styles.loading}>Loading more…</Text> : null}
         {showsFdvMc ? (
           <Text style={styles.footnote}>* MC shows FDV where the feed does not report a market cap yet.</Text>
         ) : null}

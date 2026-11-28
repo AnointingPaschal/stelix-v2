@@ -447,6 +447,25 @@ describe('Worker API (live endpoints, no sample data)', () => {
     expect((feed.body.announcements as { title: string }[])[0].title).toBe('Arc is live')
   })
 
+  it('releases: publish validates version + URL, lists newest first, and /api/sync carries the latest as appUpdate', async () => {
+    const badVersion = await call(env, '/api/admin/releases', { method: 'POST', token, body: { version: '2.1', url: 'https://example.com/stelix-2.1.0.apk', force: false } })
+    expect(badVersion.status).toBe(400)
+    const badUrl = await call(env, '/api/admin/releases', { method: 'POST', token, body: { version: '2.1.0', url: 'ftp://example.com/stelix-2.1.0.apk', force: false } })
+    expect(badUrl.status).toBe(400)
+    const noAuth = await call(env, '/api/admin/releases', { method: 'POST', body: { version: '2.1.0', url: 'https://example.com/stelix-2.1.0.apk', force: false } })
+    expect(noAuth.status).toBe(401)
+    const before = await call(env, '/api/sync')
+    expect(before.body.appUpdate).toBeNull()
+    const pub = await call(env, '/api/admin/releases', { method: 'POST', token, body: { version: '2.1.0', notes: 'Faster locks.', url: 'https://example.com/stelix-2.1.0.apk', force: true } })
+    expect(pub.status).toBe(201)
+    const list = await call(env, '/api/admin/releases', { token })
+    expect(list.status).toBe(200)
+    expect((list.body.releases as { version: string }[])[0].version).toBe('2.1.0')
+    const sync = await call(env, '/api/sync')
+    expect(sync.body.appUpdate).toEqual({ version: '2.1.0', notes: 'Faster locks.', url: 'https://example.com/stelix-2.1.0.apk', force: true })
+    expect(sync.body.version).toBe(1)
+  })
+
   it('config: publishes a signed config and the public feed verifies the signature', async () => {
     const pub = await call(env, '/api/admin/config', { method: 'POST', token, body: { minAppVersion: '2.0.0', forceUpgrade: false, flags: { bullLockAutoSell: true, trailingStop: true } } })
     expect(pub.status).toBe(201)

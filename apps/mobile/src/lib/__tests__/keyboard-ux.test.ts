@@ -33,8 +33,10 @@ const INPUT_SCREENS = [
 ];
 
 describe('keyboard UX: Wallets sheet has one Import / Create wallet entry', () => {
-  it('Home Wallets sheet has a single "Import / Create wallet" row routing to /wallet-setup, and no Switch/Create rows', () => {
-    const text = src('src/app/(tabs)/index.tsx');
+  // The Wallets sheet lives in AppShell (AppHeader), which Home renders —
+  // the sheet moved out of Home with the shared header.
+  it('AppHeader Wallets sheet has a single "Import / Create wallet" row routing to /wallet-setup, and no Switch/Create rows', () => {
+    const text = src('src/components/AppShell.tsx');
     expect(text).toContain('Import / Create wallet');
     expect(text).toMatch(/router\.push\('\/wallet-setup'\)/);
     expect(text).not.toContain('Switch Wallet');
@@ -114,17 +116,21 @@ describe('keyboard UX: every input screen avoids the keyboard', () => {
   );
 });
 
-describe('keyboard UX: Import Token contract-address textbox stays visible', () => {
-  it('the textbox dismisses the keyboard with Done and the button has room below it', () => {
-    const text = src('src/app/(tabs)/index.tsx');
-    expect(text).toContain('returnKeyType="done"');
-    expect(text).toMatch(/importSubmit: \{ marginBottom: 16, marginTop: 12 \}/);
-    expect(text).toContain('importBottomPad');
+describe('keyboard UX: Import Token search stays visible', () => {
+  // The import flow moved out of Home's BottomSheet into the full-screen
+  // /import-token route: the search box sits at the top of a ScrollView
+  // (the keyboard cannot cover it) and the preview card renders above
+  // its Activate button.
+  it('the search box dismisses the keyboard with Search and taps keep working while it is open', () => {
+    const text = src('src/app/import-token.tsx');
+    expect(text).toContain('returnKeyType="search"');
+    expect(text).toContain('keyboardShouldPersistTaps="handled"');
   });
 
-  it('the preview card is still rendered in the sheet and reachable by scrolling', () => {
-    const text = src('src/app/(tabs)/index.tsx');
+  it('the preview card is still rendered with the Activate button below it', () => {
+    const text = src('src/app/import-token.tsx');
     expect(text).toContain('previewCard');
     expect(text).toContain('Import Token');
+    expect(text).toContain('activateBtn');
   });
 });

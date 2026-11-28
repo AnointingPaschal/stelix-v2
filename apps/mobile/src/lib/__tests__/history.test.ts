@@ -1,5 +1,6 @@
 /** History dust/spam filter + keyless Blockscout history for Arc. */
-import { fetchHistory, filterHistory, isDustOrSpam, type TxRecord } from '../history';
+import { EXPLORER_API_KEY_STORAGE_KEY, fetchHistory, filterHistory, getExplorerApiKeyAsync, isDustOrSpam, isNoExplorerKeyError, type TxRecord } from '../history';
+import { kvDelete, kvSet } from '../storage';
 
 const ME = '0xfb1aaa0000000000000000000000000000007b0b2b';
 const OTHER = '0x1111111111111111111111111111111111111111';
@@ -68,6 +69,74 @@ function tx(over: Partial<TxRecord> = {}): TxRecord {
     usd: 10, at: Date.now(), status: 'confirmed', isSpam: false, chainId: 'bnb', blockNumber: 1, ...over,
   };
 }
+
+describe('getExplorerApiKeyAsync (env wins, then key saved in Settings)', () => {
+  const realFetch = global.fetch;
+  const originalEnv = process.env.EXPO_PUBLIC_EXPLORER_API_KEY;
+
+  afterEach(async () => {
+    global.fetch = realFetch;
+    await kvDelete(EXPLORER_API_KEY_STORAGE_KEY);
+    if (originalEnv === undefined) delete process.env.EXPO_PUBLIC_EXPLORER_API_KEY;
+    else process.env.EXPO_PUBLIC_EXPLORER_API_KEY = originalEnv;
+  });
+
+  it('returns null when neither the env key nor a stored key exists', async () => {
+    delete process.env.EXPO_PUBLIC_EXPLORER_API_KEY;
+    await expect(getExplorerApiKeyAsync()).resolves.toBeNull();
+  });
+
+  it('returns the key saved on-device in Settings', async () => {
+    delete process.env.EXPO_PUBLIC_EXPLORER_API_KEY;
+    await kvSet(EXPLORER_API_KEY_STORAGE_KEY, 'stored-key-123');
+    await expect(getExplorerApiKeyAsync()).resolves.toBe('stored-key-123');
+  });
+
+  it('prefers the env key over a stored key', async () => {
+    process.env.EXPO_PUBLIC_EXPLORER_API_KEY = 'env-key';
+    await kvSet(EXPLORER_API_KEY_STORAGE_KEY, 'stored-key-123');
+    await expect(getExplorerApiKeyAsync()).resolves.toBe('env-key');
+  });
+
+  it('a stored key unlocks BNB history (Etherscan v2) with no env key', async () => {
+    delete process.env.EXPO_PUBLIC_EXPLORER_API_KEY;
+    await kvSet(EXPLORER_API_KEY_STORAGE_KEY, 'stored-key-123');
+    const ok = (json: unknown) => ({ ok: true, status: 200, json: async () => json }) as Response;
+    global.fetch = jest.fn(async (url: string) => {
+      expect(url).toContain('apikey=stored-key-123');
+      expect(url).toContain('chainid=56');
+      return ok({
+        status: '1',
+        result: [
+          {
+            hash: '0xbnb1',
+            from: OTHER,
+            to: ME,
+            value: '1000000000000000000',
+            tokenSymbol: 'BNB',
+            tokenDecimal: '18',
+            timeStamp: '1793116800',
+            blockNumber: '123',
+            isError: '0',
+          },
+        ],
+      });
+    }) as unknown as typeof fetch;
+    const res = await fetchHistory('bnb', ME);
+    expect(res.status).toBe('ok');
+    expect(res.txs).toHaveLength(1);
+    expect(res.txs[0].token).toBe('BNB');
+    expect(res.txs[0].amount).toBe(1);
+  });
+
+  it('without any key, BNB history reports no-key (never invented txs)', async () => {
+    delete process.env.EXPO_PUBLIC_EXPLORER_API_KEY;
+    const res = await fetchHistory('bnb', ME);
+    expect(res.status).toBe('no-key');
+    expect(res.txs).toHaveLength(0);
+    expect(isNoExplorerKeyError(res.error)).toBe(true);
+  });
+});
 
 describe('dust / spam filter', () => {
   it('flags zero-value transfers as dust', () => {

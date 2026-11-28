@@ -4,13 +4,13 @@
  *  hardcoded one. */
 import { useState } from 'react';
 import { ScrollView, StyleSheet, Text, View } from 'react-native';
-import { router } from 'expo-router';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import * as Clipboard from 'expo-clipboard';
 import QRCode from 'react-native-qrcode-svg';
 import { COLORS } from '../theme';
 import { useApp } from '../store/AppContext';
 import { Btn, Card, ScreenHeader, centeredContent } from '../components/ui';
+import { AppHeader, BottomNav } from '../components/AppShell';
 
 export default function Receive() {
   const { chain, chainAddress } = useApp();
@@ -30,8 +30,10 @@ export default function Receive() {
   }
 
   return (
+    <View style={styles.shell}>
     <ScrollView style={styles.root} contentContainerStyle={[styles.inner, centeredContent, { paddingTop: 12 + insets.top, paddingBottom: 24 + insets.bottom }]}>
-      <ScreenHeader title="Receive Assets" onBack={() => router.back()} />
+      <AppHeader showBack />
+      <ScreenHeader title="Receive Assets" />
 
       <View style={styles.chainPill}>
         <View style={styles.netDot} />
@@ -66,6 +68,8 @@ export default function Receive() {
         </Text>
       </Card>
     </ScrollView>
+    <BottomNav />
+    </View>
   );
 }
 
@@ -98,6 +102,7 @@ const styles = StyleSheet.create({
   noAddr: { color: COLORS.textMuted, fontSize: 12, lineHeight: 17, textAlign: 'center' },
   qrCard: { alignItems: 'center', marginTop: 16, paddingVertical: 20 },
   root: { backgroundColor: COLORS.bg, flex: 1 },
+  shell: { backgroundColor: COLORS.bg, flex: 1 },
   warn: { backgroundColor: COLORS.redSoft, borderColor: '#FECACA', marginTop: 16 },
   warnBody: { color: COLORS.red, fontSize: 12, lineHeight: 17, marginTop: 4 },
   warnTitle: { color: COLORS.red, fontSize: 13, fontWeight: '800' },
