@@ -24,6 +24,9 @@
  * Expo Go still launches with Circle disabled.
  */
 import React, { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from 'react';
+import { ethers } from 'ethers';
+import { getChain } from '../lib/chains';
+import { recordBroadcastTx } from '../lib/localHistory';
 import {
   CIRCLE_ARC_TESTNET,
   buildContractExecutionChallengeRequest,
@@ -315,6 +318,21 @@ export function CircleWalletProvider({ children }: { children: React.ReactNode }
         );
         const txHash = await executeChallenge(challenge);
         if (!txHash) throw new Error('Circle transfer completed but returned no transaction hash.');
+        // The USDC transfer was broadcast on Arc testnet — record it.
+        // Never throws into the send flow.
+        await recordBroadcastTx({
+          hash: txHash,
+          chain: 'arc',
+          wallet: activeWallet.address,
+          type: 'send',
+          tokenSymbol: 'USDC',
+          tokenAddress: getChain('arc').stablecoins?.USDC ?? null,
+          amount: amount.toString(),
+          amountRaw: ethers.parseUnits(amount.toString(), 6).toString(),
+          from: activeWallet.address,
+          to,
+          timestamp: Date.now(),
+        });
         return txHash;
       } catch (e) {
         const msg = e instanceof Error ? e.message : 'Circle send failed.';
@@ -352,7 +370,29 @@ export function CircleWalletProvider({ children }: { children: React.ReactNode }
               blockchain: CIRCLE_ARC_TESTNET,
             }),
           );
-          lastTxHash = await executeChallenge(challenge);
+          const stepHash = await executeChallenge(challenge);
+          // Each Circle step is its own broadcast tx: record the
+          // approve and the createLock separately, as each completes.
+          // A step that returns no hash is not recorded (and the
+          // final check below still fails the lock, as before).
+          if (stepHash) {
+            const amountRaw =
+              step.kind === 'approve' ? String(step.abiParameters[1]) : ethers.parseUnits(params.amount.toString(), params.tokenDecimals).toString();
+            await recordBroadcastTx({
+              hash: stepHash,
+              chain: params.chainId,
+              wallet: activeWallet.address,
+              type: step.kind === 'approve' ? 'approve' : 'lock',
+              tokenSymbol: params.tokenSymbol ?? '',
+              tokenAddress: params.tokenAddress,
+              amount: params.amount.toString(),
+              amountRaw,
+              from: activeWallet.address,
+              to: built.vaultAddress,
+              timestamp: Date.now(),
+            });
+          }
+          lastTxHash = stepHash;
         }
         if (!lastTxHash) throw new Error('Circle lock completed but returned no transaction hash.');
         return lastTxHash;

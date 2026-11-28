@@ -7,6 +7,7 @@
 // module probe, then a labelled degraded DRBG) if the host Expo Go
 // lacks one.
 import 'react-native-get-random-values';
+import { useEffect } from 'react';
 import { Image, StyleSheet, Text, View } from 'react-native';
 import { Stack } from 'expo-router';
 import { StatusBar } from 'expo-status-bar';
@@ -14,6 +15,7 @@ import { SafeAreaProvider, useSafeAreaInsets } from 'react-native-safe-area-cont
 import { AppProvider, useApp } from '../store/AppContext';
 import { CircleWalletProvider } from '../store/CircleWalletContext';
 import MaintenanceScreen from '../components/MaintenanceScreen';
+import { startLocalHistoryPolling } from '../lib/localHistory';
 import { COLORS } from '../theme';
 
 /** Shown while the stored-wallet check is still running, so a first
@@ -37,6 +39,16 @@ function BootSplash() {
 
 function RootNavigator() {
   const { hydrated, maintenanceBlocksApp } = useApp();
+  // Local-history receipt poller: starts once the app has hydrated
+  // (storage is ready) and runs while the app is open, so a pending
+  // transaction updates even when the user is not on the History tab.
+  // The first pass is the launch backfill — pending records left from
+  // a previous session are picked up. Each pass is a no-op (zero
+  // network calls) when nothing is pending.
+  useEffect(() => {
+    if (!hydrated) return;
+    return startLocalHistoryPolling();
+  }, [hydrated]);
   if (!hydrated) return <BootSplash />;
   // Maintenance scope 'all': the whole wallet is behind the maintenance
   // screen until the admin switches it off (the admin portal itself is

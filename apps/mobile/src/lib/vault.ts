@@ -21,6 +21,7 @@ import { ethers } from 'ethers';
 import { getChain, requireVaultAddress, VAULT_NOT_DEPLOYED_MESSAGE } from './chains';
 import { getProvider } from './balances';
 import { fmtPrice } from './format';
+import { recordBroadcastTx } from './localHistory';
 
 /** Minimal StelixVault ABI — only the functions the app calls.
  *  Matches contracts/src/StelixVault.sol exactly (createLock with a
@@ -209,6 +210,9 @@ export interface CreateLockOnChainParams {
    *  Wins when well-formed; otherwise the built-in registry decides. */
   vaultAddress?: string | null;
   tokenAddress: string;
+  /** Display symbol for the local history ledger (optional — the
+   *  on-chain call does not need it). */
+  tokenSymbol?: string;
   tokenDecimals: number;
   stablecoinAddress: string;
   amount: number; // token units
@@ -294,11 +298,40 @@ export async function createLockOnChain(
   const vaultAddress = resolveVaultAddress(params.chainId, params.vaultAddress); // throws not-deployed
   const chain = getChain(params.chainId);
   const tuple = toOnChainCreateLockParams(params);
+  const fromAddress = await signer.getAddress();
   const token = new ethers.Contract(params.tokenAddress, ERC20_APPROVE_ABI, signer);
   const approveTx = await token.approve(vaultAddress, tuple.amount);
+  // The approve was broadcast — record it before waiting for mining.
+  await recordBroadcastTx({
+    hash: approveTx.hash,
+    chain: params.chainId,
+    wallet: fromAddress,
+    type: 'approve',
+    tokenSymbol: params.tokenSymbol ?? '',
+    tokenAddress: params.tokenAddress,
+    amount: params.amount.toString(),
+    amountRaw: tuple.amount.toString(),
+    from: fromAddress,
+    to: vaultAddress,
+    timestamp: Date.now(),
+  });
   await approveTx.wait();
   const vault = new ethers.Contract(vaultAddress, STELIX_VAULT_ABI, signer);
   const tx = await vault.createLock(tuple);
+  // The lock was broadcast — record it before waiting for mining.
+  await recordBroadcastTx({
+    hash: tx.hash as string,
+    chain: params.chainId,
+    wallet: fromAddress,
+    type: 'lock',
+    tokenSymbol: params.tokenSymbol ?? '',
+    tokenAddress: params.tokenAddress,
+    amount: params.amount.toString(),
+    amountRaw: tuple.amount.toString(),
+    from: fromAddress,
+    to: vaultAddress,
+    timestamp: Date.now(),
+  });
   const receipt = await tx.wait();
   let lockId: number | null = null;
   try {
@@ -318,23 +351,58 @@ export async function createLockOnChain(
   return { txHash: tx.hash as string, lockId };
 }
 
+/**
+ * Display metadata for the local history ledger, supplied by the
+ * screen that knows the lock (symbol, amount, decimals). Without it
+ * the vault tx still executes — it just is not recorded locally,
+ * because the lib alone cannot know which token or how much a
+ * claim/break moves.
+ */
+export interface VaultTxRecordMeta {
+  type: 'claim' | 'break';
+  tokenSymbol: string;
+  tokenAddress: string;
+  /** Human-readable amount moved by this tx (0 for a break request,
+   *  which moves no tokens yet). */
+  amount: number;
+  tokenDecimals: number;
+}
+
 async function sendVaultTx(
   signer: ethers.Signer,
   chainId: string,
   method: 'claimMatured' | 'claimTriggeredStage' | 'requestBreak' | 'executeBreak',
   args: unknown[],
   vaultAddressOverride?: string | null,
+  meta?: VaultTxRecordMeta,
 ): Promise<string> {
   const vaultAddress = resolveVaultAddress(chainId, vaultAddressOverride); // throws not-deployed
   const vault = new ethers.Contract(vaultAddress, STELIX_VAULT_ABI, signer);
   const tx = await (vault[method] as (...a: unknown[]) => Promise<ethers.TransactionResponse>)(...args);
+  // The vault tx was broadcast — record it before waiting for mining.
+  if (meta) {
+    const fromAddress = await signer.getAddress();
+    await recordBroadcastTx({
+      hash: tx.hash,
+      chain: chainId,
+      wallet: fromAddress,
+      type: meta.type,
+      tokenSymbol: meta.tokenSymbol,
+      tokenAddress: meta.tokenAddress || null,
+      amount: meta.amount.toString(),
+      amountRaw: ethers.parseUnits(meta.amount.toString(), meta.tokenDecimals).toString(),
+      from: fromAddress,
+      to: vaultAddress,
+      timestamp: Date.now(),
+    });
+  }
   const receipt = await tx.wait();
   return receipt?.hash ?? tx.hash;
 }
 
 /** Owner claims a matured lock on-chain (penalty-free by construction). */
-export async function claimMaturedOnChain(signer: ethers.Signer, chainId: string, lockId: number, vaultAddressOverride?: string | null): Promise<string> {
-  return sendVaultTx(signer, chainId, 'claimMatured', [lockId], vaultAddressOverride);
+export async function claimMaturedOnChain(signer: ethers.Signer, chainId: string, lockId: number, vaultAddressOverride?: string | null, meta?: VaultTxRecordMeta): Promise<string> {
+  return sendVaultTx(signer, chainId, 'claimMatured', [lockId], vaultAddressOverride, meta);
 }
 
 /** Owner manually claims a triggered ladder stage (no swap, no fee). */
@@ -344,18 +412,19 @@ export async function claimTriggeredStageOnChain(
   lockId: number,
   stageIndex: number,
   vaultAddressOverride?: string | null,
+  meta?: VaultTxRecordMeta,
 ): Promise<string> {
-  return sendVaultTx(signer, chainId, 'claimTriggeredStage', [lockId, stageIndex], vaultAddressOverride);
+  return sendVaultTx(signer, chainId, 'claimTriggeredStage', [lockId, stageIndex], vaultAddressOverride, meta);
 }
 
 /** Owner requests an early break (starts the 24h / 48h cooling-off). */
-export async function requestBreakOnChain(signer: ethers.Signer, chainId: string, lockId: number, vaultAddressOverride?: string | null): Promise<string> {
-  return sendVaultTx(signer, chainId, 'requestBreak', [lockId], vaultAddressOverride);
+export async function requestBreakOnChain(signer: ethers.Signer, chainId: string, lockId: number, vaultAddressOverride?: string | null, meta?: VaultTxRecordMeta): Promise<string> {
+  return sendVaultTx(signer, chainId, 'requestBreak', [lockId], vaultAddressOverride, meta);
 }
 
 /** Owner executes a break after cooling-off (penalty per the lock terms). */
-export async function executeBreakOnChain(signer: ethers.Signer, chainId: string, lockId: number, vaultAddressOverride?: string | null): Promise<string> {
-  return sendVaultTx(signer, chainId, 'executeBreak', [lockId], vaultAddressOverride);
+export async function executeBreakOnChain(signer: ethers.Signer, chainId: string, lockId: number, vaultAddressOverride?: string | null, meta?: VaultTxRecordMeta): Promise<string> {
+  return sendVaultTx(signer, chainId, 'executeBreak', [lockId], vaultAddressOverride, meta);
 }
 
 /**

@@ -41,9 +41,10 @@ import { getChain, type ChainConfig } from './chains';
 import { fetchSolanaHistory } from './solana';
 import { fetchDexScreenerToken } from './prices';
 import { kvGet } from './storage';
+import { listLocalTxs, type LocalTxRecord, type LocalTxType } from './localHistory';
 
-export type TxKind = 'sent' | 'received' | 'swap' | 'lock' | 'unlock' | 'autosell' | 'other';
-export type TxStatus = 'confirmed' | 'pending' | 'failed';
+export type TxKind = 'sent' | 'received' | 'swap' | 'lock' | 'unlock' | 'autosell' | 'break' | 'claim' | 'approve' | 'other';
+export type TxStatus = 'confirmed' | 'pending' | 'failed' | 'unknown';
 
 export interface TxRecord {
   id: string; // tx hash
@@ -287,6 +288,80 @@ export function isDustOrSpam(tx: Pick<TxRecord, 'amount' | 'usd' | 'token'>): bo
 export function filterHistory(txs: TxRecord[], opts?: { showDust?: boolean }): TxRecord[] {
   if (opts?.showDust) return txs;
   return txs.filter((t) => !t.isSpam);
+}
+
+/* ------------------------------------------------------------------ */
+/* Local-ledger merge (Phase B).                                      */
+/*                                                                    */
+/* Transactions the app itself broadcast are recorded in the local    */
+/* ledger (lib/localHistory.ts) at signing time, so History can show  */
+/* them immediately — including pendings and native sends the         */
+/* on-chain sources cannot see yet (or, on BNB/Polygon, at all).     */
+/* The merge is: local records FIRST (newest first), then on-chain    */
+/* rows, deduped by transaction hash (case-insensitive). A hash in    */
+/* both sources appears ONCE, with the local record winning — it      */
+/* carries the app-known type, amount and live status. On-chain       */
+/* rows are still kept: they carry incoming transfers and any         */
+/* pre-ledger history the local store never saw.                      */
+/* ------------------------------------------------------------------ */
+
+const LOCAL_KIND_MAP: Record<LocalTxType, TxKind> = {
+  send: 'sent',
+  swap: 'swap',
+  lock: 'lock',
+  unlock: 'unlock',
+  break: 'break',
+  claim: 'claim',
+  approve: 'approve',
+  other: 'other',
+};
+
+/** One local ledger record as a History row. Own transactions are
+ *  never spam, and the counterparty is the destination address. */
+export function localTxToTxRecord(local: LocalTxRecord): TxRecord {
+  const amount = Number(local.amount);
+  return {
+    id: local.hash,
+    hash: local.hash,
+    kind: LOCAL_KIND_MAP[local.type] ?? 'other',
+    token: local.tokenSymbol,
+    amount: Number.isFinite(amount) ? amount : 0,
+    amountRaw: local.amountRaw,
+    usd: null,
+    counterparty: local.to,
+    at: local.timestamp,
+    status: local.status,
+    isSpam: false,
+    chainId: local.chain,
+    blockNumber: local.blockNumber,
+  };
+}
+
+/** Local records first (newest first), then on-chain rows whose hash
+ *  is not already covered by a local record. */
+export function mergeHistoryTxs(local: LocalTxRecord[], onChain: TxRecord[]): TxRecord[] {
+  const locals = [...local].sort((a, b) => b.timestamp - a.timestamp).map(localTxToTxRecord);
+  const seen = new Set(locals.map((r) => r.hash.toLowerCase()));
+  return [...locals, ...onChain.filter((t) => !seen.has(t.hash.toLowerCase()))];
+}
+
+/** Row-state label + tone for the History screen (and the tx detail
+ *  pill). Confirmed rows show their date; pending / failed / unknown
+ *  rows show this label instead, so a dropped tx never reads as
+ *  pending forever. */
+export type TxStatusTone = 'ok' | 'wait' | 'bad' | 'muted';
+
+export function historyRowStatus(status: TxStatus): { label: string; tone: TxStatusTone } {
+  switch (status) {
+    case 'pending':
+      return { label: 'Pending', tone: 'wait' };
+    case 'failed':
+      return { label: 'Failed', tone: 'bad' };
+    case 'unknown':
+      return { label: 'Unknown', tone: 'muted' };
+    default:
+      return { label: 'Confirmed', tone: 'ok' };
+  }
 }
 
 function mapExplorerTx(raw: ExplorerTx, chain: ChainConfig, address: string): TxRecord {
@@ -574,6 +649,14 @@ export async function fetchHistory(
 ): Promise<HistoryResult> {
   const chain = getChain(chainId);
   const startedAt = Date.now();
+  // Local ledger for this wallet+chain (Phase B merge): a failed read
+  // never blocks on-chain history — it just means no local rows.
+  let local: LocalTxRecord[] = [];
+  try {
+    local = await listLocalTxs(address, chain.id);
+  } catch {
+    local = [];
+  }
   if (chain.kind === 'solana') {
     // Solana history comes from the RPC itself (getSignaturesForAddress +
     // getParsedTransaction) — no explorer API key needed. An EVM address
@@ -624,14 +707,17 @@ export async function fetchHistory(
         }
       }
       txs.sort((a, b) => b.at - a.at);
-      return { chain, address, txs, status: 'ok', error: null, updatedAt: Date.now() };
+      return { chain, address, txs: mergeHistoryTxs(local, txs), status: 'ok', error: null, updatedAt: Date.now() };
     } catch (e) {
       return {
         chain,
         address,
-        txs: [],
-        status: 'error',
-        error: `Could not read Solana history from ${chain.rpcUrl}: ${e instanceof Error ? e.message : String(e)}`,
+        txs: mergeHistoryTxs(local, []),
+        status: local.length > 0 ? 'ok' : 'error',
+        error:
+          local.length > 0
+            ? null
+            : `Could not read Solana history from ${chain.rpcUrl}: ${e instanceof Error ? e.message : String(e)}`,
         updatedAt: startedAt,
       };
     }
@@ -647,7 +733,7 @@ export async function fetchHistory(
   if (bsBase) {
     try {
       const txs = await fetchBlockscoutHistory(chain, address, bsBase);
-      return { chain, address, txs, status: 'ok', error: null, updatedAt: Date.now() };
+      return { chain, address, txs: mergeHistoryTxs(local, txs), status: 'ok', error: null, updatedAt: Date.now() };
     } catch (e) {
       lastError = e instanceof Error ? e.message : String(e);
     }
@@ -684,7 +770,7 @@ export async function fetchHistory(
         const txs = (json.result as ExplorerTx[])
           .map((r) => mapExplorerTx(r, chain, address))
           .sort((a, b) => b.at - a.at);
-        return { chain, address, txs, status: 'ok', error: null, updatedAt: Date.now() };
+        return { chain, address, txs: mergeHistoryTxs(local, txs), status: 'ok', error: null, updatedAt: Date.now() };
       } catch (e) {
         lastError = e instanceof Error ? e.message : String(e);
       }
@@ -695,9 +781,22 @@ export async function fetchHistory(
   // caller's tokenAddresses) — never invented, never key-gated.
   try {
     const txs = await fetchRpcLogHistory(chain, address, { tokenAddresses: opts?.tokenAddresses });
-    return { chain, address, txs, status: 'ok', error: null, updatedAt: Date.now() };
+    return { chain, address, txs: mergeHistoryTxs(local, txs), status: 'ok', error: null, updatedAt: Date.now() };
   } catch (e) {
     lastError = e instanceof Error ? e.message : String(e);
+  }
+  // Every on-chain source failed: the local ledger still shows the
+  // wallet's own transactions (including pendings) instead of an
+  // empty list. With no local rows either, report the error.
+  if (local.length > 0) {
+    return {
+      chain,
+      address,
+      txs: mergeHistoryTxs(local, []),
+      status: 'ok',
+      error: null,
+      updatedAt: startedAt,
+    };
   }
   return {
     chain,

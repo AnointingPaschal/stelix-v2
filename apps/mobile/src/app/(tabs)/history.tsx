@@ -17,6 +17,7 @@ import { ArrowDown, ArrowUp, RefreshCw } from 'lucide-react-native';
 import { COLORS } from '../../theme';
 import { useApp } from '../../store/AppContext';
 import { fmtNum, shortAddress } from '../../lib/format';
+import { historyRowStatus } from '../../lib/history';
 import { AppHeader } from '../../components/AppShell';
 import { EmptyState } from '../../components/ui';
 
@@ -80,7 +81,7 @@ export default function History() {
         <EmptyState title="No transactions yet" body="Sends, receives, swaps and lock events will appear here." />
       ) : (
         list.map((t) => {
-          const received = t.kind === 'received' || t.kind === 'autosell' || t.kind === 'unlock';
+          const received = t.kind === 'received' || t.kind === 'autosell' || t.kind === 'unlock' || t.kind === 'break' || t.kind === 'claim';
           const label =
             t.kind === 'received'
               ? 'Token Received'
@@ -92,9 +93,23 @@ export default function History() {
                     ? 'Locked'
                     : t.kind === 'unlock'
                       ? 'Unlocked'
-                      : 'Target hit — auto-sold';
+                      : t.kind === 'break'
+                        ? 'Lock broken'
+                        : t.kind === 'claim'
+                          ? 'Claimed'
+                          : t.kind === 'approve'
+                          ? 'Approved'
+                          : t.kind === 'autosell'
+                            ? 'Target hit — auto-sold'
+                            : 'Transaction';
           const party = t.counterparty ? `${received ? 'From' : 'To'} ${shortAddress(t.counterparty, 4)}` : (t.note ?? '');
           const date = t.at > 0 ? new Date(t.at).toLocaleDateString('en-GB', { day: '2-digit', month: '2-digit', year: 'numeric' }) : '—';
+          // Confirmed rows show their date. Pending / failed / unknown
+          // rows show their state instead, so a stuck or dropped tx
+          // never reads as a plain confirmed row.
+          const rowStatus = historyRowStatus(t.status);
+          const statusStyle =
+            rowStatus.tone === 'wait' ? styles.statusPending : rowStatus.tone === 'bad' ? styles.statusFailed : styles.statusUnknown;
           return (
             <Pressable
               key={t.id}
@@ -118,7 +133,9 @@ export default function History() {
                   {received ? '+' : '-'}
                   {fmtNum(t.amount, 4)} {t.token}
                 </Text>
-                <Text style={styles.date}>{date}</Text>
+                <Text style={[styles.date, t.status !== 'confirmed' ? statusStyle : null]}>
+                  {t.status === 'confirmed' ? date : rowStatus.label}
+                </Text>
               </View>
             </Pressable>
           );
@@ -161,6 +178,9 @@ const styles = StyleSheet.create({
     paddingVertical: 12,
   },
   spamToggle: { color: COLORS.textMuted, fontSize: 12, fontWeight: '700', marginTop: 14, textAlign: 'center' },
+  statusFailed: { color: COLORS.red, fontWeight: '700' },
+  statusPending: { color: COLORS.amber, fontWeight: '700' },
+  statusUnknown: { color: COLORS.textMuted, fontWeight: '700' },
   sub: { color: COLORS.textMuted, fontSize: 11, marginTop: 2 },
   title: { color: COLORS.text, fontSize: 18, fontWeight: '800' },
 });

@@ -29,6 +29,7 @@
 import { ethers } from 'ethers';
 import { EVM_NATIVE_RPC_DECIMALS, getChain, VAULT_DEFAULTS } from './chains';
 import { getProvider } from './balances';
+import { recordBroadcastTx } from './localHistory';
 
 export const PANCAKESWAP_V2_ROUTER = '0x10ED43C718714eb63d5aA57B78B54704E256024E';
 /** WBNB — the wrapped-native hop for PancakeSwap V2 paths on BNB. */
@@ -224,6 +225,20 @@ export interface SwapExecutionResult {
 }
 
 /**
+ * Display metadata the quote does not carry (symbols, human amount-in).
+ * The Swap screen passes it so the local ledger can record the swap
+ * with real symbols instead of bare addresses; all fields are optional
+ * so a caller without them still executes — the record just carries
+ * less display detail, never a guessed symbol.
+ */
+export interface SwapRecordMeta {
+  fromSymbol?: string;
+  toSymbol?: string;
+  /** Human-readable amount in (e.g. '0.1'), as typed by the user. */
+  amountInHuman?: string;
+}
+
+/**
  * Execute a REAL swap from a live quote, signed by the user's wallet.
  *
  * BNB: PancakeSwap V2 (approve only when the allowance is short, then
@@ -238,6 +253,7 @@ export interface SwapExecutionResult {
 export async function executeSwap(
   signer: ethers.Signer,
   quote: SwapQuote,
+  meta?: SwapRecordMeta,
 ): Promise<SwapExecutionResult> {
   const chain = getChain(quote.chainId);
   if (chain.kind !== 'evm' || chain.chainId === null) {
@@ -273,9 +289,9 @@ export async function executeSwap(
   const toNative = !quote.toTokenAddress || quote.toTokenAddress.toLowerCase() === NATIVE_SENTINEL.toLowerCase();
 
   if (chain.id === 'bnb') {
-    return executePancakeSwap(signer, fromAddress, quote, amountIn, amountOutMin, deadline, fromNative, toNative);
+    return executePancakeSwap(signer, fromAddress, quote, amountIn, amountOutMin, deadline, fromNative, toNative, meta);
   }
-  return executeOneInchSwap(signer, fromAddress, quote, amountIn, chain.chainId);
+  return executeOneInchSwap(signer, fromAddress, quote, amountIn, chain.chainId, meta);
 }
 
 export interface SwapFeeEstimate {
@@ -357,6 +373,7 @@ async function executePancakeSwap(
   deadline: bigint,
   fromNative: boolean,
   toNative: boolean,
+  meta?: SwapRecordMeta,
 ): Promise<SwapExecutionResult> {
   const router = new ethers.Contract(PANCAKESWAP_V2_ROUTER, ROUTER_SWAP_ABI, signer);
   const path = pancakeSwapPath(quote.fromTokenAddress, quote.toTokenAddress);
@@ -373,6 +390,20 @@ async function executePancakeSwap(
     const allowance = (await token.allowance(fromAddress, PANCAKESWAP_V2_ROUTER)) as bigint;
     if (allowance < amountIn) {
       const approveTx = (await token.approve(PANCAKESWAP_V2_ROUTER, amountIn)) as ethers.TransactionResponse;
+      // The approve was broadcast — record it before waiting for mining.
+      await recordBroadcastTx({
+        hash: approveTx.hash,
+        chain: quote.chainId,
+        wallet: fromAddress,
+        type: 'approve',
+        tokenSymbol: meta?.fromSymbol ?? '',
+        tokenAddress: quote.fromTokenAddress || null,
+        amount: meta?.amountInHuman ?? '',
+        amountRaw: amountIn.toString(),
+        from: fromAddress,
+        to: PANCAKESWAP_V2_ROUTER,
+        timestamp: Date.now(),
+      });
       const approveReceipt = await approveTx.wait();
       approveHash = approveReceipt?.hash ?? approveTx.hash;
     }
@@ -382,6 +413,21 @@ async function executePancakeSwap(
       tx = (await router.swapExactTokensForTokens(amountIn, amountOutMin, path, fromAddress, deadline)) as ethers.TransactionResponse;
     }
   }
+  // The swap was broadcast — record it on the token spent (amountIn is
+  // exact on-chain; the amount received is only a quote until mined).
+  await recordBroadcastTx({
+    hash: tx.hash,
+    chain: quote.chainId,
+    wallet: fromAddress,
+    type: 'swap',
+    tokenSymbol: meta?.fromSymbol ?? '',
+    tokenAddress: fromNative ? null : quote.fromTokenAddress || null,
+    amount: meta?.amountInHuman ?? '',
+    amountRaw: amountIn.toString(),
+    from: fromAddress,
+    to: PANCAKESWAP_V2_ROUTER,
+    timestamp: Date.now(),
+  });
   const receipt = await tx.wait();
   return { hash: receipt?.hash ?? tx.hash, blockNumber: receipt?.blockNumber ?? null, approveHash };
 }
@@ -393,6 +439,7 @@ async function executeOneInchSwap(
   quote: SwapQuote,
   amountIn: bigint,
   chainIdNum: number,
+  meta?: SwapRecordMeta,
 ): Promise<SwapExecutionResult> {
   const apiKey = getOneInchApiKey();
   if (!apiKey) {
@@ -422,6 +469,24 @@ async function executeOneInchSwap(
       to: txData.to as string,
       data: txData.data as string,
       value: txData.value ? BigInt(txData.value as string) : 0n,
+    });
+    // The 1inch swap was broadcast — record it on the token spent.
+    // (1inch handles any needed approval inside its own tx when the
+    // allowance is set, so there is no separate approve tx to record.)
+    const fromNative1inch =
+      !quote.fromTokenAddress || quote.fromTokenAddress.toLowerCase() === NATIVE_SENTINEL.toLowerCase();
+    await recordBroadcastTx({
+      hash: sent.hash,
+      chain: quote.chainId,
+      wallet: fromAddress,
+      type: 'swap',
+      tokenSymbol: meta?.fromSymbol ?? '',
+      tokenAddress: fromNative1inch ? null : quote.fromTokenAddress || null,
+      amount: meta?.amountInHuman ?? '',
+      amountRaw: amountIn.toString(),
+      from: fromAddress,
+      to: txData.to as string,
+      timestamp: Date.now(),
     });
     const receipt = await sent.wait();
     return { hash: receipt?.hash ?? sent.hash, blockNumber: receipt?.blockNumber ?? null, approveHash: null };

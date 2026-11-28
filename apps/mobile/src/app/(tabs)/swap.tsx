@@ -433,7 +433,11 @@ export default function Swap() {
   async function signSwap(password: string): Promise<SignTxResult> {
     if (!signModal) throw new Error('No swap to sign.');
     const signer = await getSignerForChain(password, chain.id);
-    const res = await executeSwap(signer, signModal.quote);
+    const res = await executeSwap(signer, signModal.quote, {
+      fromSymbol: fromToken?.symbol,
+      toSymbol: toToken?.symbol,
+      amountInHuman: String(amt),
+    });
     return { hash: res.hash, blockNumber: res.blockNumber };
   }
 

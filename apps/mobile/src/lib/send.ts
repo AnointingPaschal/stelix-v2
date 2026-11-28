@@ -20,6 +20,7 @@ import { ethers } from 'ethers';
 import { EVM_NATIVE_RPC_DECIMALS, getChain } from './chains';
 import { getProvider, ERC20_MIN_ABI } from './balances';
 import { isValidEvmAddress } from './wallet';
+import { recordBroadcastTx } from './localHistory';
 
 export interface SendRequest {
   chainId: string;
@@ -158,6 +159,22 @@ export async function sendToken(
     }
   }
   const sent = await signer.sendTransaction(tx);
+  // Recorded the moment the tx is broadcast (hash returned) — before
+  // waiting for mining, so a slow/unmined send is still in the ledger
+  // and the poller can confirm it. Never throws into the send flow.
+  await recordBroadcastTx({
+    hash: sent.hash,
+    chain: req.chainId,
+    wallet: fromAddress,
+    type: 'send',
+    tokenSymbol: req.tokenSymbol,
+    tokenAddress: req.tokenAddress || null,
+    amount: req.amount.toString(),
+    amountRaw: amountRaw.toString(),
+    from: fromAddress,
+    to: req.to,
+    timestamp: Date.now(),
+  });
   const receipt = await sent.wait();
   return {
     hash: receipt?.hash ?? sent.hash,

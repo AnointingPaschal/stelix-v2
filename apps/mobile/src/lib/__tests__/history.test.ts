@@ -1,6 +1,16 @@
 /** History dust/spam filter + keyless Blockscout history for Arc. */
-import { EXPLORER_API_KEY_STORAGE_KEY, fetchHistory, fetchRpcLogHistory, filterHistory, getExplorerApiKeyAsync, isDustOrSpam, type TxRecord } from '../history';
+import * as fs from 'fs';
+import * as path from 'path';
+import { EXPLORER_API_KEY_STORAGE_KEY, fetchHistory, fetchRpcLogHistory, filterHistory, getExplorerApiKeyAsync, historyRowStatus, isDustOrSpam, localTxToTxRecord, mergeHistoryTxs, type TxRecord } from '../history';
+import { clearAllLocalHistory, recordLocalTx, type LocalTxRecord, type NewLocalTx } from '../localHistory';
 import { kvDelete, kvSet } from '../storage';
+
+// The kv store is shared across tests in this file (in-memory map in
+// Jest): every test starts from an empty local ledger, so fetchHistory
+// merge tests never leak records into the older on-chain-only tests.
+beforeEach(async () => {
+  await clearAllLocalHistory();
+});
 
 const ME = '0xfb1aaa0000000000000000000000000000007b0b2b';
 const OTHER = '0x1111111111111111111111111111111111111111';
@@ -254,5 +264,187 @@ describe('dust / spam filter', () => {
     const list = [tx(), tx({ id: '0x2', hash: '0x2', token: 'FREE$$', amount: 0, usd: 0, isSpam: true })];
     expect(filterHistory(list)).toHaveLength(1);
     expect(filterHistory(list, { showDust: true })).toHaveLength(2);
+  });
+});
+
+/* ------------------------------------------------------------------ */
+/* Phase B — local-ledger merge.                                      */
+/* ------------------------------------------------------------------ */
+
+const NOW_B = 1_800_000_000_000;
+
+function localRec(over: Partial<LocalTxRecord> & { hash: string }): LocalTxRecord {
+  return {
+    chain: 'arc',
+    wallet: ME.toLowerCase(),
+    type: 'send',
+    tokenSymbol: 'USDC',
+    tokenAddress: '0x036CbD53842c5426634e7929541eC2318f3dCF7e',
+    amount: '30',
+    amountRaw: '30000000',
+    from: ME.toLowerCase(),
+    to: OTHER,
+    timestamp: NOW_B,
+    status: 'pending',
+    blockNumber: null,
+    ...over,
+  };
+}
+
+function newLocalTx(over: Partial<NewLocalTx> & { hash: string }): NewLocalTx {
+  const { status, blockNumber, ...rest } = localRec(over);
+  return { ...rest, status: over.status, blockNumber: over.blockNumber };
+}
+
+describe('localTxToTxRecord', () => {
+  it('maps a pending send to a pending sent row with the human amount', () => {
+    const rec = localTxToTxRecord(localRec({ hash: '0xaaa1', amount: '12.5', amountRaw: '12500000' }));
+    expect(rec).toMatchObject({
+      id: '0xaaa1',
+      hash: '0xaaa1',
+      kind: 'sent',
+      token: 'USDC',
+      amount: 12.5,
+      amountRaw: '12500000',
+      status: 'pending',
+      isSpam: false,
+      chainId: 'arc',
+      blockNumber: null,
+    });
+    expect(rec.counterparty).toBe(OTHER);
+  });
+
+  it('maps every local type to its History kind', () => {
+    const kinds: [LocalTxRecord['type'], TxRecord['kind']][] = [
+      ['send', 'sent'],
+      ['swap', 'swap'],
+      ['lock', 'lock'],
+      ['unlock', 'unlock'],
+      ['break', 'break'],
+      ['claim', 'claim'],
+      ['approve', 'approve'],
+      ['other', 'other'],
+    ];
+    for (const [type, kind] of kinds) {
+      expect(localTxToTxRecord(localRec({ hash: `0x${type}`, type })).kind).toBe(kind);
+    }
+  });
+
+  it('carries failed and unknown statuses through unchanged', () => {
+    expect(localTxToTxRecord(localRec({ hash: '0xf1', status: 'failed', blockNumber: 42 })).status).toBe('failed');
+    expect(localTxToTxRecord(localRec({ hash: '0xf1', status: 'failed', blockNumber: 42 })).blockNumber).toBe(42);
+    expect(localTxToTxRecord(localRec({ hash: '0xu1', status: 'unknown' })).status).toBe('unknown');
+    expect(localTxToTxRecord(localRec({ hash: '0xc1', status: 'confirmed', blockNumber: 7 })).status).toBe('confirmed');
+  });
+});
+
+describe('mergeHistoryTxs', () => {
+  it('a hash in both sources appears once, with the local record winning', () => {
+    const onChain = tx({ id: '0xabc123', hash: '0xABC123', kind: 'received', amount: 30, status: 'confirmed', at: NOW_B });
+    const merged = mergeHistoryTxs([localRec({ hash: '0xabc123', amount: '5', status: 'pending', timestamp: NOW_B + 1000 })], [onChain]);
+    expect(merged).toHaveLength(1);
+    expect(merged[0].hash).toBe('0xabc123');
+    // Local wins: its kind/amount/status, not the on-chain row's.
+    expect(merged[0].kind).toBe('sent');
+    expect(merged[0].amount).toBe(5);
+    expect(merged[0].status).toBe('pending');
+  });
+
+  it('local records come first (newest first), then on-chain rows', () => {
+    const local = [
+      localRec({ hash: '0xlocal-old', timestamp: NOW_B - 1000 }),
+      localRec({ hash: '0xlocal-new', timestamp: NOW_B }),
+    ];
+    const onChain = [
+      tx({ id: '0xchain1', hash: '0xchain1', at: NOW_B + 5000 }),
+      tx({ id: '0xchain2', hash: '0xchain2', at: NOW_B - 5000 }),
+    ];
+    const merged = mergeHistoryTxs(local, onChain);
+    expect(merged.map((r) => r.hash)).toEqual(['0xlocal-new', '0xlocal-old', '0xchain1', '0xchain2']);
+  });
+
+  it('keeps on-chain-only rows (incoming transfers, pre-ledger history)', () => {
+    const merged = mergeHistoryTxs([], [tx({ id: '0x1', hash: '0x1' }), tx({ id: '0x2', hash: '0x2' })]);
+    expect(merged).toHaveLength(2);
+  });
+
+  it('dedupes case-insensitively when the on-chain hash is uppercased', () => {
+    const merged = mergeHistoryTxs(
+      [localRec({ hash: '0xdeadbeef' })],
+      [tx({ id: '0xDEADBEEF', hash: '0xDEADBEEF' })],
+    );
+    expect(merged).toHaveLength(1);
+  });
+});
+
+describe('historyRowStatus', () => {
+  it('pending / failed / unknown / confirmed each get their own label and tone', () => {
+    expect(historyRowStatus('pending')).toEqual({ label: 'Pending', tone: 'wait' });
+    expect(historyRowStatus('failed')).toEqual({ label: 'Failed', tone: 'bad' });
+    expect(historyRowStatus('unknown')).toEqual({ label: 'Unknown', tone: 'muted' });
+    expect(historyRowStatus('confirmed')).toEqual({ label: 'Confirmed', tone: 'ok' });
+  });
+});
+
+describe('fetchHistory merges the local ledger (Phase B integration)', () => {
+  const realFetch = global.fetch;
+  afterEach(() => {
+    global.fetch = realFetch;
+  });
+
+  it('local-first: a pending local tx outranks its on-chain twin, and a local-only tx leads', async () => {
+    await recordLocalTx(newLocalTx({ hash: '0xABC123', amount: '5', status: 'pending', timestamp: NOW_B + 2000 }));
+    await recordLocalTx(newLocalTx({ hash: '0xlocal9', amount: '2', status: 'pending', timestamp: NOW_B + 1000 }));
+    mockBlockscout();
+    const res = await fetchHistory('arc', ME);
+    expect(res.status).toBe('ok');
+    // 0xabc123 once (local wins), 0xlocal9 local-only, no other rows.
+    expect(res.txs).toHaveLength(2);
+    expect(res.txs[0].hash).toBe('0xabc123');
+    expect(res.txs[0].status).toBe('pending');
+    expect(res.txs[0].amount).toBe(5);
+    expect(res.txs[0].kind).toBe('sent');
+    expect(res.txs[1].hash).toBe('0xlocal9');
+    expect(res.txs[1].status).toBe('pending');
+  });
+
+  it('when every on-chain source fails, the local ledger still shows instead of an empty error', async () => {
+    await recordLocalTx(newLocalTx({ hash: '0xonly-local', amount: '7', status: 'failed', timestamp: NOW_B }));
+    global.fetch = jest.fn(async () => {
+      throw new Error('network down');
+    }) as unknown as typeof fetch;
+    const res = await fetchHistory('arc', ME);
+    expect(res.status).toBe('ok');
+    expect(res.error).toBeNull();
+    expect(res.txs).toHaveLength(1);
+    expect(res.txs[0].hash).toBe('0xonly-local');
+    expect(res.txs[0].status).toBe('failed');
+  });
+});
+
+describe('History screen row states (source checks — Jest is node-only)', () => {
+  const MOBILE = path.resolve(__dirname, '..', '..', '..');
+  const screen = fs.readFileSync(path.join(MOBILE, 'src/app/(tabs)/history.tsx'), 'utf8');
+  const detail = fs.readFileSync(path.join(MOBILE, 'src/app/tx/[hash].tsx'), 'utf8');
+
+  it('uses historyRowStatus and shows Pending / Failed / Unknown labels, date only for confirmed rows', () => {
+    expect(screen).toContain('historyRowStatus');
+    expect(screen).toContain('statusPending');
+    expect(screen).toContain('statusFailed');
+    expect(screen).toContain('statusUnknown');
+    expect(screen).toMatch(/t\.status === 'confirmed' \? date : rowStatus\.label/);
+  });
+
+  it('labels the local-only kinds and keeps the tap-to-detail behaviour', () => {
+    expect(screen).toContain('Lock broken');
+    expect(screen).toContain('Claimed');
+    expect(screen).toContain('Approved');
+    expect(screen).toContain("pathname: '/tx/[hash]'");
+  });
+
+  it('the tx detail pill shows Unknown instead of Pending for unknown rows', () => {
+    expect(detail).toContain("status === 'unknown'");
+    expect(detail).toContain("'Unknown'");
+    expect(detail).toContain('pillMuted');
   });
 });

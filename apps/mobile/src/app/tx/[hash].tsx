@@ -35,6 +35,12 @@ function kindLabel(kind: TxRecord['kind']): string {
       return 'Locked';
     case 'unlock':
       return 'Unlocked';
+    case 'break':
+      return 'Lock broken';
+    case 'claim':
+      return 'Claimed';
+    case 'approve':
+      return 'Approved';
     case 'autosell':
       return 'Target hit — auto-sold';
     default:
@@ -179,16 +185,28 @@ export default function TransactionDetail() {
             <View
               style={[
                 styles.pill,
-                status === 'confirmed' ? styles.pillOk : status === 'failed' ? styles.pillBad : styles.pillWait,
+                status === 'confirmed'
+                  ? styles.pillOk
+                  : status === 'failed'
+                    ? styles.pillBad
+                    : status === 'unknown'
+                      ? styles.pillMuted
+                      : styles.pillWait,
               ]}
             >
               <Text
                 style={[
                   styles.pillText,
-                  status === 'confirmed' ? styles.pillTextOk : status === 'failed' ? styles.pillTextBad : styles.pillTextWait,
+                  status === 'confirmed'
+                    ? styles.pillTextOk
+                    : status === 'failed'
+                      ? styles.pillTextBad
+                      : status === 'unknown'
+                        ? styles.pillTextMuted
+                        : styles.pillTextWait,
                 ]}
               >
-                {status === 'confirmed' ? 'Confirmed' : status === 'failed' ? 'Failed' : 'Pending'}
+                {status === 'confirmed' ? 'Confirmed' : status === 'failed' ? 'Failed' : status === 'unknown' ? 'Unknown' : 'Pending'}
               </Text>
             </View>
           </View>
@@ -298,9 +316,11 @@ const styles = StyleSheet.create({
   note: { color: COLORS.textMuted, fontSize: 12, lineHeight: 17, marginTop: 12 },
   pill: { borderRadius: 999, marginTop: 12, paddingHorizontal: 12, paddingVertical: 5 },
   pillBad: { backgroundColor: COLORS.redSoft },
+  pillMuted: { backgroundColor: COLORS.bgMuted },
   pillOk: { backgroundColor: COLORS.mintSoft },
   pillText: { fontSize: 12, fontWeight: '700' },
   pillTextBad: { color: COLORS.red },
+  pillTextMuted: { color: COLORS.textMuted },
   pillTextOk: { color: COLORS.mintDark },
   pillTextWait: { color: COLORS.amber },
   pillWait: { backgroundColor: COLORS.amberSoft },

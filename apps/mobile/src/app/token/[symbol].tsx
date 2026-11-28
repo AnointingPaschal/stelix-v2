@@ -714,6 +714,7 @@ export default function TokenDetail() {
       // in Contract Studio is used here on the next admin sync.
       vaultAddress: activeChain.vaultContract,
       tokenAddress: address,
+      tokenSymbol: sym,
       tokenDecimals: storeToken.decimals ?? 18,
       stablecoinAddress: stablecoin,
       amount: amt,
