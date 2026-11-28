@@ -743,6 +743,78 @@ describe('Worker API (live endpoints, no sample data)', () => {
     expect(listed.finalized).toBe(1)
   })
 
+  it('launches: terms edit works before money is in; "1e+23" rejected; tokens must cover hard cap', async () => {
+    const now = Math.floor(Date.now() / 1000)
+    const created = await call(env, '/api/admin/launches', {
+      method: 'POST', token,
+      body: { saleId: 0, seller: '0x1111111111111111111111111111111111111111', tokenAddress: '0x2222222222222222222222222222222222222222', tokenSymbol: 'TEST', tokenName: 'Test Token', tokenDecimals: 18, pricePerToken: '100000', softCap: '1000000000', hardCap: '10000000000', tokensForSale: '100000000000000000000000', startTime: now + 60, endTime: now + 86400, liquidityLockBps: 2000 },
+    })
+    expect(created.status).toBe(201)
+    const id = created.body.id as number
+    // Regression: 100,000 whole tokens at 18 decimals is exact digits —
+    // the old float math produced "1e+23", which must be rejected, not stored.
+    const sci = await call(env, `/api/admin/launches/${id}`, { method: 'PATCH', token, body: { tokensForSale: '1e+23' } })
+    expect(sci.status).toBe(400)
+    expect(sci.body.error as string).toMatch(/scientific notation/)
+    const sciPrice = await call(env, `/api/admin/launches/${id}`, { method: 'PATCH', token, body: { pricePerToken: '1e+5' } })
+    expect(sciPrice.status).toBe(400)
+    // Tokens for sale must cover hardCap / price: $10,000 at $0.10 needs
+    // 100,000 tokens, so 10,000 tokens is rejected.
+    const tooFew = await call(env, `/api/admin/launches/${id}`, { method: 'PATCH', token, body: { tokensForSale: '10000000000000000000000' } })
+    expect(tooFew.status).toBe(400)
+    expect(tooFew.body.error as string).toMatch(/cover the hard cap/)
+    // A valid terms edit applies (price $0.20, hard cap $20,000 still needs
+    // exactly the 100,000 tokens on sale).
+    const ok = await call(env, `/api/admin/launches/${id}`, { method: 'PATCH', token, body: { pricePerToken: '200000', hardCap: '20000000000', tokensForSale: '100000000000000000000000', startTime: now + 120, endTime: now + 90000, liquidityLockBps: 2500 } })
+    expect(ok.status).toBe(200)
+    const admin = await call(env, '/api/admin/launches', { token })
+    const row = (admin.body.launches as Record<string, unknown>[])[0]
+    expect(row.price_per_token).toBe('200000')
+    expect(row.hard_cap).toBe('20000000000')
+    expect(row.tokens_for_sale).toBe('100000000000000000000000')
+    expect(row.liquidity_lock_bps).toBe(2500)
+    // Bad terms are rejected: hard cap below soft cap, end before start,
+    // liquidity lock above the 50% max.
+    const badCap = await call(env, `/api/admin/launches/${id}`, { method: 'PATCH', token, body: { hardCap: '100' } })
+    expect(badCap.status).toBe(400)
+    const badDates = await call(env, `/api/admin/launches/${id}`, { method: 'PATCH', token, body: { startTime: now + 90000, endTime: now + 120 } })
+    expect(badDates.status).toBe(400)
+    const badLock = await call(env, `/api/admin/launches/${id}`, { method: 'PATCH', token, body: { liquidityLockBps: 5001 } })
+    expect(badLock.status).toBe(400)
+  })
+
+  it('launches: once money is in, price/caps/tokens are blocked; dates need explicit confirmation', async () => {
+    const now = Math.floor(Date.now() / 1000)
+    const created = await call(env, '/api/admin/launches', {
+      method: 'POST', token,
+      body: { saleId: 0, seller: '0x1111111111111111111111111111111111111111', tokenAddress: '0x2222222222222222222222222222222222222222', tokenSymbol: 'TEST', tokenName: 'Test Token', tokenDecimals: 18, pricePerToken: '100000', softCap: '1000000000', hardCap: '10000000000', tokensForSale: '100000000000000000000000', startTime: now + 60, endTime: now + 86400, liquidityLockBps: 2000 },
+    })
+    const id = created.body.id as number
+    // Record a contribution: money is in. (The launch row counters are
+    // only synced by admin updates, so the guardrail must count the
+    // contributions table too — not just the row.)
+    const contrib = await call(env, `/api/admin/launches/${id}/contributions`, { method: 'POST', token, body: { contributor: '0x3333333333333333333333333333333333333333', amount: '25000000' } })
+    expect(contrib.status).toBe(201)
+    const blockedPrice = await call(env, `/api/admin/launches/${id}`, { method: 'PATCH', token, body: { pricePerToken: '200000' } })
+    expect(blockedPrice.status).toBe(400)
+    expect(blockedPrice.body.error as string).toMatch(/already has contributions/)
+    const blockedCap = await call(env, `/api/admin/launches/${id}`, { method: 'PATCH', token, body: { hardCap: '20000000000' } })
+    expect(blockedCap.status).toBe(400)
+    const blockedTokens = await call(env, `/api/admin/launches/${id}`, { method: 'PATCH', token, body: { tokensForSale: '200000000000000000000000' } })
+    expect(blockedTokens.status).toBe(400)
+    // Dates / liquidity lock need the explicit confirmation flag.
+    const noConfirm = await call(env, `/api/admin/launches/${id}`, { method: 'PATCH', token, body: { endTime: now + 200000 } })
+    expect(noConfirm.status).toBe(400)
+    expect(noConfirm.body.error as string).toMatch(/confirm/)
+    const confirmed = await call(env, `/api/admin/launches/${id}`, { method: 'PATCH', token, body: { endTime: now + 200000, confirmTermsChange: true } })
+    expect(confirmed.status).toBe(200)
+    const admin = await call(env, '/api/admin/launches', { token })
+    const row = (admin.body.launches as Record<string, unknown>[])[0]
+    expect(row.end_time).toBe(now + 200000)
+    // ... while the blocked price never changed.
+    expect(row.price_per_token).toBe('100000')
+  })
+
   it('launches: contributions are recorded per launch and listed', async () => {
     const now = Math.floor(Date.now() / 1000)
     const created = await call(env, '/api/admin/launches', {

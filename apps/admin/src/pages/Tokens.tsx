@@ -1,12 +1,134 @@
 import { useEffect, useState } from 'react'
-import { BadgeCheck, ChevronDown, ChevronUp, Coins, Gauge, Percent, Search, Star, Timer, Trash2, X } from 'lucide-react'
+import { BadgeCheck, ChevronDown, ChevronUp, Coins, Gauge, ImagePlus, Percent, Pencil, Search, Star, Timer, Trash2, X } from 'lucide-react'
 import { api } from '../lib/api'
 import type { Chain } from '../lib/types'
+import { isValidLogoUrl, normalizeDisplayName, normalizeDisplaySymbol, parseSortOrder } from '../lib/tokenEdit'
 import { LiveNote, PageHeader, SectionTitle, StatCard } from '../components/ui'
 import { AlertModal } from '../components/AlertModal'
 
-type RegistryToken = { id: number; symbol: string; chain: string; address: string; decimals: number; verified: boolean; featured: boolean; sortOrder: number }
+type RegistryToken = { id: number; symbol: string; chain: string; address: string; decimals: number; verified: boolean; featured: boolean; sortOrder: number; name: string | null; logoUrl: string | null }
 type SearchHit = { symbol: string; name: string; chain: string; address: string; priceUsd: number | null; dex: string; pairUrl: string | null; source: string }
+
+const short = (addr: string): string => (addr.length > 13 ? `${addr.slice(0, 6)}…${addr.slice(-4)}` : addr)
+
+const LOGO_TYPES = ['image/png', 'image/jpeg', 'image/webp', 'image/gif']
+const LOGO_MAX_BYTES = 256 * 1024
+
+/** Edit a token's registry display — centred modal (never an inline
+ *  banner). Only the display changes here: display name, display
+ *  symbol, verified, featured, sort order and logo. Address, chain and
+ *  decimals are on-chain truth — shown read-only, never editable, and
+ *  the server rejects them if sent. Sort order is a plain non-negative
+ *  integer (scientific notation rejected). The logo is either uploaded
+ *  as a file (same 256 KB PNG/JPG/WebP/GIF rule as the Launchpad) or
+ *  pasted as an https URL. */
+function EditTokenModal({ token, onClose, onSaved, onError }: {
+  token: RegistryToken
+  onClose: () => void
+  onSaved: (msg: string) => void
+  onError: (msg: string) => void
+}) {
+  const [displayName, setDisplayName] = useState(token.name ?? '')
+  const [displaySymbol, setDisplaySymbol] = useState(token.symbol)
+  const [sortOrder, setSortOrder] = useState(String(token.sortOrder))
+  const [logoUrl, setLogoUrl] = useState(token.logoUrl ?? '')
+  const [verified, setVerified] = useState(token.verified)
+  const [featured, setFeatured] = useState(token.featured)
+  const [uploading, setUploading] = useState(false)
+  const [saving, setSaving] = useState(false)
+
+  const pickLogo = async (file: File | undefined) => {
+    if (!file) return
+    if (!LOGO_TYPES.includes(file.type)) { onError(`Logo must be PNG, JPG, WebP or GIF — "${file.type || 'unknown type'}" is not accepted.`); return }
+    if (file.size <= 0 || file.size > LOGO_MAX_BYTES) { onError('Logo must be between 1 byte and 256 KB.'); return }
+    setUploading(true)
+    try {
+      const { url } = await api.uploadLaunchLogo(file)
+      setLogoUrl(url)
+    } catch (e) { onError(e instanceof Error ? e.message : 'Could not upload the logo.') }
+    setUploading(false)
+  }
+
+  const save = async () => {
+    const name = normalizeDisplayName(displayName)
+    if (name === null) { onError('Display name must be at most 64 characters.'); return }
+    const symbol = normalizeDisplaySymbol(displaySymbol)
+    if (symbol === null) { onError('Display symbol must be 1–32 characters.'); return }
+    const order = parseSortOrder(sortOrder)
+    if (order === null) { onError('Sort order must be a plain non-negative integer, e.g. 0 — no scientific notation.'); return }
+    const logo = logoUrl.trim()
+    if (!isValidLogoUrl(logo)) { onError('Logo must be empty (no logo) or a valid https URL.'); return }
+    setSaving(true)
+    try {
+      await api.updateToken(token.id, {
+        displayName: name === '' ? null : name, displaySymbol: symbol,
+        verified, featured, sortOrder: order, logoUrl: logo === '' ? null : logo,
+      })
+      onSaved(`${symbol} updated.`)
+      onClose()
+    } catch (e) { onError(e instanceof Error ? e.message : 'Could not update token.') }
+    setSaving(false)
+  }
+
+  return (
+    <div className="alert-overlay" role="dialog" aria-modal="true" aria-label={`Edit ${token.symbol} token`} onClick={onClose}>
+      <div className="modal-card" onClick={(e) => e.stopPropagation()}>
+        <button className="alert-close" onClick={onClose} aria-label="Close"><X /></button>
+        <h3>Edit token — {token.symbol}</h3>
+        <p className="muted" style={{ marginTop: 0 }}>
+          {token.chain} · {token.decimals} decimals · {short(token.address)}
+        </p>
+        <p className="muted">
+          Address, chain and decimals are on-chain truth and cannot be changed here. Name and symbol only change what the app shows for this token — the on-chain token is untouched.
+        </p>
+        <label>Display name</label>
+        <input value={displayName} onChange={(e) => setDisplayName(e.target.value)} placeholder={token.symbol} />
+        <label>Display symbol</label>
+        <input value={displaySymbol} onChange={(e) => setDisplaySymbol(e.target.value)} placeholder="STX" />
+        <label>Sort order</label>
+        <input value={sortOrder} inputMode="numeric" onChange={(e) => setSortOrder(e.target.value)} placeholder="0" />
+        <label>Logo</label>
+        {logoUrl ? (
+          <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginBottom: 8 }}>
+            <img src={logoUrl} alt="Token logo" style={{ width: 44, height: 44, borderRadius: '50%', objectFit: 'cover', border: '1px solid var(--border, #E5E7EB)' }} />
+            <div style={{ flex: 1, minWidth: 0 }}>
+              <p className="muted" style={{ margin: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{logoUrl}</p>
+            </div>
+            <button className="btn" onClick={() => setLogoUrl('')}>Remove</button>
+          </div>
+        ) : (
+          <p className="muted" style={{ margin: '0 0 8px' }}>No logo yet.</p>
+        )}
+        <label className="btn" style={{ cursor: uploading ? 'wait' : 'pointer', marginBottom: 8 }}>
+          <ImagePlus /> {uploading ? 'Uploading…' : logoUrl ? 'Change logo' : 'Upload logo'}
+          <input
+            type="file"
+            accept="image/png,image/jpeg,image/webp,image/gif"
+            style={{ display: 'none' }}
+            disabled={uploading}
+            onChange={(e) => { void pickLogo(e.target.files?.[0]); e.target.value = '' }}
+          />
+        </label>
+        <input value={logoUrl} onChange={(e) => setLogoUrl(e.target.value)} placeholder="…or paste an https logo URL" />
+        <p className="field-hint">PNG, JPG, WebP or GIF, max 256 KB. The file is uploaded — never a link — and served from the admin.</p>
+        <label>Contract address (on-chain, read-only)</label>
+        <input value={token.address} disabled readOnly />
+        <label>Chain (on-chain, read-only)</label>
+        <input value={token.chain} disabled readOnly />
+        <label>Decimals (on-chain, read-only)</label>
+        <input value={String(token.decimals)} disabled readOnly />
+        <label className="check-row"><input type="checkbox" checked={verified} onChange={(e) => setVerified(e.target.checked)} />Verified</label>
+        <label className="check-row"><input type="checkbox" checked={featured} onChange={(e) => setFeatured(e.target.checked)} />Featured</label>
+        <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginTop: 16 }}>
+          <button className="btn ghost" onClick={onClose}>Cancel</button>
+          <button className="btn mint" onClick={save} disabled={saving || uploading}>
+            {saving ? 'Saving…' : 'Save token'}
+          </button>
+        </div>
+      </div>
+    </div>
+  )
+}
 
 export default function Tokens() {
   const [tokens, setTokens] = useState<RegistryToken[]>([])
@@ -14,6 +136,7 @@ export default function Tokens() {
   const [error, setError] = useState('')
   const [notice, setNotice] = useState('')
   const [confirmRemove, setConfirmRemove] = useState<RegistryToken | null>(null)
+  const [editToken, setEditToken] = useState<RegistryToken | null>(null)
   const [q, setQ] = useState('')
   const [hits, setHits] = useState<SearchHit[]>([])
   const [searching, setSearching] = useState(false)
@@ -94,6 +217,14 @@ export default function Tokens() {
         onConfirm={() => { if (confirmRemove) void removeToken(confirmRemove) }}
         onClose={() => setConfirmRemove(null)}
       />
+      {editToken && (
+        <EditTokenModal
+          token={editToken}
+          onClose={() => setEditToken(null)}
+          onSaved={(msg) => { setNotice(msg); load() }}
+          onError={setError}
+        />
+      )}
       <div className="grid stats">
         <StatCard icon={<Percent />} label="Default slippage" value="1.5%" />
         <StatCard icon={<Gauge />} label="Max price impact" value="5%" />
@@ -150,34 +281,38 @@ export default function Tokens() {
         {tokens.length === 0 ? (
           <p className="empty">No tokens registered yet. Search live above or register one manually.</p>
         ) : (
-          <div className="table-wrap">
-            <table className="rtable">
-              <thead><tr><th>Order</th><th>Token</th><th>Chain</th><th>Address</th><th>Decimals</th><th>Verified</th><th>Featured</th><th></th></tr></thead>
-              <tbody>
-                {tokens.map((t) => {
-                  const sameChain = tokens.filter((x) => x.chain === t.chain)
-                  const idx = sameChain.findIndex((x) => x.id === t.id)
-                  return (
-                  <tr key={t.id}>
-                    <td data-label="Order">
-                      <span style={{ display: 'inline-flex', gap: 2, alignItems: 'center' }}>
-                        <button className="btn ghost" aria-label={`Move ${t.symbol} up`} disabled={idx <= 0} onClick={() => moveToken(t, -1)}><ChevronUp /></button>
-                        <button className="btn ghost" aria-label={`Move ${t.symbol} down`} disabled={idx < 0 || idx >= sameChain.length - 1} onClick={() => moveToken(t, 1)}><ChevronDown /></button>
-                      </span>
-                    </td>
-                    <td data-label="Token"><b>{t.symbol}</b></td>
-                    <td data-label="Chain">{t.chain}</td>
-                    <td data-label="Address"><span className="kbd">{t.address}</span></td>
-                    <td data-label="Decimals">{t.decimals}</td>
-                    <td data-label="Verified">{t.verified ? <span className="badge b-green">Yes</span> : <span className="badge b-grey">No</span>}</td>
-                    <td data-label="Featured">{t.featured ? <span className="badge b-mint"><Star />Yes</span> : <span className="badge b-grey">No</span>}</td>
-                    <td data-label="Remove"><button className="btn ghost" aria-label={`Remove ${t.symbol}`} onClick={() => setConfirmRemove(t)}><Trash2 /></button></td>
-                  </tr>
-                  )
-                })}
-              </tbody>
-            </table>
-          </div>
+          tokens.map((t) => {
+            const sameChain = tokens.filter((x) => x.chain === t.chain)
+            const idx = sameChain.findIndex((x) => x.id === t.id)
+            return (
+              <div className="launch-card" key={t.id}>
+                <div className="launch-head">
+                  <div className="launch-logo">
+                    {t.logoUrl ? <img src={t.logoUrl} alt={`${t.symbol} logo`} /> : <Coins />}
+                  </div>
+                  <div className="launch-title">
+                    <b>{t.name || t.symbol}</b>
+                    <span className="muted">{t.symbol} · {t.chain}</span>
+                    <span className="muted mono">{short(t.address)}</span>
+                  </div>
+                </div>
+                <div className="launch-meta">
+                  <p>{t.decimals} decimals · Sort order {t.sortOrder}</p>
+                  <p>
+                    {t.verified ? <span className="badge b-green">Verified</span> : <span className="badge b-grey">Not verified</span>}
+                    {' '}
+                    {t.featured ? <span className="badge b-mint"><Star />Featured</span> : <span className="badge b-grey">Not featured</span>}
+                  </p>
+                </div>
+                <div className="launch-actions">
+                  <button className="btn" onClick={() => setEditToken(t)}><Pencil />Edit</button>
+                  <button className="btn ghost" aria-label={`Move ${t.symbol} up`} disabled={idx <= 0} onClick={() => moveToken(t, -1)}><ChevronUp /></button>
+                  <button className="btn ghost" aria-label={`Move ${t.symbol} down`} disabled={idx < 0 || idx >= sameChain.length - 1} onClick={() => moveToken(t, 1)}><ChevronDown /></button>
+                  <button className="btn ghost" aria-label={`Remove ${t.symbol}`} onClick={() => setConfirmRemove(t)}><Trash2 />Remove</button>
+                </div>
+              </div>
+            )
+          })
         )}
         <p className="muted" style={{ marginTop: 10, marginBottom: 0 }}>
           <X /> Token prices in the app are always live (DexScreener / GeckoTerminal); this registry only controls which tokens are featured or verified.

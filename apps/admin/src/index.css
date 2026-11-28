@@ -171,6 +171,30 @@ p{margin:0 0 10px}
 .row-body{flex:1;min-width:0}
 .row-body b{font-size:14.5px;display:block}
 .row-body .muted{margin:2px 0 0}
+
+/* ---------- Launchpad: stacked launch cards (one per launch) ---------- */
+.launch-card{background:var(--card);border:1px solid var(--border);border-radius:var(--radius);padding:16px;margin-bottom:12px;box-shadow:var(--shadow);min-width:0;overflow-wrap:break-word}
+.launch-card:last-child{margin-bottom:0}
+.launch-head{display:flex;align-items:flex-start;gap:12px}
+.launch-logo{flex:none;width:44px;height:44px;border-radius:50%;background:#EEF2F7;color:var(--navy);display:flex;align-items:center;justify-content:center;overflow:hidden}
+.launch-logo img{width:44px;height:44px;object-fit:cover}
+.launch-logo svg{width:22px;height:22px}
+.launch-title{flex:1;min-width:0}
+.launch-title b{font-size:15px;display:block;overflow-wrap:break-word}
+.launch-title .muted{display:block;margin-top:2px}
+.launch-meta{margin:12px 0 0}
+.launch-meta p{margin:0 0 6px;display:flex;align-items:flex-start;gap:6px}
+.launch-meta p:last-child{margin-bottom:0}
+.launch-meta svg{flex:none;width:15px;height:15px;color:var(--muted);margin-top:3px}
+.launch-actions{display:flex;flex-wrap:wrap;gap:8px;margin-top:12px}
+
+/* ---------- Centred form modal (Edit launch terms) ---------- */
+.modal-card{
+  position:relative;width:100%;max-width:520px;max-height:calc(100vh - 40px);max-height:calc(100dvh - 40px);
+  overflow-y:auto;background:#fff;border-radius:18px;padding:22px;box-shadow:var(--shadow-lg);
+  text-align:left;animation:alert-pop .22s cubic-bezier(.32,.72,.35,1);
+}
+.modal-card h3{font-size:17px;margin:0 0 4px;padding-right:36px}
 .row-end{flex:none;text-align:right}
 
 /* ---------- Responsive tables: cards on mobile ---------- */

@@ -1,8 +1,9 @@
 import { useEffect, useState } from 'react'
-import { BadgeCheck, Coins, Hourglass, ImagePlus, Rocket, Users, Wallet, X } from 'lucide-react'
+import { BadgeCheck, CalendarDays, Coins, Hourglass, ImagePlus, Lock, Pencil, Rocket, Users, Wallet, X } from 'lucide-react'
 import { Contract, type InterfaceAbi } from 'ethers'
 import launchpadArtifact from '../contracts/launchpad.artifact.json'
 import { api, type LaunchesFeed } from '../lib/api'
+import { decimalToMicro, microToDecimal, raisedPct, smallestToWhole, wholeTokensToSmallest } from '../lib/launchTerms'
 import type { Chain, LaunchContributionRow, LaunchRow } from '../lib/types'
 import { connectWallet, friendlyWalletError, hasInjectedWallet, signerForTx } from '../lib/walletDeploy'
 import { LiveNote, PageHeader, SectionTitle, StatCard } from '../components/ui'
@@ -14,6 +15,113 @@ const fmtUsd = (n: number): string => `$${n.toLocaleString('en-US', { minimumFra
 const fmtTs = (epochSeconds: number): string =>
   new Date(epochSeconds * 1000).toLocaleString('en-GB', { day: 'numeric', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit' })
 const short = (addr: string): string => (addr.length > 13 ? `${addr.slice(0, 6)}…${addr.slice(-4)}` : addr)
+const epochToLocalInput = (epochSeconds: number): string => {
+  const d = new Date(epochSeconds * 1000)
+  const pad = (n: number) => String(n).padStart(2, '0')
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`
+}
+const statusBadge = (l: LaunchRow): { label: string; cls: string } =>
+  l.status === 'Active'
+    ? { label: 'Active', cls: 'badge b-mint' }
+    : l.status === 'Success'
+      ? { label: l.finalized ? 'Success (finalized)' : 'Success', cls: 'badge b-green' }
+      : { label: 'Failed', cls: 'badge b-red' }
+
+/** Edit launch terms — centred modal (never an inline banner). All money
+ *  conversions go through BigInt helpers in lib/launchTerms: the sale
+ *  price / caps are decimal USDC strings converted to micro-USDC, and
+ *  tokens for sale are whole tokens converted to smallest units, so
+ *  100,000 tokens at 18 decimals is exact digits, never "1e+23". While a
+ *  launch has no money in, every term is editable. Once it has
+ *  contributions, the price / caps / tokens fields are locked (the server
+ *  blocks those edits too) and the sale dates / liquidity lock need the
+ *  explicit confirmation checkbox before the server will accept them. */
+function EditLaunchTermsModal({ launch, onClose, onSaved, onError }: {
+  launch: LaunchRow
+  onClose: () => void
+  onSaved: (msg: string) => void
+  onError: (msg: string) => void
+}) {
+  const moneyIn = BigInt(launch.raised) > 0n || launch.contributors > 0
+  const [priceUsd, setPriceUsd] = useState(microToDecimal(launch.pricePerToken))
+  const [softCapUsd, setSoftCapUsd] = useState(microToDecimal(launch.softCap))
+  const [hardCapUsd, setHardCapUsd] = useState(microToDecimal(launch.hardCap))
+  const [tokensForSale, setTokensForSale] = useState(smallestToWhole(launch.tokensForSale, launch.tokenDecimals))
+  const [start, setStart] = useState(epochToLocalInput(launch.startTime))
+  const [end, setEnd] = useState(epochToLocalInput(launch.endTime))
+  const [liquidityPct, setLiquidityPct] = useState(String(launch.liquidityLockBps / 100))
+  const [confirm, setConfirm] = useState(false)
+  const [saving, setSaving] = useState(false)
+
+  const save = async () => {
+    const price = decimalToMicro(priceUsd)
+    if (price === null) { onError('Sale price must be a plain USDC amount, e.g. 0.10 — no scientific notation.'); return }
+    const soft = decimalToMicro(softCapUsd)
+    if (soft === null) { onError('Soft cap must be a plain USDC amount, e.g. 1000.'); return }
+    const hard = decimalToMicro(hardCapUsd)
+    if (hard === null) { onError('Hard cap must be a plain USDC amount, e.g. 10000.'); return }
+    const tokens = wholeTokensToSmallest(tokensForSale, launch.tokenDecimals)
+    if (tokens === null) { onError('Tokens for sale must be a whole number of tokens, e.g. 100000 — no scientific notation.'); return }
+    const startTime = start ? Math.floor(new Date(start).getTime() / 1000) : NaN
+    const endTime = end ? Math.floor(new Date(end).getTime() / 1000) : NaN
+    if (!Number.isFinite(startTime) || !Number.isFinite(endTime) || startTime >= endTime) { onError('Sale start must be before sale end.'); return }
+    const lockBps = Math.round((parseFloat(liquidityPct) || 0) * 100)
+    if (!Number.isInteger(lockBps) || lockBps < 0 || lockBps > 5000) { onError('Liquidity lock must be 0–50%.'); return }
+    setSaving(true)
+    try {
+      await api.updateLaunchTerms(launch.id, {
+        pricePerToken: price, softCap: soft, hardCap: hard, tokensForSale: tokens,
+        startTime, endTime, liquidityLockBps: lockBps, confirmTermsChange: moneyIn ? confirm : undefined,
+      })
+      onSaved(`Launch ${launch.tokenSymbol} terms updated.`)
+      onClose()
+    } catch (e) { onError(e instanceof Error ? e.message : 'Could not update launch terms.') }
+    setSaving(false)
+  }
+
+  return (
+    <div className="alert-overlay" role="dialog" aria-modal="true" aria-label={`Edit ${launch.tokenSymbol} launch terms`} onClick={onClose}>
+      <div className="modal-card" onClick={(e) => e.stopPropagation()}>
+        <button className="alert-close" onClick={onClose} aria-label="Close"><X /></button>
+        <h3>Edit launch — {launch.tokenSymbol}</h3>
+        <p className="muted" style={{ marginTop: 0 }}>
+          {launch.tokenName || launch.tokenSymbol} · {launch.chain} · {launch.tokenDecimals} decimals
+        </p>
+        {moneyIn && (
+          <p className="muted">
+            <b>This launch already has contributions.</b> Sale price, caps and tokens for sale are locked — contributors bought in on those terms. Sale dates and liquidity lock can still change, but only with the confirmation below.
+          </p>
+        )}
+        <label>Sale price per token (USDC)</label>
+        <input value={priceUsd} inputMode="decimal" disabled={moneyIn} onChange={(e) => setPriceUsd(e.target.value)} placeholder="0.10" />
+        <label>Soft cap (USDC)</label>
+        <input value={softCapUsd} inputMode="decimal" disabled={moneyIn} onChange={(e) => setSoftCapUsd(e.target.value)} placeholder="1000" />
+        <label>Hard cap (USDC)</label>
+        <input value={hardCapUsd} inputMode="decimal" disabled={moneyIn} onChange={(e) => setHardCapUsd(e.target.value)} placeholder="10000" />
+        <label>Tokens for sale (whole tokens)</label>
+        <input value={tokensForSale} inputMode="numeric" disabled={moneyIn} onChange={(e) => setTokensForSale(e.target.value)} placeholder="100000" />
+        <label>Sale starts</label>
+        <input type="datetime-local" value={start} onChange={(e) => setStart(e.target.value)} />
+        <label>Sale ends</label>
+        <input type="datetime-local" value={end} onChange={(e) => setEnd(e.target.value)} />
+        <label>Liquidity lock % (max 50)</label>
+        <input value={liquidityPct} inputMode="decimal" onChange={(e) => setLiquidityPct(e.target.value)} placeholder="20" />
+        {moneyIn && (
+          <label style={{ display: 'flex', gap: 8, alignItems: 'flex-start', fontWeight: 400, color: 'var(--text)' }}>
+            <input type="checkbox" checked={confirm} onChange={(e) => setConfirm(e.target.checked)} style={{ width: 'auto', marginTop: 3 }} />
+            <span>I understand changing the sale dates or liquidity lock changes what contributors were promised.</span>
+          </label>
+        )}
+        <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginTop: 16 }}>
+          <button className="btn ghost" onClick={onClose}>Cancel</button>
+          <button className="btn mint" onClick={save} disabled={saving || (moneyIn && !confirm && (start !== epochToLocalInput(launch.startTime) || end !== epochToLocalInput(launch.endTime) || Math.round((parseFloat(liquidityPct) || 0) * 100) !== launch.liquidityLockBps))}>
+            {saving ? 'Saving…' : 'Save terms'}
+          </button>
+        </div>
+      </div>
+    </div>
+  )
+}
 
 const LOGO_TYPES = ['image/png', 'image/jpeg', 'image/webp', 'image/gif']
 const LOGO_MAX_BYTES = 256 * 1024
@@ -85,6 +193,7 @@ export default function Launchpad() {
   const [error, setError] = useState('')
   const [notice, setNotice] = useState('')
   const [expanded, setExpanded] = useState<number | null>(null)
+  const [editing, setEditing] = useState<LaunchRow | null>(null)
   const [contribs, setContribs] = useState<Record<number, LaunchContributionRow[]>>({})
   const [contribForm, setContribForm] = useState({ contributor: '', amountUsd: '', txHash: '' })
   const [form, setForm] = useState({
@@ -411,18 +520,32 @@ export default function Launchpad() {
             No launches yet — launches go live once the launchpad contracts are deployed on a chain.
           </p>
         ) : (
-          launches.map((l) => (
-            <div className="row-item" key={l.id}>
-              <div className="row-icon">{l.logoUrl ? <img src={l.logoUrl} alt="" style={{ width: 40, height: 40, borderRadius: '50%', objectFit: 'cover' }} /> : <Rocket />}</div>
-              <div className="row-body">
-                <b>{l.tokenSymbol} — {l.tokenName || short(l.tokenAddress)}</b>
-                <p className="muted">
-                  Sale {l.saleId ?? '—'} · {l.chain} · {l.status}{l.finalized ? ' (finalized)' : ''} · {l.approvalStatus} · Price {fmtUsd(microToUsd(l.pricePerToken))} · Raised {fmtUsd(microToUsd(l.raised))} / {fmtUsd(microToUsd(l.hardCap))} · {l.contributors} backers
-                </p>
-                <p className="muted">{fmtTs(l.startTime)} → {fmtTs(l.endTime)}</p>
-                <p className="muted mono">{l.tokenAddress} · seller {short(l.seller)}</p>
-                <p className="muted">{liquidityLabel(l)}</p>
-                <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, marginTop: 8 }}>
+          launches.map((l) => {
+            const pct = raisedPct(l.raised, l.hardCap)
+            const badge = statusBadge(l)
+            return (
+              <div className="launch-card" key={l.id}>
+                <div className="launch-head">
+                  <div className="launch-logo">{l.logoUrl ? <img src={l.logoUrl} alt="" /> : <Rocket />}</div>
+                  <div className="launch-title">
+                    <b>{l.tokenSymbol} — {l.tokenName || short(l.tokenAddress)}</b>
+                    <span className="muted">{l.chain} · Sale {l.saleId ?? '—'} · {l.approvalStatus}</span>
+                  </div>
+                  <span className={badge.cls}>{badge.label}</span>
+                </div>
+                <div className="launch-meta">
+                  <p><Coins /> Sale price <b>{fmtUsd(microToUsd(l.pricePerToken))}</b> per token</p>
+                  <div style={{ marginBottom: 6 }}>
+                    <p style={{ marginBottom: 4 }}><Wallet /> Raised {fmtUsd(microToUsd(l.raised))} / {fmtUsd(microToUsd(l.hardCap))} · {pct}%</p>
+                    <div className="progress"><i style={{ width: `${Math.min(100, pct)}%` }} /></div>
+                  </div>
+                  <p><Users /> {l.contributors} backers</p>
+                  <p><CalendarDays /> {fmtTs(l.startTime)} → {fmtTs(l.endTime)}</p>
+                  <p className="mono">{short(l.tokenAddress)} · seller {short(l.seller)}</p>
+                  <p><Lock /> Liquidity lock {l.liquidityLockBps / 100}% — {liquidityLabel(l)}</p>
+                </div>
+                <div className="launch-actions">
+                  <button className="btn" onClick={() => setEditing(l)}><Pencil /> Edit</button>
                   {l.approvalStatus === 'pending' && (
                     <>
                       <button className="btn mint" onClick={() => approve(l, 'approved')}>Approve</button>
@@ -460,10 +583,18 @@ export default function Launchpad() {
                   </div>
                 )}
               </div>
-            </div>
-          ))
+            )
+          })
         )}
       </div>
+      {editing && (
+        <EditLaunchTermsModal
+          launch={editing}
+          onClose={() => setEditing(null)}
+          onSaved={(msg) => { setNotice(msg); load() }}
+          onError={(msg) => setError(msg)}
+        />
+      )}
     </div>
   )
 }

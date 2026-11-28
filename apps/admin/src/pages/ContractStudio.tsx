@@ -7,6 +7,7 @@ import { evmMainnetFor, evmTestnetFor, testnetIdForFamily, type DeployNetwork } 
 import { mainnetConfirmPhrase, testnetChainIdFor, validateDeployParams } from '../lib/deployParams'
 import { api, type AuditGate, type CompileResult, type DeployPresetRow, type MultisigRow } from '../lib/api'
 import DeployAdapters from '../components/DeployAdapters'
+import BurnTokens from '../components/BurnTokens'
 import DeployVault, { type VaultParams } from '../components/DeployVault'
 import type { Chain } from '../lib/types'
 import { LiveNote, PageHeader, SectionTitle } from '../components/ui'
@@ -576,6 +577,7 @@ export default function ContractStudio() {
             </div>
             {env === 'mainnet' && <p className="field-hint">Mainnet registration is in the Mainnet gate card below — {gateBypassed ? 'the gate is currently bypassed, so it deploys without the gate checks.' : 'it stays gated and needs the typed confirmation naming ' + networkName + '.'}</p>}
           </div>
+          <BurnTokens chains={chains} />
           <div className="card">
             <SectionTitle icon={<ShieldAlert />}>Mainnet gate</SectionTitle>
             <p className="muted">

@@ -37,7 +37,7 @@ type ChainRow = {
 }
 type KeeperRow = { id: number; started_at: string; chain_id: string; locks_checked: number; triggers: number; executed: number; retried: number; failed: number; status: KeeperRun['status'] }
 type AuditRow = { id: number; created_at: string; actor: string; action: string; detail: string | null }
-type TokenRow = { id: number; symbol: string; chain_id: string; address: string; decimals: number; verified: number; featured: number; sort_order?: number | null }
+type TokenRow = { id: number; symbol: string; chain_id: string; address: string; decimals: number; verified: number; featured: number; sort_order?: number | null; name?: string | null; logo_url?: string | null }
 type LockDbRow = { id: string; chain_id: string; owner: string; token_address: string; token_symbol: string; amount_raw: string; status: string; unlock_time: string | null }
 
 const mapChain = (c: ChainRow): Chain => ({
@@ -359,9 +359,9 @@ export const api = {
   async setMaintenance(data: { enabled: boolean; message: string; scope: 'all' | 'wallet' }): Promise<{ ok: boolean; maintenance: { enabled: boolean; message: string; scope: 'all' | 'wallet'; updatedAt: string | null } }> {
     return post('/api/admin/maintenance', data)
   },
-  async getTokens(): Promise<{ id: number; symbol: string; chain: string; address: string; decimals: number; verified: boolean; featured: boolean; sortOrder: number }[]> {
+  async getTokens(): Promise<{ id: number; symbol: string; chain: string; address: string; decimals: number; verified: boolean; featured: boolean; sortOrder: number; name: string | null; logoUrl: string | null }[]> {
     const d = await live<{ tokens: TokenRow[] }>('/api/admin/tokens')
-    return d.tokens.map((t) => ({ id: t.id, symbol: t.symbol, chain: t.chain_id, address: t.address, decimals: t.decimals, verified: t.verified === 1, featured: t.featured === 1, sortOrder: typeof t.sort_order === 'number' ? t.sort_order : 0 }))
+    return d.tokens.map((t) => ({ id: t.id, symbol: t.symbol, chain: t.chain_id, address: t.address, decimals: t.decimals, verified: t.verified === 1, featured: t.featured === 1, sortOrder: typeof t.sort_order === 'number' ? t.sort_order : 0, name: t.name ?? null, logoUrl: t.logo_url ?? null }))
   },
   async reorderTokens(chainId: string, ids: number[]): Promise<{ ok: boolean }> {
     return post('/api/admin/tokens/order', { chainId, ids })
@@ -471,6 +471,54 @@ export const api = {
     }
     return r.json() as Promise<{ ok: boolean }>
   },
+  // ---- BEGIN: Launch terms edit (Launchpad page Edit button) ----
+  // A second worker (tokens page) will append its own endpoint after this
+  // block — keep additions inside clearly delimited blocks.
+  /** Update a launch's sale terms (price, caps, tokens for sale, sale
+   *  window, liquidity lock). All money values are plain digit strings
+   *  (micro-USDC / token smallest units) — never floats or scientific
+   *  notation; see src/lib/launchTerms.ts. confirmTermsChange is required
+   *  by the server when the launch already has contributions and the sale
+   *  dates or liquidity lock are being changed. */
+  async updateLaunchTerms(id: number, data: {
+    pricePerToken?: string; softCap?: string; hardCap?: string; tokensForSale?: string;
+    startTime?: number; endTime?: number; liquidityLockBps?: number; confirmTermsChange?: boolean
+  }): Promise<{ ok: boolean }> {
+    const r = await fetch(`/api/admin/launches/${id}`, {
+      method: 'PATCH', credentials: 'same-origin',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(data),
+    })
+    if (!r.ok) {
+      const body = (await r.json().catch(() => ({}))) as { error?: string }
+      throw new Error(body.error ?? `Update failed: ${r.status}`)
+    }
+    return r.json() as Promise<{ ok: boolean }>
+  },
+  // ---- END: Launch terms edit ----
+  // ---- BEGIN: Token registry edit (Tokens page Edit button) ----
+  /** Update a token's registry display only: display name, display
+   *  symbol, verified, featured, sort order and logo. Address, chain
+   *  and decimals are on-chain truth and are never sent — the server
+   *  rejects them if present. Sort order is a plain non-negative
+   *  integer; the logo is empty (clear it) or a valid https URL, e.g.
+   *  the URL returned by uploadLaunchLogo. */
+  async updateToken(id: number, data: {
+    displayName?: string | null; displaySymbol?: string; verified?: boolean;
+    featured?: boolean; sortOrder?: number; logoUrl?: string | null
+  }): Promise<{ ok: boolean }> {
+    const r = await fetch(`/api/admin/tokens/${id}`, {
+      method: 'PATCH', credentials: 'same-origin',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(data),
+    })
+    if (!r.ok) {
+      const body = (await r.json().catch(() => ({}))) as { error?: string }
+      throw new Error(body.error ?? `Update failed: ${r.status}`)
+    }
+    return r.json() as Promise<{ ok: boolean }>
+  },
+  // ---- END: Token registry edit ----
   async getLaunchContributions(launchId: number): Promise<LaunchContributionRow[]> {
     const d = await live<{ contributions: LaunchContributionDbRow[] }>(`/api/admin/launches/${launchId}/contributions`)
     return d.contributions.map(mapLaunchContribution)

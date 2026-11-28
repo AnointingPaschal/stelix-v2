@@ -73,6 +73,8 @@
 import { runStaticAudit, sha256Hex, type AuditFinding } from '../lib/auditCheck'
 import { API_KEY_CIRCLE_NAME, decryptApiKeyValue, deriveApiKeyEncryptionKey, encryptApiKeyValue, maskApiKeyHint, validateApiKeyName } from '../lib/apiKeys'
 import { validateFeePayload, type FeeConfig } from '../lib/fees'
+import { requiredTokensForSale, smallestToWhole, tokensCoverHardCap } from '../lib/launchTerms'
+import { isValidLogoUrl, normalizeDisplayName, normalizeDisplaySymbol, parseSortOrder } from '../lib/tokenEdit'
 import { decodePoolAddress, decodeSlot0, decodeUint128, getPoolCalldata, poolPrices, STX_USDC_FEE_TIER, UNISWAP_V3_FACTORY_ARC_MAINNET } from '../lib/pool'
 import { buildCircleChallengeRequest, CIRCLE_API_BASE, isValidCircleAppId, maskAppId, parseCircleError, validateCircleChallengeInput } from '../lib/circle'
 import { isAddress, isTxHash, mainnetConfirmPhrase, testnetChainIdFor, validateDeployParams } from '../lib/deployParams'
@@ -1531,6 +1533,80 @@ export default {
       await audit(env, authed, 'token.remove', `token id ${id} removed`)
       return json({ ok: true })
     }
+    // ---- BEGIN: Token registry edit (Tokens page Edit button) ----
+    // PATCH /api/admin/tokens/:id — updates only the registry DISPLAY of
+    // a token: display name, display symbol, verified, featured, sort
+    // order and logo. A second worker's block (launch terms) sits later
+    // in this file — this block is separate, in the tokens section.
+    //
+    // GUARDRAIL (server-side, the UI only mirrors it): on-chain truth
+    // is NEVER editable — address, chain_id and decimals are rejected
+    // outright if sent. A name/symbol edit only changes what the app
+    // shows; the on-chain token is untouched. Sort order is plain
+    // digits (BigInt-checked, scientific notation rejected, same rule
+    // as launchTerms.ts). The logo must be empty (clear it) or a valid
+    // https URL — uploaded logos come back from
+    // POST /api/admin/launches/logo as an https /api/logo/<key> URL.
+    // The display name lives in tokens.name (migration 0022): if a
+    // name edit arrives before that migration is applied, it is refused
+    // with a clear error instead of failing on a missing column.
+    const tokenIdMatch = /^\/api\/admin\/tokens\/(\d+)$/.exec(path)
+    if (tokenIdMatch && req.method === 'PATCH') {
+      const id = Number(tokenIdMatch[1])
+      const body = await readJson(req)
+      if (body.address !== undefined || body.chainId !== undefined || body.chain_id !== undefined || body.decimals !== undefined) {
+        return json({ error: 'address, chain and decimals are on-chain truth and cannot be edited — only the registry display (name, symbol, verified, featured, sort order, logo) can change' }, 400)
+      }
+      const row = await env.DB.prepare('SELECT * FROM tokens WHERE id = ?').bind(id).first()
+      if (!row) return json({ error: 'token not found' }, 404)
+      const sets: string[] = []
+      const values: unknown[] = []
+      const set = (col: string, v: unknown) => { sets.push(`${col} = ?`); values.push(v) }
+      const pick = (camel: string, snake: string): unknown => body[camel] ?? body[snake]
+      const name = pick('displayName', 'name')
+      const symbol = pick('displaySymbol', 'symbol')
+      const verified = pick('verified', 'verified')
+      const featured = pick('featured', 'featured')
+      const sortOrder = pick('sortOrder', 'sort_order')
+      const logoUrl = pick('logoUrl', 'logo_url')
+      if (name !== undefined) {
+        const displayName = normalizeDisplayName(String(name))
+        if (displayName === null) return json({ error: 'displayName must be at most 64 characters' }, 400)
+        const cols = await env.DB.prepare('PRAGMA table_info(tokens)').all<{ name: string }>()
+        const hasNameCol = (cols.results ?? []).some((c) => c.name === 'name')
+        if (!hasNameCol) return json({ error: 'display name edits need migration 0022_token_display_name applied first — the tokens.name column does not exist yet' }, 400)
+        set('name', displayName === '' ? null : displayName)
+      }
+      if (symbol !== undefined) {
+        const displaySymbol = normalizeDisplaySymbol(String(symbol))
+        if (displaySymbol === null) return json({ error: 'displaySymbol must be 1–32 characters' }, 400)
+        set('symbol', displaySymbol)
+      }
+      if (verified !== undefined) {
+        if (typeof verified !== 'boolean') return json({ error: 'verified must be true or false' }, 400)
+        set('verified', verified ? 1 : 0)
+      }
+      if (featured !== undefined) {
+        if (typeof featured !== 'boolean') return json({ error: 'featured must be true or false' }, 400)
+        set('featured', featured ? 1 : 0)
+      }
+      if (sortOrder !== undefined) {
+        const order = parseSortOrder(String(sortOrder))
+        if (order === null) return json({ error: 'sortOrder must be a plain non-negative integer — scientific notation such as "1e+3" is not accepted' }, 400)
+        set('sort_order', order)
+      }
+      if (logoUrl !== undefined) {
+        const logo = String(logoUrl).trim()
+        if (!isValidLogoUrl(logo)) return json({ error: 'logoUrl must be empty (clear the logo) or a valid https URL, e.g. the URL returned by the logo upload' }, 400)
+        set('logo_url', logo === '' ? null : logo)
+      }
+      if (sets.length === 0) return json({ error: 'nothing to update' }, 400)
+      await env.DB.prepare(`UPDATE tokens SET ${sets.join(', ')} WHERE id = ?`).bind(...values, id).run()
+      await bumpSync(env)
+      await audit(env, authed, 'token.update', `token id ${id} updated: ${sets.join(', ')}`)
+      return json({ ok: true })
+    }
+    // ---- END: Token registry edit ----
     if (path === '/api/admin/tokens/search' && req.method === 'GET') {
       const q = (url.searchParams.get('q') ?? '').trim()
       const chainFilter = (url.searchParams.get('chain') ?? '').trim()
@@ -2226,6 +2302,91 @@ export default {
       const sets: string[] = []
       const values: unknown[] = []
       const set = (col: string, v: unknown) => { sets.push(`${col} = ?`); values.push(v) }
+      // ---- BEGIN: Launch terms edit (Launchpad page Edit button) ----
+      // Edits the sale terms of a launch: price, caps, tokens for sale,
+      // sale window, liquidity lock. A second worker (tokens page) will
+      // append its own endpoint after this block — keep additions inside
+      // clearly delimited blocks and reuse the shared `set()` + audit
+      // below, so no other code in this handler needs to change.
+      //
+      // GUARDRAIL (server-side, the UI only mirrors it): while the launch
+      // has no money in (raised == 0, contributors == 0, and no rows in
+      // launch_contributions) every term is freely editable. Once money is
+      // in, the price, caps and tokens for sale are BLOCKED — contributors
+      // bought in on those terms, and changing them would change what
+      // they are owed. The sale window and liquidity lock may still move,
+      // but only with an explicit confirmTermsChange: true, so the admin
+      // has to acknowledge the change. All money values are plain digit
+      // strings (micro-USDC / token smallest units) validated with
+      // BigInt — scientific notation such as "1e+23" is rejected.
+      let termsUpdated = false
+      const pickTerm = (camel: string, snake: string): unknown => body[camel] ?? body[snake]
+      const termPrice = pickTerm('pricePerToken', 'price_per_token')
+      const termSoft = pickTerm('softCap', 'soft_cap')
+      const termHard = pickTerm('hardCap', 'hard_cap')
+      const termTokens = pickTerm('tokensForSale', 'tokens_for_sale')
+      const termStart = pickTerm('startTime', 'start_time')
+      const termEnd = pickTerm('endTime', 'end_time')
+      const termLock = pickTerm('liquidityLockBps', 'liquidity_lock_bps')
+      const hasTerms = [termPrice, termSoft, termHard, termTokens, termStart, termEnd, termLock].some((v) => v !== undefined)
+      if (hasTerms) {
+        // Digits-only check first: this is what rejects "1e+23".
+        const badDigits = (v: unknown, label: string): string | null =>
+          isDigits(String(v ?? '')) ? null : `${label} must be plain digits — scientific notation such as "1e+23" is not accepted`
+        let termsError: string | null = null
+        if (termPrice !== undefined) termsError ??= badDigits(termPrice, 'pricePerToken')
+        if (termSoft !== undefined) termsError ??= badDigits(termSoft, 'softCap')
+        if (termHard !== undefined) termsError ??= badDigits(termHard, 'hardCap')
+        if (termTokens !== undefined) termsError ??= badDigits(termTokens, 'tokensForSale')
+        if (termsError) return json({ error: termsError }, 400)
+        // Merged values: a field not sent keeps the stored value, so a
+        // partial edit is validated against the launch as it will stand.
+        const price = termPrice !== undefined ? String(termPrice) : String(row.price_per_token)
+        const soft = termSoft !== undefined ? String(termSoft) : String(row.soft_cap)
+        const hard = termHard !== undefined ? String(termHard) : String(row.hard_cap)
+        const tokens = termTokens !== undefined ? String(termTokens) : String(row.tokens_for_sale)
+        const start = termStart !== undefined ? Number(termStart) : Number(row.start_time)
+        const end = termEnd !== undefined ? Number(termEnd) : Number(row.end_time)
+        const lockBps = termLock !== undefined ? Number(termLock) : Number(row.liquidity_lock_bps)
+        if (BigInt(price) <= 0n) return json({ error: 'pricePerToken must be micro-USDC per whole token, greater than 0' }, 400)
+        if (BigInt(soft) <= 0n) return json({ error: 'softCap must be micro-USDC, greater than 0' }, 400)
+        if (BigInt(hard) < BigInt(soft)) return json({ error: 'hardCap must be micro-USDC, at least the soft cap' }, 400)
+        if (BigInt(tokens) <= 0n) return json({ error: 'tokensForSale must be token smallest units, greater than 0' }, 400)
+        if (!tokensCoverHardCap(tokens, hard, price, Number(row.token_decimals))) {
+          const needed = requiredTokensForSale(hard, price, Number(row.token_decimals))
+          return json({ error: `tokensForSale does not cover the hard cap at this price — at least ${needed ?? '?'} smallest units (${smallestToWhole(needed ?? '0', Number(row.token_decimals))} whole tokens) are needed to reach the hard cap` }, 400)
+        }
+        if (!Number.isInteger(start) || !Number.isInteger(end) || start >= end) return json({ error: 'startTime must be before endTime (epoch seconds)' }, 400)
+        if (!Number.isInteger(lockBps) || lockBps < 0 || lockBps > 5000) return json({ error: 'liquidityLockBps must be 0–5000 (max 50%)' }, 400)
+        // Money-in guardrail: raised / contributors on the row, plus a
+        // contributions-table count (the row counters are only synced by
+        // admin updates, so a recorded contribution alone must block too).
+        const raisedBig = /^\d+$/.test(String(row.raised ?? '')) ? BigInt(String(row.raised)) : 0n
+        const backers = Number(row.contributors ?? 0)
+        let contribCount = 0
+        if (raisedBig === 0n && backers === 0) {
+          const counted = await env.DB.prepare('SELECT COUNT(*) AS n FROM launch_contributions WHERE launch_id = ?').bind(id).first<{ n: number }>()
+          contribCount = Number(counted?.n ?? 0)
+        }
+        const moneyIn = raisedBig > 0n || backers > 0 || contribCount > 0
+        const priceLikeChanged = price !== String(row.price_per_token) || soft !== String(row.soft_cap) || hard !== String(row.hard_cap) || tokens !== String(row.tokens_for_sale)
+        if (moneyIn && priceLikeChanged) {
+          return json({ error: 'This launch already has contributions — sale price, soft cap, hard cap and tokens for sale can no longer be changed, because contributors bought in on those terms' }, 400)
+        }
+        const scheduleChanged = start !== Number(row.start_time) || end !== Number(row.end_time) || lockBps !== Number(row.liquidity_lock_bps)
+        if (moneyIn && scheduleChanged && body.confirmTermsChange !== true && body.confirm_terms_change !== true) {
+          return json({ error: 'This launch already has contributions — changing the sale dates or liquidity lock needs an explicit confirmation (confirmTermsChange: true) because it changes what contributors were promised' }, 400)
+        }
+        if (termPrice !== undefined) set('price_per_token', price)
+        if (termSoft !== undefined) set('soft_cap', soft)
+        if (termHard !== undefined) set('hard_cap', hard)
+        if (termTokens !== undefined) set('tokens_for_sale', tokens)
+        if (termStart !== undefined) set('start_time', start)
+        if (termEnd !== undefined) set('end_time', end)
+        if (termLock !== undefined) set('liquidity_lock_bps', lockBps)
+        termsUpdated = true
+      }
+      // ---- END: Launch terms edit ----
       if (body.approvalStatus !== undefined || body.approval_status !== undefined) {
         const approval = String(body.approvalStatus ?? body.approval_status)
         if (!['pending', 'approved', 'rejected'].includes(approval)) return json({ error: 'approvalStatus must be pending, approved or rejected' }, 400)
@@ -2261,6 +2422,8 @@ export default {
       if (body.txHash !== undefined) set('tx_hash', body.txHash === null ? null : String(body.txHash))
       if (sets.length === 0) return json({ error: 'nothing to update' }, 400)
       await env.DB.prepare(`UPDATE launches SET ${sets.join(', ')}, updated_at = datetime('now') WHERE id = ?`).bind(...values, id).run()
+      // Terms edits change what the app shows, so bump the sync version.
+      if (termsUpdated) await bumpSync(env)
       await audit(env, authed, 'launchpad.update', `Launch id ${id} updated (${sets.map((s) => s.split(' ')[0]).join(', ')})`)
       return json({ ok: true, id })
     }
